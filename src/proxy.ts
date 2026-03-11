@@ -1,4 +1,4 @@
-//src/middleware.ts
+//src/proxy.ts
 import { importX509, jwtVerify } from "jose";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -22,6 +22,8 @@ interface RelationResult {
  */
 export const config = {
   matcher: [
+    "/governor/:path*",
+    "/api/governor/:path*",
     "/app/:path*",
     "/father/:path*",
     "/child/:path*",
@@ -34,7 +36,7 @@ export const config = {
 /**
  * SOVEREIGN GATEKEEPER
  */
-export async function middleware(req: NextRequest) {
+export default async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // 1. Bypass check for public routes
@@ -60,12 +62,14 @@ export async function middleware(req: NextRequest) {
     if (!x509Cert) throw new Error("No matching Firebase certificate found");
 
     // 4. Cryptographic Verification
+    const PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
+
     const { payload } = await jwtVerify(
       token,
       await importX509(x509Cert, "RS256"),
       {
-        issuer: `https://securetoken.google.com/${process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID}`,
-        audience: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+        issuer: `https://securetoken.google.com/${PROJECT_ID}`,
+        audience: PROJECT_ID,
       }
     );
 

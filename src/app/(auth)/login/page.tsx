@@ -6,10 +6,6 @@ import { useEffect, useState } from "react";
 
 import { authService } from "@/features/auth/services/auth.service";
 
-/**
- * GOVERNOR'S ENTRANCE
- * This page uses the enterprise authService to bridge Firebase Auth and Middleware.
- */
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -18,8 +14,8 @@ export default function LoginPage() {
 
   const router = useRouter();
 
-  // Initialize the token listener to keep cookies in sync
   useEffect(() => {
+    // This bridges the Firebase Token to the Middleware Cookies
     const unsubscribe = authService.listenToTokenRefresh();
     return () => unsubscribe();
   }, []);
@@ -32,11 +28,11 @@ export default function LoginPage() {
     try {
       await authService.signIn(email, password);
 
-      // Success! Refresh the router to ensure Middleware detects the new cookie
+      // Refresh to ensure Middleware catches the fresh Cookie
       router.refresh();
 
-      // Navigate to the inner sanctum
-      router.push("/dashboard/governor");
+      // ✅ Updated path to match your actual folder structure
+      router.push("/governor");
     } catch (err: any) {
       setError(err.message || "Invalid credentials. Access denied.");
     } finally {

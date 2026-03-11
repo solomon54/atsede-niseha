@@ -1,61 +1,57 @@
 // src/features/governor/services/governance.service.ts
 
-import { doc, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { FieldValue } from "firebase-admin/firestore";
 
-import { db } from "@/services/firebase/client";
+import { adminAuth, adminDb } from "@/services/firebase/admin";
 
-// 1. የሲስተሙን ሚናዎች (Roles) በጽኑ መተርጎም
+// Import from your validators file
+import { SpiritualFatherProfile, SpiritualFatherSchema } from "./validators";
+
+// Re-export them so the API Route can find them through this service module
+export { SpiritualFatherSchema };
+export type { SpiritualFatherProfile };
+
 export const USER_ROLES = {
   FATHER: "FATHER",
   GOVERNOR: "GOVERNOR",
   STUDENT: "STUDENT",
 } as const;
 
-// 2. የCollection ስሞችን ማእከላዊ ማድረግ (Typo ለመከላከል)
 const COLLECTIONS = {
-  FATHERS: "fathers",
+  FATHERS: "Fathers",
 } as const;
 
 export type GovernanceActionResult =
   | { ok: true }
   | { ok: false; errorMessage: string };
 
-export interface SpiritualFatherProfile {
-  fullName: string;
-  parish: string;
-  assignedRegion?: string;
-}
-
-/**
- * Sovereign Governance Service
- * This is the ultimate authority layer for system access control.
- */
 export const governanceService = {
   async authorizeSpiritualFather(
     authUid: string,
     profile: SpiritualFatherProfile
   ): Promise<GovernanceActionResult> {
     try {
-      const fatherRef = doc(db, COLLECTIONS.FATHERS, authUid);
+      // 1. Grant Authority in Auth (Custom Claims)
+      await adminAuth.setCustomUserClaims(authUid, { role: USER_ROLES.FATHER });
 
-      // { merge: true } መጠቀም የነበረን ዳታ እንዳይደመሰስ ይጠብቃል
-      await setDoc(
-        fatherRef,
+      // 2. Register in the Sanctuary (Firestore Admin)
+      const fatherRef = adminDb.collection(COLLECTIONS.FATHERS).doc(authUid);
+
+      await fatherRef.set(
         {
           ...profile,
           role: USER_ROLES.FATHER,
           isApproved: true,
-          accessGrantedAt: serverTimestamp(),
-          lastStatusUpdate: serverTimestamp(),
+          accessGrantedAt: FieldValue.serverTimestamp(),
+          lastStatusUpdate: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
 
       return { ok: true };
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "AUTHORIZATION_FAILED";
-      return { ok: false, errorMessage: message };
+      console.error("GOVERNANCE_ERROR:", error);
+      return { ok: false, errorMessage: "AUTHORIZATION_FAILED" };
     }
   },
 
@@ -63,19 +59,16 @@ export const governanceService = {
     authUid: string
   ): Promise<GovernanceActionResult> {
     try {
-      const fatherRef = doc(db, COLLECTIONS.FATHERS, authUid);
-
-      await updateDoc(fatherRef, {
+      await adminAuth.setCustomUserClaims(authUid, { role: null });
+      const fatherRef = adminDb.collection(COLLECTIONS.FATHERS).doc(authUid);
+      await fatherRef.update({
         isApproved: false,
-        suspendedAt: serverTimestamp(),
-        lastStatusUpdate: serverTimestamp(),
+        suspendedAt: FieldValue.serverTimestamp(),
+        lastStatusUpdate: FieldValue.serverTimestamp(),
       });
-
       return { ok: true };
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "SUSPENSION_FAILED";
-      return { ok: false, errorMessage: message };
+      return { ok: false, errorMessage: "SUSPENSION_FAILED" };
     }
   },
 };

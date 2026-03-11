@@ -1,21 +1,62 @@
-// src/services/firebase/admin.ts
+//src/app/api/governor/authorize/route.ts
+import { NextRequest, NextResponse } from "next/server";
 
-import "server-only";
+import {
+  governanceService,
+  SpiritualFatherSchema,
+} from "@/features/governor/services/governance.service";
 
-import { cert, getApp, getApps, initializeApp } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
-import { getFirestore } from "firebase-admin/firestore";
+/**
+ * GOVERNOR AUTHORIZATION ENDPOINT
+ */
+export async function POST(req: NextRequest) {
+  try {
+    const requesterRole = req.headers.get("x-ats-role");
+    if (requesterRole !== "GOVERNOR") {
+      console.warn(
+        `🚫 Unauthorized attempt to authorize father by role: ${requesterRole}`
+      );
+      return NextResponse.json(
+        { error: "UNAUTHORIZED_GOVERNANCE" },
+        { status: 403 }
+      );
+    }
 
-const app =
-  getApps().length === 0
-    ? initializeApp({
-        credential: cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-        }),
-      })
-    : getApp();
+    // Parse the request
+    const body = await req.json();
+    const { uid, ...profile } = body;
 
-export const adminAuth = getAuth(app);
-export const adminDb = getFirestore(app);
+    if (!uid) {
+      return NextResponse.json({ error: "MISSING_UID" }, { status: 400 });
+    }
+
+    // Validate profile using Zod
+    const parseResult = SpiritualFatherSchema.safeParse(profile);
+    if (!parseResult.success) {
+      return NextResponse.json(
+        { error: "INVALID_PROFILE", details: parseResult.error.format() },
+        { status: 400 }
+      );
+    }
+
+    // Execute authorization
+    const result = await governanceService.authorizeSpiritualFather(
+      uid,
+      parseResult.data
+    );
+    if (!result.ok) {
+      return NextResponse.json({ error: result.errorMessage }, { status: 500 });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      message: "FATHER_AUTHORIZED_SUCCESSFULLY",
+    });
+  } catch (error) {
+    console.error("❌ Critical Governance API Error:", error);
+    return NextResponse.json(
+      { error: "INTERNAL_SERVER_ERROR" },
+      { status: 500 }
+    );
+  }
+}
