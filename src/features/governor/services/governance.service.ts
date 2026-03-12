@@ -27,21 +27,27 @@ export type GovernanceActionResult =
 
 export const governanceService = {
   async authorizeSpiritualFather(
-    authUid: string,
+    eotcUid: string, // Renamed from authUid to be clear this is the EOTC-ID
     profile: SpiritualFatherProfile
   ): Promise<GovernanceActionResult> {
     try {
-      // 1. Grant Authority in Auth (Custom Claims)
-      await adminAuth.setCustomUserClaims(authUid, { role: USER_ROLES.FATHER });
+      /**
+       * Note: We are NOT calling setCustomUserClaims here.
+       * Because the Father hasn't created his password/account yet,
+       * there is no record in Firebase Auth to attach claims to.
+       */
 
-      // 2. Register in the Sanctuary (Firestore Admin)
-      const fatherRef = adminDb.collection(COLLECTIONS.FATHERS).doc(authUid);
+      // 1. Register in the Sanctuary (Firestore Admin)
+      // Using the eotcUid (EOTC-...) as the Document ID
+      const fatherRef = adminDb.collection(COLLECTIONS.FATHERS).doc(eotcUid);
 
       await fatherRef.set(
         {
           ...profile,
+          eotcUid: eotcUid,
           role: USER_ROLES.FATHER,
           isApproved: true,
+          accountClaimed: false, // NEW: Tracks if the father has set his password yet
           accessGrantedAt: FieldValue.serverTimestamp(),
           lastStatusUpdate: FieldValue.serverTimestamp(),
         },
@@ -49,25 +55,40 @@ export const governanceService = {
       );
 
       return { ok: true };
-    } catch (error) {
-      console.error("GOVERNANCE_ERROR:", error);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+      console.error("GOVERNANCE_ERROR:", message);
       return { ok: false, errorMessage: "AUTHORIZATION_FAILED" };
     }
   },
 
   async suspendSpiritualFatherAccess(
-    authUid: string
+    eotcUid: string
   ): Promise<GovernanceActionResult> {
     try {
-      await adminAuth.setCustomUserClaims(authUid, { role: null });
-      const fatherRef = adminDb.collection(COLLECTIONS.FATHERS).doc(authUid);
+      /**
+       * When suspending, we check if they have a linked Auth account.
+       * If they do, we remove the role. If not, we just update the DB.
+       */
+      const fatherRef = adminDb.collection(COLLECTIONS.FATHERS).doc(eotcUid);
+      const doc = await fatherRef.get();
+      const data = doc.data();
+
+      // If the account was already claimed/linked to an Auth UID, remove claims
+      if (data?.authUid) {
+        await adminAuth.setCustomUserClaims(data.authUid, { role: null });
+      }
+
       await fatherRef.update({
         isApproved: false,
         suspendedAt: FieldValue.serverTimestamp(),
         lastStatusUpdate: FieldValue.serverTimestamp(),
       });
       return { ok: true };
-    } catch (error) {
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "SUSPENSION_FAILED";
+      console.error("SUSPENSION_ERROR:", message);
       return { ok: false, errorMessage: "SUSPENSION_FAILED" };
     }
   },
