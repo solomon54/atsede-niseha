@@ -92,4 +92,53 @@ export const governanceService = {
       return { ok: false, errorMessage: "SUSPENSION_FAILED" };
     }
   },
+
+  /**
+   * Fetches all registered Fathers.
+   * Maps Firestore Timestamps to ISO strings for frontend compatibility.
+   */
+  async getFathers() {
+    try {
+      const snapshot = await adminDb
+        .collection(COLLECTIONS.FATHERS)
+        .orderBy("accessGrantedAt", "desc")
+        .get();
+
+      const data = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        accessGrantedAt:
+          doc.data().accessGrantedAt?.toDate?.()?.toISOString() || null,
+      }));
+
+      return { ok: true, data };
+    } catch (error: unknown) {
+      console.error("GET_FATHERS_ERROR:", error);
+      return { ok: false, errorMessage: "አባቶችን መጫን አልተቻለም" };
+    }
+  },
+
+  /**
+   * Fetches all registered Students.
+   * Assuming a "Students" collection exists following the same pattern.
+   */
+  async getStudents() {
+    try {
+      const snapshot = await adminDb
+        .collection("Students")
+        .orderBy("createdAt", "desc")
+        .get();
+
+      const data = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
+      }));
+
+      return { ok: true, data };
+    } catch (error: unknown) {
+      console.error("GET_STUDENTS_ERROR:", error);
+      return { ok: false, errorMessage: "ተማሪዎችን መጫን አልተቻለም" };
+    }
+  },
 };

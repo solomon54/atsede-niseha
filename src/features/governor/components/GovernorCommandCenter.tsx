@@ -5,7 +5,11 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
 import { FiActivity, FiDatabase, FiUserPlus } from "react-icons/fi";
 
-import { DirectoryRecord } from "@/shared/types";
+import {
+  ConfessorRecord,
+  DirectoryRecord,
+  StudentRecord,
+} from "@/shared/types";
 
 import AuthorizeFathersForm from "./AuthorizeFathersForm";
 import UnifiedDirectory from "./UnifiedDirectory";
@@ -19,6 +23,16 @@ export default function GovernorCommandCenter({
 }) {
   const [view, setView] = useState<ViewMode>("REGISTRY");
 
+  // FINAL FIX: Use Type Predicates to safely split the data
+  // This tells TS: "If role is FATHER, this item IS a ConfessorRecord"
+  const fathers = initialData.filter(
+    (item): item is ConfessorRecord => item.role === "FATHER"
+  );
+
+  const students = initialData.filter(
+    (item): item is StudentRecord => item.role === "STUDENT"
+  );
+
   const tabs = [
     { id: "REGISTRY", label: "ምዝገባ", en: "Registry", icon: <FiUserPlus /> },
     { id: "LEDGER", label: "መዝገብ", en: "Ledger", icon: <FiDatabase /> },
@@ -27,7 +41,6 @@ export default function GovernorCommandCenter({
 
   return (
     <div className="space-y-8">
-      {/* Tab Navigation */}
       <div className="flex p-1.5 bg-slate-100/80 rounded-2xl w-fit mx-auto border border-slate-200 shadow-inner">
         {tabs.map((tab) => (
           <button
@@ -49,7 +62,6 @@ export default function GovernorCommandCenter({
         ))}
       </div>
 
-      {/* Tab Content */}
       <div className="relative min-h-[600px]">
         <AnimatePresence mode="wait">
           <motion.div
@@ -63,9 +75,14 @@ export default function GovernorCommandCenter({
                 <AuthorizeFathersForm />
               </div>
             )}
+
             {view === "LEDGER" && (
-              <UnifiedDirectory initialData={initialData} />
+              <UnifiedDirectory
+                initialFathers={fathers}
+                initialStudents={students}
+              />
             )}
+
             {view === "LOGS" && (
               <div className="text-center py-20 opacity-30 font-black tracking-widest uppercase text-xs">
                 Coming Soon: System Audit Logs

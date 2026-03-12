@@ -23,36 +23,80 @@ export const dynamic = "force-dynamic";
 
 async function getDashboardData() {
   try {
-    const [fSnap, sSnap, listSnap] = await Promise.all([
-      adminDb.collection("Fathers").count().get(),
-      adminDb.collection("Students").count().get(),
-      adminDb
-        .collection("Fathers")
-        .orderBy("createdAt", "desc")
-        .limit(100)
-        .get(),
-    ]);
+    // 1. Fetching counts and initial registry lists in parallel
+    const [fCountSnap, sCountSnap, fathersListSnap, studentsListSnap] =
+      await Promise.all([
+        adminDb.collection("Fathers").count().get(),
+        adminDb.collection("Students").count().get(),
+        adminDb
+          .collection("Fathers")
+          .orderBy("accessGrantedAt", "desc")
+          .limit(100)
+          .get(),
+        adminDb
+          .collection("Students")
+          .orderBy("accessGrantedAt", "desc")
+          .limit(100)
+          .get(),
+      ]);
 
-    const initialData: DirectoryRecord[] = listSnap.docs.map((doc) => {
-      const data = doc.data();
-      return {
-        uid: doc.id,
-        fullName: data.fullName || "ያልታወቀ ስም",
-        diocese: data.diocese || "ያልተጠቀሰ",
-        status: data.status || "PENDING",
-        role: "CONFESSOR",
-        createdAt:
-          data.createdAt?.toDate?.()?.toISOString() || new Date().toISOString(),
-      } as DirectoryRecord;
-    });
+    // 2. Mapping Fathers (ConfessorRecord)
+    const initialFathers: DirectoryRecord[] = fathersListSnap.docs.map(
+      (doc) => {
+        const data = doc.data();
+        return {
+          uid: doc.id,
+          eotcUid: data.eotcUid || doc.id,
+          fullName: data.fullName || "ያልታወቀ ስም",
+          diocese: data.diocese || "ያልተጠቀሰ",
+          status: data.status || "PENDING",
+          role: "FATHER",
+
+          title: data.title || "ቀሲስ",
+          parish: data.parish || "ያልተጠቀሰ",
+          phone: data.phone || "N/A",
+          email: data.email || "N/A",
+          academics: data.academics || "N/A",
+          languages: data.languages || [],
+          photoUrl: data.photoUrl || null,
+          accountClaimed: data.accountClaimed ?? false,
+          createdAt:
+            data.accessGrantedAt?.toDate?.()?.toISOString() ||
+            new Date().toISOString(),
+        } as DirectoryRecord;
+      }
+    );
+
+    // 3. Mapping Students (StudentRecord) - Tracking Academic Year
+    const initialStudents: DirectoryRecord[] = studentsListSnap.docs.map(
+      (doc) => {
+        const data = doc.data();
+        return {
+          uid: doc.id,
+          eotcUid: data.eotcUid || doc.id,
+          fullName: data.fullName || "ያልታወቀ ስም",
+          diocese: data.diocese || "ያልተጠቀሰ",
+          status: data.status || "PENDING",
+          role: "STUDENT",
+          university: data.university || "ያልታወቀ",
+          department: data.department || "ያልተገለጸ",
+          academicYear: data.academicYear || 1,
+          accountClaimed: data.accountClaimed ?? false,
+          createdAt:
+            data.createdAt?.toDate?.()?.toISOString() ||
+            new Date().toISOString(),
+        } as DirectoryRecord;
+      }
+    );
 
     return {
-      fathersCount: fSnap.data().count,
-      studentsCount: sSnap.data().count,
-      initialData,
+      fathersCount: fCountSnap.data().count,
+      studentsCount: sCountSnap.data().count,
+      initialData: [...initialFathers, ...initialStudents], // Combined registry
       error: null,
     };
   } catch (err) {
+    console.error("DASHBOARD_FETCH_ERROR:", err);
     return {
       fathersCount: 0,
       studentsCount: 0,
