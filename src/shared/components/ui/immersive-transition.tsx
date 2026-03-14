@@ -1,15 +1,38 @@
 // src/shared/components/ui/immersive-transition.tsx
 "use client";
 
+import { HTMLMotionProps, motion } from "framer-motion";
+
+import { cn } from "@/shared/utils/utils";
+
+/**
+ * Production-grade Transition Wrapper
+ * Extends HTMLMotionProps to support all motion props (className, initial, animate, etc.)
+ */
+interface ImmersiveTransitionProps extends HTMLMotionProps<"div"> {
+  children: React.ReactNode;
+}
+
 export function ImmersiveTransition({
   children,
-}: {
-  children: React.ReactNode;
-}) {
-  // We keep the container but remove the motion logic for now
+  className,
+  ...props
+}: ImmersiveTransitionProps) {
   return (
-    <div className="flex-1 w-full max-w-5xl mx-auto px-4 pt-8 pb-32">
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -5 }}
+      transition={{
+        duration: 0.4,
+        ease: "easeOut",
+      }}
+      className={cn(
+        "flex-1 w-full max-w-7xl mx-auto px-0 pt-0 pb-12",
+        className
+      )}
+      {...props}>
       {children}
-    </div>
+    </motion.div>
   );
 }
