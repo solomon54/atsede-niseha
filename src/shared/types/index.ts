@@ -1,8 +1,11 @@
-//src/shared/types/index.ts
+// src/shared/types/index.ts
 import React from "react";
 
-/** * PRESERVED: the existing types used throughout the app
+/**
+ * PRESERVED: UI & Component Props
+ * Used for the high-end dashboard components
  */
+
 export interface StudentInput {
   secularName: string;
   christianName?: string;
@@ -34,27 +37,53 @@ export interface MetricCardProps {
   variant?: "dark" | "light";
 }
 
-export type SystemRole = "CONFESSOR" | "HELPER" | "LOG" | "FATHER" | "STUDENT";
-
-/** * ADJUSTED: Unified Directory Base
- * We keep 'uid' for compatibility but acknowledge 'eotcUid' is our database key.
+/**
+ * SYSTEM ROLES
  */
+
+export type SystemRole =
+  | "GOVERNOR"
+  | "FATHER"
+  | "STUDENT"
+  | "HELPER"
+  | "LOG"
+  | "CONFESSOR";
+
+/**
+ * BASE DIRECTORY RECORD
+ */
+
 export interface BaseDirectoryRecord {
   uid: string;
   eotcUid?: string;
   fullName: string;
+  secularName?: string;
+  christianName?: string;
+  email?: string;
+  photoUrl?: string;
   diocese: string;
   role: SystemRole;
   status: "ACTIVE" | "PENDING" | "INACTIVE";
   isApproved?: boolean;
   createdAt: Date | string;
   accountClaimed: boolean;
+  lastLogin?: Date | string;
 }
 
-/** * ADDED/EXTENDED: Specific Records
+/**
+ * SPECIFIC DIRECTORY RECORDS
  */
-export interface ConfessorRecord extends BaseDirectoryRecord {
-  role: "FATHER";
+
+export interface GovernorRecord extends BaseDirectoryRecord {
+  role: "GOVERNOR";
+  accessLevel: "MASTER" | "MODERATOR";
+  permissions: string[];
+  authUid: string;
+  email: string;
+}
+
+export interface FatherRecord extends BaseDirectoryRecord {
+  role: "FATHER" | "CONFESSOR";
   title: string;
   parish: string;
   academics: string;
@@ -63,17 +92,14 @@ export interface ConfessorRecord extends BaseDirectoryRecord {
   phone: string;
   email: string;
   photoUrl?: string;
-  accountClaimed: boolean;
 }
 
-//  the StudentRecord with Academic Year tracking
 export interface StudentRecord extends BaseDirectoryRecord {
   role: "STUDENT";
   university: string;
   department: string;
   academicYear: number;
   spiritualFatherId: string;
-  accountClaimed: boolean;
 }
 
 export interface HelperRecord extends BaseDirectoryRecord {
@@ -87,12 +113,97 @@ export interface GovernanceLog extends BaseDirectoryRecord {
   governorId: string;
 }
 
-/** * Combined Directory Type
+/**
+ * AUTHENTICATION PAYLOADS
  */
+
+export interface AuthHandshakePayload {
+  eotcUid: string;
+  password?: string;
+  newPassword?: string;
+}
+
+/**
+ * AUTH RESPONSE (From File 2)
+ */
+
+export interface AuthResponse {
+  success: boolean;
+  role: SystemRole;
+  target: string;
+  record: DirectoryRecord;
+  token?: string;
+}
+
+/**
+ * GATEWAY RESPONSE
+ */
+
+export type GatewayResponse =
+  | {
+      success: true;
+      action: "LOGIN";
+      role: "GOVERNOR" | "FATHER" | "STUDENT";
+      eotcUid: string;
+      displayName: string;
+      email?: string;
+      photoUrl?: string;
+      title?: string;
+      diocese?: string;
+      parish?: string;
+      university?: string;
+    }
+  | {
+      success: true;
+      action: "CLAIM";
+      role: "FATHER";
+      data: {
+        eotcUid: string;
+        displayName: string;
+        email: string;
+        fullName: string;
+        title: string;
+        diocese: string;
+        parish: string;
+        photoUrl?: string;
+        secularName?: string;
+      };
+    }
+  | {
+      success: true;
+      action: "CLAIM";
+      role: "STUDENT";
+      data: {
+        eotcUid: string;
+        displayName: string;
+        fullName: string;
+        university: string;
+        diocese: string; // Added
+        christianName?: string;
+        secularName?: string;
+        email?: string;
+        photoUrl?: string;
+      };
+    }
+  | {
+      success: false;
+      error: string;
+      code: "NOT_FOUND" | "INACTIVE" | "UNAUTHORIZED" | "SERVER_ERROR";
+    };
+
+/**
+ * COMBINED DIRECTORY TYPES
+ */
+
 export type DirectoryRecord =
-  | ConfessorRecord
+  | GovernorRecord
+  | FatherRecord
   | StudentRecord
   | HelperRecord
   | GovernanceLog;
 
-export type FatherRecord = ConfessorRecord;
+/**
+ * ALIASES
+ */
+
+export type ConfessorRecord = FatherRecord;
