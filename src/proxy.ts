@@ -1,25 +1,15 @@
 //src/proxy.ts
-import { importX509, jwtVerify } from "jose";
+
 import { NextRequest, NextResponse } from "next/server";
 
-import { adminDb } from "@/services/firebase/admin";
-import { FirebaseIdTokenPayload } from "@/shared/types/shared.types.auth";
+import { adminAuth, adminDb } from "@/services/firebase/admin";
 
 /**
- * SOVEREIGN AUTHENTICATION CONFIGURATION
+ * SOVEREIGN GATEKEEPER CONFIGURATION
  */
 const PUBLIC_ROUTES_PREFIXES = ["/login", "/invite", "/public/", "/biranna/"];
-const FIREBASE_CERT_URL =
-  "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+const SESSION_COOKIE_NAME = "atsede_session";
 
-interface RelationResult {
-  valid: boolean;
-  since: Date;
-}
-
-/**
- * MIDDLEWARE CONFIG
- */
 export const config = {
   matcher: [
     "/governor/:path*",
@@ -33,118 +23,89 @@ export const config = {
   ],
 };
 
-/**
- * SOVEREIGN GATEKEEPER
- */
 export default async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // 1. Bypass check for public routes
   if (PUBLIC_ROUTES_PREFIXES.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
   }
 
-  // 2. Token extraction (ALIGNED with auth.service.ts cookie name)
-  const token = req.cookies.get("session_token")?.value;
-  if (!token) {
-    return NextResponse.redirect(new URL("/login", req.url));
-  }
+  const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+  if (!token) return NextResponse.redirect(new URL("/", req.url));
 
   try {
-    // 3. Get Certificate for Firebase Verification
-    const header = JSON.parse(atob(token.split(".")[0]));
-    const certsRes = await fetch(FIREBASE_CERT_URL, {
-      next: { revalidate: 3600 },
-    });
-    const certs = await certsRes.json();
-    const x509Cert = certs[header.kid];
+    // Verified Pro Logic: Uses SDK for Session Cookies
+    const decodedToken = await adminAuth.verifySessionCookie(token, true);
 
-    if (!x509Cert) throw new Error("No matching Firebase certificate found");
+    const userId = decodedToken.uid;
+    const role = (decodedToken.role as string) || "USER";
+    const linkedFatherId = decodedToken.father as string | undefined;
 
-    // 4. Cryptographic Verification
-    const PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
-
-    const { payload } = await jwtVerify(
-      token,
-      await importX509(x509Cert, "RS256"),
-      {
-        issuer: `https://securetoken.google.com/${PROJECT_ID}`,
-        audience: PROJECT_ID,
-      }
+    const relation = await validateSanctuaryAccess(
+      userId,
+      linkedFatherId,
+      role
     );
 
-    const fbPayload = payload as FirebaseIdTokenPayload;
-
-    // Extracting Identity and Role
-    const childId = fbPayload.uid || (fbPayload.sub as string);
-    const fatherId = fbPayload.father as string;
-    const role = fbPayload.role || "USER";
-
-    if (!childId) throw new Error("Incomplete session payload");
-
-    // 5. Sovereignty Check: Relationship Validation (REAL DB CHECK)
-    const relation = await isChildOfFather(childId, fatherId, role);
-
     if (!relation.valid) {
-      console.error(`🔒 Access Denied: No link for ${role} ${childId}`);
+      console.error(`🔒 Access Denied: Role [${role}] for UID [${userId}]`);
       return NextResponse.redirect(
         new URL("/unauthorized?reason=no-relation", req.url)
       );
     }
 
-    // 6. Header Injection for Server Components
     const requestHeaders = new Headers(req.headers);
-    requestHeaders.set("x-ats-user-id", childId);
-    if (fatherId) requestHeaders.set("x-ats-father-id", fatherId);
+    requestHeaders.set("x-ats-user-id", userId);
     requestHeaders.set("x-ats-role", role);
+    if (linkedFatherId) requestHeaders.set("x-ats-father-id", linkedFatherId);
 
-    return NextResponse.next({
-      request: { headers: requestHeaders },
-    });
+    return NextResponse.next({ request: { headers: requestHeaders } });
   } catch (err) {
-    console.warn("⚠️ Security Alert: Invalid or Expired Session", err);
-
     const response = NextResponse.redirect(
       new URL("/login?expired=1", req.url)
     );
-    response.cookies.delete("session_token");
+    response.cookies.delete(SESSION_COOKIE_NAME);
     return response;
   }
 }
 
-/**
- * REAL RELATIONSHIP VALIDATOR
- * Connects directly to the 'Students' collection.
- */
-async function isChildOfFather(
-  childId: string,
-  fatherId: string | undefined,
+async function validateSanctuaryAccess(
+  userId: string,
+  fatherIdInToken: string | undefined,
   role: string
-): Promise<RelationResult> {
-  // 1. System Governor has absolute bypass
-  if (role === "GOVERNOR") {
-    return { valid: true, since: new Date() };
-  }
+) {
+  if (role === "GOVERNOR") return { valid: true };
 
-  // 2. Real Firestore check for Students/Fathers relationship
   try {
-    const studentDoc = await adminDb.collection("Students").doc(childId).get();
+    if (role === "FATHER") {
+      // PRO FIX: Try direct ID first, then fallback to field query
+      const fatherDoc = await adminDb.collection("Fathers").doc(userId).get();
+      let data = fatherDoc.data();
 
-    if (!studentDoc.exists) {
-      return { valid: false, since: new Date() };
+      if (!fatherDoc.exists) {
+        const query = await adminDb
+          .collection("Fathers")
+          .where("uid", "==", userId)
+          .limit(1)
+          .get();
+        if (query.empty) return { valid: false };
+        data = query.docs[0].data();
+      }
+
+      return {
+        valid: data?.status === "ACTIVE" && data?.isApproved === true,
+      };
     }
 
-    const studentData = studentDoc.data();
+    if (role === "STUDENT") {
+      const studentDoc = await adminDb.collection("Students").doc(userId).get();
+      if (!studentDoc.exists) return { valid: false };
+      const data = studentDoc.data();
+      return { valid: data?.status === "ACTIVE" };
+    }
 
-    // Check if the ecclesiastical fatherId matches the token
-    const isValid = studentData?.fatherId === fatherId;
-
-    return {
-      valid: isValid,
-      since: studentData?.joinedAt?.toDate() || new Date(),
-    };
-  } catch (error) {
-    console.error("❌ Sanctuary Ledger Access Error:", error);
-    return { valid: false, since: new Date() };
+    return { valid: false };
+  } catch {
+    return { valid: false };
   }
 }
