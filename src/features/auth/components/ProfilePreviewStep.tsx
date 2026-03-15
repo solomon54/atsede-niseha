@@ -137,9 +137,21 @@ export default function ProfilePreviewStep({
 
               <button
                 onClick={onConfirm}
-                className="w-full py-6 bg-slate-950 text-white rounded-2xl text-xs font-black uppercase tracking-[0.3em] shadow-xl md:shadow-[0_20px_40px_-10px_rgba(0,0,0,0.3)] active:scale-[0.98] transition-transform cursor-pointer">
-                <span>አዎ እኔ ነኝ - ቀጥል</span>
-                <CheckCircle2 className="w-4 h-4 text-amber-400" />
+                className={cn(
+                  "group relative w-full py-6 bg-slate-950 text-white rounded-2xl overflow-hidden transition-all active:scale-[0.98] cursor-pointer",
+                  "shadow-xl md:shadow-[0_20px_50px_-10px_rgba(0,0,0,0.5)]",
+                  "flex items-center justify-center gap-4"
+                )}>
+                {/* Sublte Hover Glow */}
+                <div className="absolute inset-0 bg-linear-to-r from-amber-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                <div className="relative z-10 p-1 bg-amber-400/10 rounded-full border border-amber-400/20 group-hover:border-amber-400/50 transition-colors">
+                  <CheckCircle2 className="w-4 h-4 text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.4)]" />
+                </div>
+
+                <span className="relative z-10 text-xs font-black uppercase tracking-[0.3em] ml-4">
+                  አዎ እኔ ነኝ - ቀጥል
+                </span>
               </button>
             </div>
           </div>
