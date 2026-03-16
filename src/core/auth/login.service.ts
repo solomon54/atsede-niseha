@@ -12,11 +12,15 @@ const LoginSchema = z.object({
   password: z.string().min(8),
 });
 
+/**
+ * Authenticates user and synchronizes database state with Auth Custom Claims.
+ * This enables the Middleware to extract 'role' and 'eotcUid' directly from the session.
+ */
 export async function loginUser(raw: unknown) {
   const body = LoginSchema.parse(raw);
   const id = body.eotcUid.trim().toUpperCase();
 
-  // 1. Locate account
+  // 1. Concurrent Identity Lookup across all potential roles
   const [govQuery, fatherQuery, studentQuery] = await Promise.all([
     adminDb.collection("Governors").where("eotcUid", "==", id).limit(1).get(),
     adminDb.collection("Fathers").where("eotcUid", "==", id).limit(1).get(),
@@ -34,15 +38,19 @@ export async function loginUser(raw: unknown) {
   if (!doc) throw new AuthError("መለያ አልተገኘም", "ACCOUNT_NOT_FOUND", 404);
 
   const record = doc.data();
+  const role = !govQuery.empty
+    ? "GOVERNOR"
+    : !fatherQuery.empty
+    ? "FATHER"
+    : "STUDENT";
 
+  // 2. State Validation
   if (!record.accountClaimed)
     throw new AuthError("መለያው አልተነሳም", "ACCOUNT_NOT_CLAIMED", 403);
   if (!record.email)
     throw new AuthError("የኢሜይል አድራሻ አልተገኘም", "CONFIG_ERROR", 500);
 
-  /**
-   * 2. Verify password
-   */
+  // 3. Verify Credentials via Identity Toolkit
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
   const authResponse = await fetch(
     `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
@@ -58,22 +66,22 @@ export async function loginUser(raw: unknown) {
   );
 
   const authData = await authResponse.json();
-
-  if (!authResponse.ok) {
+  if (!authResponse.ok)
     throw new AuthError("የይለፍ ቃል ስህተት ነው", "INVALID_LOGIN", 401);
-  }
 
-  // authData.idToken is the "Valid Firebase ID Token" the error was asking for
-  const idToken = authData.idToken;
-  const uid = authData.localId;
+  const { idToken, localId: uid } = authData;
 
-  // 3. Verify Role Claims
-  const user = await adminAuth.getUser(uid);
-  const role = user.customClaims?.role;
+  /**
+   * 4. Custom Claims Injection
+   * Hydrates the ID Token with metadata for Middleware performance.
+   */
+  await adminAuth.setCustomUserClaims(uid, {
+    role,
+    eotcUid: id,
+    father: record.fatherId || null,
+  });
 
-  if (!role) throw new AuthError("የመግቢያ ፈቃድ የሎትም", "ROLE_MISSING", 403);
-
-  // 4. Finalize Session - PASS THE idToken INSTEAD OF UID
+  // 5. Establish Session (Passes idToken for cookie generation)
   await createSession(idToken);
 
   return {
