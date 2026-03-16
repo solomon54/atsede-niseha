@@ -1,380 +1,294 @@
-// //src/features/father/components/RegisterChildForm.tsx
+// src/features/father/components/RegisterChildForm.tsx
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import {
-  AlertTriangle,
-  Camera,
-  Church,
-  Globe,
-  RefreshCw,
-  Trash2,
-  UserPlus,
-} from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
+import { Church, RefreshCcw, UserPlus } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { SubmitHandler, useForm } from "react-hook-form";
 
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
+import { cn } from "@/shared/utils/utils";
 
-const schema = z.object({
-  fullToken: z.string(),
-  secularName: z.string().min(3, "ሙሉ ስም ያስፈልጋል"),
-  christianName: z.string().min(2, "የክርስትና ስም ያስፈልጋል"),
-  gender: z.enum(["MALE", "FEMALE"], { required_error: "ጾታ ይምረጡ" }),
-  birthPlace: z.string().min(2, "የትውልድ ቦታ ያስፈልጋል"),
-  spiritualTitle: z.enum(["ምዕመን", "ዲያቆን", "መዘምር"]),
-  university: z.string().min(2, "ዩኒቨርሲቲ ያስገቡ"),
-  department: z.string().min(2, "ትምህርት ክፍል ያስገቡ"),
-  entryYear: z.coerce.number().min(2000).max(2100),
-  phone: z.string().startsWith("+251", "በ +251 ይጀምሩ").min(13, "ልክ ያልሆነ ስልክ"),
-  email: z.string().email("ትክክለኛ ኢሜይል ያስገቡ").or(z.literal("")),
-  language: z.string().min(1, "ቋንቋ ይምረጡ"),
-  customLanguage: z.string().optional(),
-});
+import {
+  RegisterChildFormData,
+  RegisterChildSchema,
+} from "../services/validators";
+import {
+  AcademicSection,
+  ConnectSection,
+  IdentitySection,
+} from "./FormModules";
+import { PortraitPicker } from "./PortraitPicker";
+import { TokenSanctuary } from "./TokenSanctuary";
 
-type FormData = z.infer<typeof schema>;
+/**
+ * Prop definition for the Registration form.
+ * Includes fatherId for database pathing and fatherEotcId for token mixing.
+ */
+interface RegisterChildFormProps {
+  fatherId: string;
+  fatherEotcId: string;
+}
 
-const COMMON_LANGS = [
-  "አማርኛ",
-  "ግዕዝ",
-  "Oromiffa",
-  "Tigrinya",
-  "Hadiyissa",
-  "English",
-  "OTHER",
-];
-
-export default function RegisterChildForm({ fatherId }: { fatherId: string }) {
+/**
+ * RegisterChildForm: Handles the creation of a new Spiritual Child profile.
+ * Implements a "Covenant Mixer" that interleaves Father and Child IDs.
+ * Features:
+ * - Precise Hex-Interleaving for inter-generational token safety.
+ * - Cloudinary image upload via local API bridge.
+ * - Modular form sections for Identity, Academic, and Connectivity.
+ */
+export default function RegisterChildForm({
+  fatherId,
+  fatherEotcId,
+}: RegisterChildFormProps) {
+  /** Local state for portrait preview and file management */
   const [preview, setPreview] = useState<string | null>(null);
-  const [showDeleteWarning, setShowDeleteWarning] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [status, setStatus] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
+  /** Initialize form with react-hook-form + zod validation */
   const {
     register,
     handleSubmit,
     setValue,
     watch,
-    formState: { errors },
-  } = useForm<FormData>({
-    resolver: zodResolver(schema),
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<RegisterChildFormData>({
+    resolver: zodResolver(RegisterChildSchema),
+    mode: "onChange",
     defaultValues: {
       phone: "+251",
-      entryYear: new Date().getFullYear(),
-      spiritualTitle: "ምዕመን",
-      language: "አማርኛ",
+      spiritualTitle: "",
+      language: "",
+      fullToken: "",
+      // Initialize birthDate to resolve 'unknown' type errors in the resolver
+      birthDate: { year: 0, month: 1, day: 1 },
     },
   });
 
   const currentToken = watch("fullToken");
-  const selectedLang = watch("language");
 
-  const generateFullToken = () => {
-    const childHex = Math.random().toString(16).slice(2, 10).toUpperCase();
-    // Safety check: only prefix if fatherId exists
-    const prefix = fatherId ? `EOTC-${fatherId}-` : "EOTC-PENDING-";
-    setValue("fullToken", `${prefix}${childHex}`);
+  /**
+   * THE COVENANT MIXER LOGIC
+   * Generates the 12-character Covenant Key.
+   * Logic: Interleaves the first 4 chars of Father's Hex with a 4-char Child Seed,
+   * then appends the remaining 4 chars of the Father's Hex.
+   */
+  const generateFullToken = useCallback(() => {
+    if (!fatherEotcId) {
+      setValue("fullToken", "EOTC-PENDING");
+      return;
+    }
+
+    // Extract the Hex portion of the EOTC ID (removes prefix)
+    const fCore = fatherEotcId.replace("EOTC-", "").toUpperCase();
+    // Generate a unique 4-character seed for the child
+    const cSeed = Math.random().toString(16).slice(2, 6).toUpperCase();
+
+    let mixed = "";
+    // Step 1: Interleave (FatherChar + ChildChar) for the first 4 pairs
+    for (let i = 0; i < 4; i++) {
+      mixed += (fCore[i] || "0") + (cSeed[i] || "0");
+    }
+    // Step 2: Append the final 4 characters of the Father's Core Hex
+    mixed += fCore.slice(4, 8);
+
+    setValue("fullToken", `EOTC-${mixed}`);
+  }, [fatherEotcId, setValue]);
+
+  /** Ensure token is generated on mount or when context changes */
+  useEffect(() => {
+    if (!currentToken) generateFullToken();
+  }, [generateFullToken, currentToken]);
+
+  /** Debug log for validation errors in development */
+  useEffect(() => {
+    if (Object.keys(errors).length > 0) {
+      console.warn("❌ Form Validation Errors:", errors);
+    }
+  }, [errors]);
+
+  const handlePhotoSelect = (selectedFile: File) => {
+    setFile(selectedFile);
+    setPreview(URL.createObjectURL(selectedFile));
   };
 
-  useEffect(() => {
-    generateFullToken();
-  }, [fatherId]);
-
-  const handleRemoveImage = () => {
+  const removePhoto = () => {
+    setFile(null);
     setPreview(null);
-    setShowDeleteWarning(false);
-    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  /**
+   * Primary Submission Handler
+   * Bridges the UI data to the server-side Firestore orchestration.
+   */
+  const onSubmit: SubmitHandler<RegisterChildFormData> = async (data) => {
+    setStatus(null);
+    try {
+      let photoUrl = "";
+
+      // Step 1: Portrait Upload to Cloudinary
+      if (file) {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("type", "student-portrait");
+
+        const uploadRes = await fetch("/api/upload", {
+          method: "POST",
+          body: fd,
+        });
+        if (!uploadRes.ok) throw new Error("የምስል ጭነት አልተሳካም (Upload failed)");
+
+        const uploadData = await uploadRes.json();
+        photoUrl = uploadData.url;
+      }
+
+      // Step 2: Persist complete record to Backend
+      const res = await fetch("/api/father/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fatherId, // Auth UID for database pathing
+          data: { ...data, photoUrl },
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "ምዝገባው አልተሳካም (Registration failed)");
+      }
+
+      // Step 3: Cleanup and notification
+      setStatus({ type: "success", text: "የልጁ መረጃ በክብር ተመዝግቧል ✞" });
+      reset();
+      removePhoto();
+      generateFullToken();
+    } catch (err: any) {
+      setStatus({ type: "error", text: err.message || "የኔትወርክ ችግር ተፈጥሯል" });
+    }
   };
 
   return (
-    <div className="w-full max-w-md mx-auto lg:max-w-5xl p-2 md:p-6 mb-20">
-      <SanctuarySurface className="p-5 md:p-10 border-amber-200/40 shadow-2xl rounded-[2rem] md:rounded-[2.5rem] bg-white text-slate-900">
+    <div className="w-full min-h-screen bg-white md:bg-transparent p-0 md:p-4 mb-10">
+      <SanctuarySurface className="p-1 md:p-6 border-0 md:border shadow-none md:shadow-xl rounded-none md:rounded-[2rem]">
         <form
-          onSubmit={handleSubmit((d) => console.log(d))}
-          className="space-y-8">
-          <header className="flex flex-col items-center text-center space-y-3 pb-4 border-b border-slate-100">
-            <div className="p-3 bg-amber-50 rounded-full text-amber-600">
-              <Church size={28} />
+          onSubmit={handleSubmit(onSubmit)}
+          className="space-y-6 md:space-y-10">
+          {/* HEADER SECTION */}
+          <header className="flex flex-row items-center justify-between px-3 py-2 border-b border-slate-50">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 bg-amber-50 rounded-full text-amber-600">
+                <Church size={18} />
+              </div>
+              <h2 className="text-sm md:text-xl text-slate-600 font-black font-ethiopic">
+                የልጆች መዝገብ
+              </h2>
             </div>
-            <h2 className="text-2xl md:text-3xl font-black font-ethiopic">
-              የልጆች መዝገብ
-            </h2>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-              Ecclesiastical Onboarding
+            <p className="text-[8px] font-black text-amber-300 rounded-xl p-1 uppercase tracking-widest inline-block bg-slate-900">
+              Child Onboarding
             </p>
           </header>
 
-          {/* Token Display - Now Safe from 'slice' errors */}
-          <div className="bg-slate-900 p-5 md:p-6 rounded-2xl md:rounded-3xl text-center relative overflow-hidden">
-            <label className="text-[8px] font-black text-amber-500/60 uppercase tracking-widest mb-2 block">
-              Covenant Link
-            </label>
-            <div className="flex flex-wrap justify-center items-center gap-1 font-mono text-xs md:text-lg">
-              <span className="text-slate-400">
-                EOTC-{fatherId?.slice(0, 4) || "####"}...-
-              </span>
-              <span className="text-amber-400 font-black tracking-widest">
-                {currentToken?.split("-").pop()}
-              </span>
-              <button
-                title="Regenerate"
-                type="button"
-                onClick={generateFullToken}
-                className="ml-2 p-1.5 text-amber-500 hover:rotate-180 transition-transform">
-                <RefreshCw size={14} />
-              </button>
-            </div>
+          {/* TOKEN DISPLAY: Passing both IDs for visual context */}
+          <div className="px-2">
+            <TokenSanctuary
+              fatherEotcId={fatherEotcId}
+              currentToken={currentToken}
+              onRegenerate={generateFullToken}
+            />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
-            {/* Column 1: Identity */}
-            <div className="space-y-5">
-              <SectionTitle title="Identity" />
-              <Field label="የዓለም ስም" error={errors.secularName}>
-                <input
-                  {...register("secularName")}
-                  className="sanctuary-input"
-                  placeholder="Full Name"
-                />
-              </Field>
-              <Field label="የክርስትና ስም" error={errors.christianName}>
-                <input
-                  {...register("christianName")}
-                  className="sanctuary-input font-ethiopic"
-                  placeholder="ኃይለ ማርያም"
-                />
-              </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="ጾታ">
-                  <select {...register("gender")} className="sanctuary-input">
-                    <option value="MALE">ወንድ</option>
-                    <option value="FEMALE">ሴት</option>
-                  </select>
-                </Field>
-                <Field label="ማዕረግ">
-                  <select
-                    {...register("spiritualTitle")}
-                    className="sanctuary-input">
-                    <option value="ምዕመን">ምዕመን</option>
-                    <option value="ዲያቆን">ዲያቆን</option>
-                    <option value="መዘምር">መዘምር</option>
-                  </select>
-                </Field>
-              </div>
-            </div>
-
-            {/* Column 2: Academic */}
-            <div className="space-y-5">
-              <SectionTitle title="Academic" />
-              <Field label="ዩኒቨርሲቲ">
-                <input
-                  {...register("university")}
-                  className="sanctuary-input"
-                />
-              </Field>
-              <Field label="ትምህርት ክፍል">
-                <input
-                  {...register("department")}
-                  className="sanctuary-input"
-                />
-              </Field>
-              <Field label="መግቢያ ዓ.ም">
-                <input
-                  type="number"
-                  {...register("entryYear")}
-                  className="sanctuary-input"
-                />
-              </Field>
-            </div>
-
-            {/* Column 3: Contact & Language */}
-            <div className="space-y-5">
-              <SectionTitle title="Connect" />
-              <Field label="ስልክ" error={errors.phone}>
-                <input {...register("phone")} className="sanctuary-input" />
-              </Field>
-              <Field label="ኢሜይል" error={errors.email}>
-                <input
-                  {...register("email")}
-                  className="sanctuary-input"
-                  placeholder="soul@church.org"
-                />
-              </Field>
-
-              <div className="space-y-3">
-                <Field label="ቋንቋ (Language)">
-                  <select {...register("language")} className="sanctuary-input">
-                    {COMMON_LANGS.map((l) => (
-                      <option key={l} value={l}>
-                        {l}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-
-                {/* Conditional Manual Language Input */}
-                {selectedLang === "OTHER" && (
-                  <div className="animate-in slide-in-from-top-2 duration-300">
-                    <div className="relative">
-                      <Globe
-                        className="absolute left-3 top-3 text-amber-500"
-                        size={16}
-                      />
-                      <input
-                        {...register("customLanguage")}
-                        className="sanctuary-input pl-10 border-amber-300 bg-amber-50/30"
-                        placeholder="Specify Language..."
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
+          {/* FORM GRID: 3-Column layout for desktop */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-12 px-1">
+            <IdentitySection register={register} errors={errors} />
+            <AcademicSection register={register} errors={errors} />
+            <ConnectSection
+              register={register}
+              errors={errors}
+              watch={watch}
+              setValue={setValue}
+            />
           </div>
 
-          {/* Footer: Image Picker & Submit */}
-          <div className="pt-8 border-t border-slate-100 flex flex-col items-center gap-8">
-            <div className="w-full flex flex-col items-center gap-4">
-              <div className="relative group">
-                <div
-                  onClick={() => fileRef.current?.click()}
-                  className="w-28 h-28 rounded-[2rem] bg-slate-50 border-2 border-dashed border-slate-200 flex items-center justify-center cursor-pointer overflow-hidden shadow-inner transition-transform active:scale-95">
-                  {preview ? (
-                    <img
-                      src={preview}
-                      className="w-full h-full object-cover"
-                      alt="preview"
-                    />
-                  ) : (
-                    <Camera className="text-slate-300" size={32} />
-                  )}
-                </div>
+          {/* SUBMISSION BLOCK */}
+          <div className="pt-4 flex flex-col items-center gap-4 pb-6">
+            <PortraitPicker
+              preview={preview}
+              onSelect={handlePhotoSelect}
+              onRemove={removePhoto}
+            />
 
-                {preview && !showDeleteWarning && (
-                  <button
-                    type="button"
-                    onClick={() => setShowDeleteWarning(true)}
-                    className="absolute -top-2 -right-2 p-2 bg-red-500 text-white rounded-full shadow-lg hover:bg-red-600 transition-all scale-100 active:scale-90">
-                    <Trash2 size={14} />
-                  </button>
-                )}
-              </div>
-
-              {showDeleteWarning && (
-                <div className="w-full max-w-xs animate-in zoom-in-95 fade-in duration-200">
-                  <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl flex items-start gap-3">
-                    <AlertTriangle
-                      className="text-amber-600 shrink-0"
-                      size={18}
-                    />
-                    <div className="flex-1">
-                      <p className="text-[10px] font-bold text-amber-900 leading-tight">
-                        Remove portrait from ledger?
-                      </p>
-                      <div className="flex gap-4 mt-2">
-                        <button
-                          type="button"
-                          onClick={handleRemoveImage}
-                          className="text-[10px] font-black text-red-600 uppercase">
-                          Yes, Remove
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowDeleteWarning(false)}
-                          className="text-[10px] font-black text-slate-500 uppercase">
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {!preview && (
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                  Upload Portrait
-                </p>
-              )}
-            </div>
+            {status && (
+              <p
+                className={cn(
+                  "text-[10px] font-bold uppercase tracking-wider",
+                  status.type === "success"
+                    ? "text-emerald-600"
+                    : "text-red-600"
+                )}>
+                {status.text}
+              </p>
+            )}
 
             <button
               type="submit"
-              className="w-full py-5 bg-slate-900 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-amber-600 transition-all flex items-center justify-center gap-3 shadow-xl active:scale-95">
-              <UserPlus size={18} className="text-amber-400" /> የንስሐ ልጅ መዝግብ ✞
+              disabled={isSubmitting}
+              className={`
+                w-[95%] hover:bg-amber-600/75 py-4 rounded-xl font-black text-[10px] uppercase tracking-widest 
+                flex items-center justify-center gap-2
+                bg-slate-950 text-white hover:scale-105
+                focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-2
+                active:scale-95 active:bg-slate-800
+                cursor-pointer transition-all duration-300 ease-in-out
+                disabled:bg-slate-700 disabled:text-slate-300 disabled:cursor-not-allowed
+              `}>
+              {isSubmitting ? (
+                <RefreshCcw size={16} className="animate-spin text-amber-400" />
+              ) : (
+                <UserPlus size={16} className="text-amber-400" />
+              )}
+              {isSubmitting ? "በሂደት ላይ..." : "መዝግብ ✞"}
             </button>
           </div>
         </form>
       </SanctuarySurface>
 
-      <input
-        type="file"
-        ref={fileRef}
-        className="hidden"
-        accept="image/*"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) setPreview(URL.createObjectURL(f));
-        }}
-      />
-
-      <style jsx>{`
+      {/* Global CSS for modular form inputs */}
+      <style jsx global>{`
         .sanctuary-input {
           width: 100%;
-          padding: 0.75rem 1rem;
-          background: #ffffff;
-          border: 1.5px solid #e2e8f0;
-          border-radius: 0.75rem;
-          font-size: 16px; /* Prevents iOS auto-zoom */
+          padding: 0.75rem 0.85rem !important;
+          background: #f1f5f9;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          font-size: 11px !important;
           font-weight: 600;
           color: #0f172a;
           outline: none;
-          appearance: none;
-          transition: all 0.2s ease;
         }
-        .sanctuary-input:focus {
-          border-color: #f59e0b;
-          background: #fff;
-          box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.08);
+
+        label {
+          font-size: 9px !important;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          margin-bottom: 2px !important;
+          display: block;
+          color: #64748b;
         }
-        select.sanctuary-input {
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
-          background-repeat: no-repeat;
-          background-position: right 0.75rem center;
-          background-size: 1rem;
+
+        @media (max-width: 768px) {
+          .sanctuary-surface {
+            border-radius: 0 !important;
+            margin: 0 !important;
+            width: 100vw !important;
+          }
         }
       `}</style>
-    </div>
-  );
-}
-
-function SectionTitle({ title }: { title: string }) {
-  return (
-    <h4 className="text-[10px] font-black uppercase text-amber-600 tracking-[0.2em] flex items-center gap-2 mb-2">
-      <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> {title}
-    </h4>
-  );
-}
-
-function Field({
-  label,
-  error,
-  children,
-}: {
-  label: string;
-  error?: any;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="w-full space-y-1">
-      <label className="text-[10px] font-bold text-slate-500 ml-1 uppercase tracking-tighter">
-        {label}
-      </label>
-      {children}
-      {error && (
-        <p className="text-[9px] text-red-500 font-bold ml-1 animate-pulse">
-          ⚠ {error.message}
-        </p>
-      )}
     </div>
   );
 }
