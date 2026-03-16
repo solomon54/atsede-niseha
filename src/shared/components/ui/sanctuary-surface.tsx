@@ -9,14 +9,12 @@ export interface SanctuarySurfaceProps
 const SanctuarySurface = React.forwardRef<
   HTMLDivElement,
   SanctuarySurfaceProps
->(({ className, children, hoverable = false, ...props }, ref) => {
+>(({ className, children, ...props }, ref) => {
   return (
     <div
       ref={ref}
       className={cn(
-        "bg-white/90 border border-white/60 shadow-2xl will-change-transform",
-        "rounded-3xl transition-all duration-300 ease-out",
-        hoverable && "hover:bg-white/95 hover:shadow-black/[0.05]",
+        "bg-white border border-slate-200 shadow-lg rounded-3xl",
         className
       )}
       {...props}>
