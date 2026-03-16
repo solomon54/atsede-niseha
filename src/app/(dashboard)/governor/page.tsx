@@ -11,6 +11,7 @@ import {
 
 // Components
 import GovernorCommandCenter from "@/features/governor/components/GovernorCommandCenter";
+import { GovernorSidebar } from "@/features/governor/components/GovernorSidebar"; // Import added
 // Data & Types
 import { adminDb } from "@/services/firebase/admin";
 import {
@@ -21,9 +22,11 @@ import {
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Fetch core metrics and directory data for the Governor's eyes only.
+ */
 async function getDashboardData() {
   try {
-    // 1. Fetching counts and initial registry lists in parallel
     const [fCountSnap, sCountSnap, fathersListSnap, studentsListSnap] =
       await Promise.all([
         adminDb.collection("Fathers").count().get(),
@@ -40,7 +43,6 @@ async function getDashboardData() {
           .get(),
       ]);
 
-    // 2. Mapping Fathers (ConfessorRecord)
     const initialFathers: DirectoryRecord[] = fathersListSnap.docs.map(
       (doc) => {
         const data = doc.data();
@@ -51,7 +53,6 @@ async function getDashboardData() {
           diocese: data.diocese || "ያልተጠቀሰ",
           status: data.status || "PENDING",
           role: "FATHER",
-
           title: data.title || "ቀሲስ",
           parish: data.parish || "ያልተጠቀሰ",
           phone: data.phone || "N/A",
@@ -67,7 +68,6 @@ async function getDashboardData() {
       }
     );
 
-    // 3. Mapping Students (StudentRecord) - Tracking Academic Year
     const initialStudents: DirectoryRecord[] = studentsListSnap.docs.map(
       (doc) => {
         const data = doc.data();
@@ -92,7 +92,7 @@ async function getDashboardData() {
     return {
       fathersCount: fCountSnap.data().count,
       studentsCount: sCountSnap.data().count,
-      initialData: [...initialFathers, ...initialStudents], // Combined registry
+      initialData: [...initialFathers, ...initialStudents],
       error: null,
     };
   } catch (err) {
@@ -108,6 +108,11 @@ async function getDashboardData() {
 
 export default async function GovernorDashboard() {
   const headerList = await headers();
+
+  /**
+   * SOVEREIGN CHECK
+   * Enforces that only the Governor role can enter this command center.
+   */
   if (headerList.get("x-ats-role") !== "GOVERNOR") redirect("/unauthorized");
 
   const { fathersCount, studentsCount, initialData, error } =
@@ -115,8 +120,17 @@ export default async function GovernorDashboard() {
 
   return (
     <main className="min-h-screen bg-[#FDFCFB]">
-      <div className="max-w-[1400px] mx-auto px-4 md:px-10 py-8 space-y-10">
-        {/* Header */}
+      {/** * 1. GOVERNOR NAVIGATION RAIL
+       * This allows you to jump into any Father's context instantly
+       * without manually editing the URL.
+       */}
+      <GovernorSidebar />
+
+      {/** * 2. MAIN LAYOUT
+       * Added 'xl:ml-80' to make room for the fixed sidebar on large screens.
+       */}
+      <div className="max-w-[1400px] mx-auto px-4 md:px-10 py-8 space-y-10 xl:ml-80 transition-all duration-500">
+        {/* Header Section */}
         <header className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-amber-100 pb-8">
           <div>
             <h1 className="text-3xl font-black font-ethiopic text-slate-900 tracking-tight">
@@ -135,7 +149,7 @@ export default async function GovernorDashboard() {
           </div>
         </header>
 
-        {/* Metrics */}
+        {/* Metrics Section */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <MetricCard
             icon={<FiUsers />}
@@ -155,13 +169,14 @@ export default async function GovernorDashboard() {
           />
         </section>
 
+        {/* Error Messaging */}
         {error && (
           <div className="p-4 bg-red-50 border border-red-100 rounded-2xl text-red-800 font-bold flex items-center gap-3">
             <FiAlertCircle /> {error}
           </div>
         )}
 
-        {/* The Client-Side Command Center (Tabs live here) */}
+        {/* Command Center Tabs */}
         <GovernorCommandCenter initialData={initialData} />
       </div>
     </main>
