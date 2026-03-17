@@ -36,7 +36,7 @@ export default async function FatherDashboardPage({
     session && (session.role === "FATHER" || session.role === "GOVERNOR");
 
   if (!isAuthorized) {
-    redirect("/auth/login?reason=unauthorized");
+    redirect("/?reason=unauthorized");
   }
 
   /**

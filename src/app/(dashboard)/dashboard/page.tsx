@@ -66,11 +66,7 @@ export default function CommonHousePage() {
           <motion.div
             key={post.id}
             initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              delay: index * 0.15,
-              cubicBezier: [0.22, 1, 0.36, 1],
-            }}>
+            animate={{ opacity: 1, y: 0 }}>
             <SanctuarySurface className="p-0 overflow-hidden group hover:shadow-2xl hover:border-amber-200/50 transition-all duration-500 rounded-4xl">
               <div className="flex flex-col md:flex-row">
                 {/* Visual Anchor (The Color Strip) */}
