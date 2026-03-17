@@ -1,5 +1,4 @@
-//src/features/father/services/validators.ts
-
+// src/features/father/services/validators.ts
 import { z } from "zod";
 
 import {
@@ -8,102 +7,138 @@ import {
   isFutureEthiopianDate,
   isValidEthiopianDate,
 } from "@/shared/utils/calendar/ethiopianCalendar";
+import {
+  christianNameField,
+  entryYearField,
+  ethiopianFullNameField,
+  ethiopianPhoneField,
+  numberField,
+  requiredEmailField,
+  selectField,
+  textField,
+} from "@/shared/validations/fields";
 
-/**
- * Ethiopian date schema used for birthdate validation.
- * Refined Amharic for natural phrasing.
- */
+// ────────────────────────────────────────────────
+// Reusable Ethiopian Date Schema
+// ────────────────────────────────────────────────
+
 const EthiopianDateSchema = z
   .object({
-    year: z.coerce
-      .number()
-      .min(1900, "ዓመተ ምህረት ከ1900 በታች መሆን አይችልም")
-      .max(getTodayEthiopian().year, "የወደፊት ዓመተ ምህረት አይፈቀድም"),
-    month: z.coerce
-      .number()
-      .min(1, "ወር ከ1 መጀመር አለበት")
-      .max(13, "ወር ከ13 መብለጥ የለበትም"),
-    day: z.coerce
-      .number()
-      .min(1, "ቀን ከ1 መጀመር አለበት")
-      .max(30, "ቀን ከ30 መብለጥ የለበትም"),
+    year: numberField({
+      required: "ዓመተ ምህረት ያስገቡ (Year is required)",
+      min: {
+        value: 1900,
+        message: "ዓመተ ምህረት ከ1900 በታች መሆን አይችልም (Year cannot be before 1900)",
+      },
+      max: {
+        value: getTodayEthiopian().year,
+        message: "የወደፊት ዓመተ ምህረት አይፈቀድም (Future year not allowed)",
+      },
+    }),
+
+    month: numberField({
+      required: "ወር ያስገቡ (Month is required)",
+      min: {
+        value: 1,
+        message: "ወር ከ1 መጀመር አለበት (Month must start from 1)",
+      },
+      max: {
+        value: 13,
+        message: "ወር ከ13 መብለጥ የለበትም (Month cannot exceed 13)",
+      },
+    }),
+
+    day: numberField({
+      required: "ቀን ያስገቡ (Day is required)",
+      min: {
+        value: 1,
+        message: "ቀን ከ1 መጀመር አለበት (Day must start from 1)",
+      },
+      max: {
+        value: 30,
+        message: "ቀን ከ30 መብለጥ የለበትም (Day cannot exceed 30)",
+      },
+    }),
   })
-  .superRefine((date: EthiopianDate, ctx) => {
+  .superRefine((date, ctx) => {
     if (!isValidEthiopianDate(date)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "የተሳሳተ ቀን ተገብሏል",
+        code: "custom",
+        message: "የተሳሳተ ቀን ተገብሏል (Invalid Date Provided)",
       });
     }
     if (isFutureEthiopianDate(date)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "የወደፊት ቀን መመዝገብ አይቻልም",
+        code: "custom",
+        message: "የወደፊት ቀን መመዝገብ አይቻልም (Future date not allowed)",
       });
     }
   });
 
-/**
- * Main Child Registration Schema
- * Professional Amharic validation messages.
- */
-export const RegisterChildSchema = z
-  .object({
-    fullToken: z.string(),
-    secularName: z.string().min(3, "እባክዎ ሙሉ ስም ያስገቡ"),
-    christianName: z.string().min(2, "እባክዎ የክርስትና ስም ያስገቡ"),
-    gender: z.enum(["MALE", "FEMALE"], {
-      required_error: "እባክዎ ጾታ ይምረጡ",
+// ────────────────────────────────────────────────
+// Main Child Registration Schema
+// ────────────────────────────────────────────────
+
+export const RegisterChildSchema = z.object({
+  // Identity
+  fullToken: textField("Invalid Registration Token", 10),
+
+  secularName: ethiopianFullNameField(),
+
+  christianName: christianNameField(),
+
+  gender: z.enum(["MALE", "FEMALE"], {
+    message: "እባክዎ ጾታ ይምረጡ (Please select gender)",
+  }),
+
+  birthDate: EthiopianDateSchema,
+
+  // Geography
+  region: selectField("እባክዎ ክልል ይምረጡ (Please select a region)"),
+  zone: selectField("እባክዎ ዞን ይምረጡ (Please select a zone)"),
+  city: textField("እባክዎ ከተማ ያስገቡ (Please enter city/town)"),
+
+  // Ecclesiastical
+  spiritualTitle: selectField(
+    "እባክዎ መንፈሳዊ ማዕረግ ይምረጡ (Please select spiritual title)"
+  ),
+  spiritualFatherId: z.string().optional(),
+  language: selectField("እባክዎ ቋንቋ ይምረጡ (Please select a language)"),
+
+  // Academic
+  university: selectField("እባክዎ ዩኒቨርሲቲ ይምረጡ (Please select university)"),
+  college: selectField(
+    "እባክዎ ኮሌጅ/ኢንስቲትዩት ይምረጡ (Please select college/institute)"
+  ),
+  department: selectField("እባክዎ የትምህርት ክፍል ይምረጡ (Please select department)"),
+
+  entryYear: selectField("የመግቢያ ዓ.ም ይምረጡ (Select entry year)")
+    .pipe(z.coerce.number())
+    .refine(
+      (n) => !Number.isNaN(n) && n >= 1900 && n <= getTodayEthiopian().year,
+      {
+        message: `የመግቢያ ዓመት ${1900}–${getTodayEthiopian().year} መካከል መሆን አለበት`,
+      }
+    ),
+
+  academicYear: selectField("የትምህርት ዘመን ይምረጡ (Select academic year)")
+    .pipe(z.coerce.number())
+    .refine((n) => !Number.isNaN(n) && n >= 1 && n <= 8, {
+      message: "ዓመት 1–8 መካከል መሆን አለበት (Academic year must be 1–8)",
     }),
-    // Changed to allow empty string initially to match defaultValues
-    spiritualTitle: z.string().min(1, "እባክዎ መንፈሳዊ ማዕረግ ይምረጡ"),
-    university: z.string().min(2, "የዩኒቨርሲቲ ስም ያስገቡ"),
-    department: z.string().min(2, "የትምህርት ክፍል (ዲፓርትመንት) ያስገቡ"),
-    birthDate: EthiopianDateSchema,
-    birthPlace: z.string().min(2, "የትውልድ ቦታ ያስገቡ"),
-    entryYear: z.coerce
-      .number()
-      .min(1900, "ዓመተ ምህረት ከ1900 በታች መሆን አይችልም")
-      .max(getTodayEthiopian().year, "የወደፊት ዓመተ ምህረት አይፈቀድም"),
-    phone: z
-      .string()
-      .transform((v) => v.replace(/\s+/g, "").replace(/-/g, ""))
-      .refine(
-        (v) => /^\+251[79]\d{8}$/.test(v) || /^0[79]\d{8}$/.test(v),
-        "ትክክለኛ የኢትዮጵያ ስልክ ቁጥር ያስገቡ"
-      )
-      .transform((v) =>
-        v.startsWith("09") || v.startsWith("07") ? "+251" + v.slice(1) : v
-      ),
-    email: z.string().email("ትክክለኛ ኢሜይል ያስገቡ").or(z.literal("")),
-    language: z.string().min(1, "እባክዎ ቋንቋ ይምረጡ"),
-    customLanguage: z.string().optional(),
-  })
-  .superRefine((data, ctx) => {
-    // If "OTHER" language selected, customLanguage is required
-    if (
-      data.language === "OTHER" &&
-      (!data.customLanguage || data.customLanguage.trim().length < 2)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["customLanguage"],
-        message: "እባክዎ የቋንቋውን ስም እዚህ ይጥቀሱ",
-      });
-    }
-    // Prevent unnecessary customLanguage data in payload
-    if (
-      data.language !== "OTHER" &&
-      data.customLanguage &&
-      data.customLanguage.length > 0
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["customLanguage"],
-        message: "ይህ መስክ አያስፈልግም",
-      });
-    }
-    photoUrl: z.string().optional();
-  });
+
+  semester: selectField("ሴሚስተር ይምረጡ (Select semester)")
+    .pipe(z.coerce.number())
+    .refine((n) => !Number.isNaN(n) && (n === 1 || n === 2), {
+      message: "ሴሚስተር 1 ወይም 2 መሆን አለበት (Semester must be 1 or 2)",
+    }),
+
+  // Contact
+  phone: ethiopianPhoneField(),
+
+  email: requiredEmailField(),
+
+  photoUrl: z.string().optional(),
+});
 
 export type RegisterChildFormData = z.infer<typeof RegisterChildSchema>;
