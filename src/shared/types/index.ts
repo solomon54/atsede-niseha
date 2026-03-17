@@ -66,6 +66,7 @@ export interface BaseDirectoryRecord {
   status: "ACTIVE" | "PENDING" | "INACTIVE";
   isApproved?: boolean;
   createdAt: Date | string;
+  updatedAt: Date | string;
   accountClaimed: boolean;
   lastLogin?: Date | string;
 }

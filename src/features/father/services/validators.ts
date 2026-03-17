@@ -138,7 +138,7 @@ export const RegisterChildSchema = z.object({
 
   email: requiredEmailField(),
 
-  photoUrl: z.string().optional(),
+  photoUrl: textField("ፎቶ መምረጥ አለብዎት — የልጁን ምስል ያክሉ (Photo is required)"),
 });
 
 export type RegisterChildFormData = z.infer<typeof RegisterChildSchema>;
