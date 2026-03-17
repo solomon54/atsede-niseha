@@ -100,6 +100,8 @@ export interface StudentRecord extends BaseDirectoryRecord {
   department: string;
   academicYear: number;
   spiritualFatherId: string;
+  fatherId: string;
+  language: string;
 }
 
 export interface HelperRecord extends BaseDirectoryRecord {
