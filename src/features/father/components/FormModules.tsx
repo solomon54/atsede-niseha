@@ -66,10 +66,10 @@ export function IdentitySection({
   control,
 }: Pick<GroupProps, "register" | "errors" | "control">) {
   return (
-    <div className="space-y-5">
+    <div className="space-y-7">
       <SectionTitle title="የማንነት መረጃ" icon={<User size={12} />} />
 
-      <Field label="ዓለማዊ ስም (ሙሉ ስም)" error={errors.secularName?.message}>
+      <Field label="የዓለም መጠሪያ ስም (ሙሉ ስም)" error={errors.secularName?.message}>
         <input
           {...register("secularName")}
           className="sanctuary-input"
@@ -78,23 +78,29 @@ export function IdentitySection({
       </Field>
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="የክርስትና ስም" error={errors.christianName?.message}>
+        <Field
+          label="ስመ ክርስትና (የመጽሐፍ ስም)"
+          error={errors.christianName?.message}>
           <input
             {...register("christianName")}
             className="sanctuary-input"
-            placeholder="የክርስትና ስም"
+            placeholder="ስመ ክርስትና"
           />
         </Field>
         <Field label="ጾታ" error={errors.gender?.message}>
           <select {...register("gender")} className="sanctuary-input">
-            <option value="">ጾታ ይምረጡ</option>
+            <option value="" disabled>
+              ጾታ ይምረጡ
+            </option>
             <option value="MALE">ወንድ</option>
             <option value="FEMALE">ሴት</option>
           </select>
         </Field>
       </div>
 
-      <Field label="የትውልድ ቀን (በኢትዮጵያ አቆጣጠር)" error={errors.birthDate?.message}>
+      <Field
+        label="የትውልድ ቀን (በኢትዮጵያ የዘመን አቆጣጠር)"
+        error={errors.birthDate?.message}>
         <Controller
           name="birthDate"
           control={control}
@@ -135,7 +141,7 @@ export function GeographySection({
   const zones = useHierarchy(selectedRegion, ETHIOPIAN_GEOGRAPHY);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-7">
       <SectionTitle title="የመኖሪያ አድራሻ" icon={<MapPin size={12} />} />
 
       {/* ---------------- REGION ---------------- */}
@@ -178,11 +184,11 @@ export function GeographySection({
       </Field>
 
       {/* ---------------- CITY ---------------- */}
-      <Field label="ከተማ / ገጠር" error={errors.city?.message}>
+      <Field label="የሚኖሩበት ከተማ / ገጠር" error={errors.city?.message}>
         <input
           {...control.register("city")}
           className="sanctuary-input"
-          placeholder="ከተማ ያስገቡ"
+          placeholder="ከተማ/ የመኖሪያ አድራሻ"
         />
       </Field>
     </div>
@@ -248,10 +254,12 @@ export function AcademicSection({
   });
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-7">
       <SectionTitle title="የትምህርት መረጃ" icon={<GraduationCap size={12} />} />
 
-      <Field label="ከፍተኛ ትምህርት ተቋም / ዩኒቨርሲቲ" error={errors.university?.message}>
+      <Field
+        label="የሚማሩበት ከፍተኛ ትምህርት ተቋም / ዩኒቨርሲቲ"
+        error={errors.university?.message}>
         <Controller
           name="university"
           defaultValue=""
@@ -269,7 +277,7 @@ export function AcademicSection({
       </Field>
 
       <div className="grid grid-cols-1 gap-5">
-        <Field label="ኮሌጅ / ኢንስቲትዩት" error={errors.college?.message}>
+        <Field label="ኮሌጅ / ፋኩልቲ" error={errors.college?.message}>
           <Controller
             name="college"
             defaultValue=""
@@ -307,7 +315,7 @@ export function AcademicSection({
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="የመግቢያ ዓ.ም" error={errors.entryYear?.message}>
+        <Field label="ወደ ግቢ የገቡበት ዓመት (ዓ.ም)" error={errors.entryYear?.message}>
           <select
             {...register("entryYear", { valueAsNumber: true })}
             className="sanctuary-input">
@@ -364,7 +372,7 @@ export function ConnectSection({
   control,
 }: Pick<GroupProps, "register" | "errors" | "control">) {
   return (
-    <div className="space-y-5">
+    <div className="space-y-7">
       <SectionTitle title="የመገናኛ መረጃ" icon={<Phone size={12} />} />
 
       <Field label="የስልክ ቁጥር" error={errors.phone?.message}>
@@ -375,11 +383,11 @@ export function ConnectSection({
         />
       </Field>
 
-      <Field label="ኢሜል (ካለ)" error={errors.email?.message}>
+      <Field label="ኢሜል " error={errors.email?.message}>
         <input
           {...register("email")}
           className="sanctuary-input font-mono"
-          placeholder="ለምሳሌ፡ example@mail.com"
+          placeholder="ለምሳሌ፡ atsedenis@gmail.com"
         />
       </Field>
 
