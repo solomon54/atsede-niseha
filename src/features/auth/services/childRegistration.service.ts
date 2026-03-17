@@ -1,54 +1,75 @@
 // src/features/father/services/childRegistration.service.ts
 import { RegisterChildFormData } from "@/features/father/services/validators";
 import { adminDb } from "@/services/firebase/admin";
+import { StudentRecord } from "@/shared/types";
 
 /**
  * Persists a validated spiritual child record to the Cloud Firestore 'students' collection.
- * * @param fatherId - The unique UID of the Spiritual Father performing the registration.
- * @param data - The validated data object containing all secular and ecclesiastical fields.
- * @returns A promise resolving to the generated EOTC primary document ID.
+ * This service establishes the 'Sovereign Link' between a Spiritual Father and the Child.
+ * * @param fatherId - The unique Auth UID of the Spiritual Father (system-level foreign key).
+ * @param data - The validated data object from the RegisterChildForm (Zod-validated).
+ * @returns A promise resolving to an object containing the EOTC primary document ID.
+ * @throws Error if the database operation fails.
  */
 export async function saveChildRecord(
   fatherId: string,
   data: RegisterChildFormData
-) {
-  // Use the uniquely generated EOTC token as the Firestore Document ID
-  const childId = data.fullToken;
+): Promise<{ id: string }> {
+  /**
+   * THE COVENANT IDENTIFIER
+   * The full 12-character interleaved token serves as the unique Firestore Document ID.
+   * This enforces a physical-to-digital 1:1 constraint at the database level.
+   */
+  const childId: string = data.fullToken;
 
   /**
-   * Derive the 'Short Token' for user-facing claim operations.
-   * Logic: Extracts the Prefix and the Child Unique ID (e.g., EOTC-XXXX).
-   * This allows students to claim their account without typing the middle Father ID.
+   * DATA NORMALIZATION & HYGIENE
+   * We extract 'customLanguage' and 'fullToken' via destructuring to ensure
+   * they do not persist in the final database record, maintaining strict schema adherence.
    */
-  const parts = childId.split("-");
-  const shortToken = `${parts[0]}-${parts[2]}`;
+  const { customLanguage, fullToken, ...baseFormData } = data;
 
   /**
-   * Assemble the Final Record
-   * Merges form data with system metadata (status, role, timestamps).
+   * Assemble the Final Sovereign Record
+   * Uses the StudentRecord interface to ensure complete type safety.
    */
-  const record = {
-    ...data, // Spreads 13+ validated fields (university, phone, photoUrl, etc.)
-    fatherId, // Links the child to their specific Spiritual Father
-    shortToken, // Indexed for the student search/claim flow
-    status: "PENDING", // Account remains PENDING until student sets their password
+  const record: Omit<StudentRecord, "uid"> = {
+    ...baseFormData,
+    fatherId,
+    eotcUid: childId,
+    status: "PENDING",
     accountClaimed: false,
     role: "STUDENT",
     createdAt: new Date().toISOString(),
 
     /**
      * Language Normalization
-     * If 'OTHER' was selected in the UI, we promote the custom input to the primary field.
+     * If 'OTHER' was selected, we promote the custom string.
+     * Otherwise, we use the predefined enum value.
      */
-    language: data.language === "OTHER" ? data.customLanguage : data.language,
+    language:
+      data.language === "OTHER" ? customLanguage ?? "Unknown" : data.language,
+    academicYear: 0,
+    spiritualFatherId: "",
+    fullName: "",
+    diocese: "",
   };
 
-  /**
-   * Transactional Write
-   * Uses .set() to ensure that if a request is retried, it updates the same document
-   * rather than creating duplicates.
-   */
-  await adminDb.collection("students").doc(childId).set(record);
+  try {
+    /**
+     * ATOMIC PERSISTENCE
+     * .set() is used with childId as the key. This ensures idempotency;
+     * retried requests will safely overwrite/update the same record rather than duplicating.
+     */
+    await adminDb.collection("students").doc(childId).set(record);
 
-  return { id: childId };
+    return { id: childId };
+  } catch (error: unknown) {
+    /**
+     * GRACEFUL ERROR HANDLING
+     * Re-throwing as a typed error for the API layer to catch and format.
+     */
+    console.error("Critical Firestore Write Error [saveChildRecord]:", error);
+    throw new Error("የመረጃ ቋት ምዝገባ አልተሳካም (Database persistence failed)");
+  }
 }
