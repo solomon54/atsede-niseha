@@ -2,10 +2,20 @@
 
 import { z } from "zod";
 
+// ────────────────────────────────────────────────
+// Added imports for channel provisioning / joining
+// Adjust path if your folder structure is different
+import {
+  joinStudentToFamilyChannels,
+  provisionFamilyChannels,
+} from "@/features/messaging/services/channelProvision.service";
+import { UID } from "@/features/messaging/types/messaging.types";
 import { adminAuth, adminDb } from "@/services/firebase/admin";
 
 import { AuthError } from "./auth.errors";
 import { createSessionFromUid } from "./session.service";
+
+// ────────────────────────────────────────────────
 
 /**
  * Validation Schema
@@ -127,17 +137,87 @@ export async function claimAccount(raw: unknown) {
      */
     await createSessionFromUid(uidCreated);
 
+    // ────────────────────────────────────────────────
+    // Post-claim side effects – channel provisioning / joining
+    // ────────────────────────────────────────────────
+
+    if (body.role === "FATHER" && uidCreated) {
+      try {
+        const fatherUid = uidCreated as UID;
+        const studentUids: UID[] = [];
+
+        console.log(
+          `[FATHER CLAIM] Creating/ensuring COMMON_HOUSE channel for father ${body.eotcUid} (UID: ${fatherUid})`
+        );
+
+        const { familyChannel, directChannels } = await provisionFamilyChannels(
+          fatherUid,
+          studentUids
+        );
+
+        console.log(
+          `[FATHER CLAIM] Family channel ready → ID: ${familyChannel.id}, direct channels created: ${directChannels.length}`
+        );
+      } catch (provisionErr) {
+        console.error(
+          "[FATHER CLAIM] Channel provisioning failed but account created:",
+          {
+            uid: uidCreated,
+            eotcUid: body.eotcUid,
+            error: provisionErr,
+          }
+        );
+      }
+    } else if (body.role === "STUDENT" && uidCreated) {
+      try {
+        const studentDocSnap = await adminDb
+          .collection("Students")
+          .doc(body.eotcUid)
+          .get();
+
+        if (!studentDocSnap.exists) {
+          console.warn(
+            `[STUDENT CLAIM] Student doc not found: ${body.eotcUid}`
+          );
+        } else {
+          const studentData = studentDocSnap.data();
+          const studentUid = studentData?.uid as UID | undefined;
+
+          // ✅ Defensive future-proof guard
+          if (!studentUid) {
+            console.warn(
+              `[STUDENT CLAIM] uid missing in student doc ${body.eotcUid} — join skipped`
+            );
+            return;
+          }
+
+          // ✅ FIX: pass BOTH required arguments
+          joinStudentToFamilyChannels(studentUid, body.eotcUid).catch((err) => {
+            console.error(
+              "[STUDENT CLAIM] Channel join failed (non-critical):",
+              {
+                uid: studentUid,
+                eotcUid: body.eotcUid,
+                error: err,
+              }
+            );
+          });
+        }
+      } catch (err) {
+        console.error("[STUDENT CLAIM] Failed fetching student doc:", {
+          eotcUid: body.eotcUid,
+          error: err,
+        });
+      }
+    }
+
     return {
       success: true,
       redirect: `/${body.role.toLowerCase()}`,
     };
   } catch (error: unknown) {
-    // 8. Graceful & Typed Error Handling
-
-    // Check if it's an AuthError first
     if (error instanceof AuthError) throw error;
 
-    // Type guard for Firebase-specific errors
     const isFbError = (err: unknown): err is FirebaseAuthError => {
       return (
         typeof err === "object" &&

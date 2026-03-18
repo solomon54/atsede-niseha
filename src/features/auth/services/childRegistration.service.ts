@@ -39,8 +39,8 @@ export async function saveChildRecord(
 
     const record: Omit<StudentRecord, "uid"> = {
       ...baseFormData,
-      fatherId,
-      eotcUid: childId,
+      fatherId, // Auth UID for security rules/ownership
+      eotcUid: childId, // The generated Token
       status: "PENDING",
       accountClaimed: false,
       role: "STUDENT",
@@ -49,7 +49,8 @@ export async function saveChildRecord(
         : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       fullName: data.secularName,
-      spiritualFatherId: fatherId,
+      // FIX: Use the spiritualFatherId from data (EOTC ID) instead of fatherId (Auth UID)
+      spiritualFatherId: data.spiritualFatherId ?? "",
       diocese: data.region,
     };
 
@@ -62,7 +63,7 @@ export async function saveChildRecord(
     return { id: childId };
   } catch (error: unknown) {
     console.error("Critical Firestore Write Error:", error);
-    // If it's our custom error, re-throw it; otherwise, throw the generic one.
+
     if (error instanceof Error) throw error;
     throw new Error("የመረጃ ቋት ምዝገባ አልተሳካም");
   }
