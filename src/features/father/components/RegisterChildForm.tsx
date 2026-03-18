@@ -37,11 +37,13 @@ import { TokenSanctuary } from "./TokenSanctuary";
 interface RegisterChildFormProps {
   fatherId: string;
   fatherEotcId: string;
+  onSuccess?: () => void; // Add this to refresh the directory
 }
 
 export default function RegisterChildForm({
   fatherId,
   fatherEotcId,
+  onSuccess, // Destructure here
 }: RegisterChildFormProps) {
   const [preview, setPreview] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -65,9 +67,10 @@ export default function RegisterChildForm({
       fullToken: "",
       secularName: "",
       christianName: "",
+      spiritualFatherId: fatherEotcId,
       gender: undefined,
       birthDate: {
-        year: getTodayEthiopian().year - 20,
+        year: getTodayEthiopian().year - 20, // Default to 20 years ago for convenience
         month: 1,
         day: 1,
       },
@@ -135,6 +138,7 @@ export default function RegisterChildForm({
     setStatus(null);
     try {
       let photoUrl = "";
+      // 1. Handle Portrait Upload
       if (file) {
         const fd = new FormData();
         fd.append("file", file);
@@ -148,10 +152,20 @@ export default function RegisterChildForm({
         photoUrl = uploadData.url;
       }
 
+      // 2. Prepare the Sovereign Ledger Payload
+      // We explicitly map spiritualFatherId to ensure the query works!
+      const finalPayload = {
+        ...data,
+        photoUrl,
+        fatherId, // Auth UID for security rules
+        spiritualFatherId: fatherEotcId, // EOTC ID for directory linking
+        eotcUid: currentToken, // The generated token
+      };
+
       const res = await fetch("/api/father/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fatherId, data: { ...data, photoUrl } }),
+        body: JSON.stringify({ fatherId, data: finalPayload }),
       });
 
       if (!res.ok) {
@@ -159,6 +173,7 @@ export default function RegisterChildForm({
         throw new Error(err.message || "ምዝገባው አልተሳካም");
       }
 
+      // 3. Success Workflow
       setStatus({ type: "success", text: "የልጁ መረጃ በክብር ተመዝግቧል ✞" });
 
       reset(
@@ -167,12 +182,16 @@ export default function RegisterChildForm({
           keepValues: false,
           keepErrors: false,
           keepDirty: false,
-          keepTouched: false,
+          keepTouched: true,
         }
       );
 
       removePhoto();
       generateFullToken();
+
+      // Trigger directory refresh
+      if (onSuccess) onSuccess();
+
       setTimeout(() => setStatus(null), 4000);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "የኔትወርክ ችግር ተፈጥሯል";

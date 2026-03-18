@@ -1,12 +1,19 @@
-//src/features/father/components/FatherDashboardClient.tsx
-
+// src/features/father/components/FatherDashboardClient.tsx
 "use client";
 
-import { LayoutDashboard, ShieldCheck, UserPlus, Users } from "lucide-react";
 import { useState } from "react";
+import {
+  LayoutDashboard,
+  ShieldCheck,
+  UserPlus,
+  Users,
+  Loader2,
+} from "lucide-react";
 
+import { useChildren } from "../hooks/useChildren";
 import RegisterChildForm from "@/features/father/components/RegisterChildForm";
-import { GovernorSidebar } from "@/features/governor/components/GovernorSidebar"; // Import Sidebar
+import { ChildrenDirectory } from "./ChildrenDirectory";
+import { GovernorSidebar } from "@/features/governor/components/GovernorSidebar";
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
 import { cn } from "@/shared/utils/utils";
@@ -30,24 +37,27 @@ export default function FatherDashboardClient({
 }: FatherDashboardClientProps) {
   const [activeTab, setActiveTab] = useState("overview");
 
+  // LIVE DATA
+  const { data: children = [], loading, refetch } = useChildren(fatherEotcId);
+
   return (
     <ImmersiveTransition className="pt-24 pb-12 px-4 md:px-8 relative min-h-screen">
-      {/* 1. Governor Sidebar: Only visible for Governors */}
+      {/* Governor Sidebar – only in management mode */}
       {isManagementMode && <GovernorSidebar />}
 
-      {/* Premium Background Elements */}
+      {/* Premium background blobs */}
       <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-amber-100/20 blur-[100px] transform-gpu" />
         <div className="absolute bottom-[10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-slate-200/30 blur-[100px] transform-gpu" />
       </div>
 
-      {/* 2. Main Content Wrapper: Adjusts margin if Sidebar is present */}
+      {/* Main content – shifts right in management mode */}
       <div
         className={cn(
           "relative z-10 max-w-6xl mx-auto transition-all duration-500",
           isManagementMode && "xl:ml-80 xl:max-w-none pr-4"
         )}>
-        {/* Governor Management Banner */}
+        {/* Management mode banner */}
         {isManagementMode && (
           <div className="mb-6 flex items-center justify-between bg-amber-950 text-amber-200 px-6 py-3 rounded-2xl border border-amber-800/50 animate-in slide-in-from-top duration-500">
             <div className="flex items-center gap-3">
@@ -62,7 +72,7 @@ export default function FatherDashboardClient({
           </div>
         )}
 
-        {/* Header Section */}
+        {/* Header */}
         <div className="mb-12 flex flex-col items-start gap-4">
           <div className="flex items-center gap-3">
             <div className="p-3 bg-white shadow-lg border border-amber-100 rounded-2xl">
@@ -80,7 +90,7 @@ export default function FatherDashboardClient({
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-          {/* Navigation Sidebar */}
+          {/* Left navigation */}
           <nav className="space-y-3">
             {TABS.map((tab) => {
               const Icon = tab.icon;
@@ -107,30 +117,48 @@ export default function FatherDashboardClient({
             })}
           </nav>
 
-          {/* Dynamic Content Area */}
+          {/* Main content area */}
           <main className="lg:col-span-3">
             <SanctuarySurface className="p-8 min-h-[600px] flex flex-col relative">
-              {activeTab === "overview" && <OverviewContent />}
-
-              {activeTab === "register" && (
-                <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                  <div className="text-center space-y-2">
-                    <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">
-                      የንስሐ ልጅ ምዝገባ
-                    </h2>
-                    <p className="text-xs text-slate-500 font-medium">
-                      አዲስ መንፈሳዊ ልጅን ወደ ዐጸደ ንስሐ ያስገቡ
-                    </p>
-                  </div>
-
-                  <RegisterChildForm
-                    fatherId={fatherId}
-                    fatherEotcId={fatherEotcId}
-                  />
+              {loading ? (
+                <div className="flex-1 flex flex-col items-center justify-center opacity-40">
+                  <Loader2 className="animate-spin text-amber-600 mb-4 h-10 w-10" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    የመዝገብ መረጃ በመጫን ላይ...
+                  </span>
                 </div>
-              )}
+              ) : (
+                <>
+                  {activeTab === "overview" && (
+                    <OverviewContent count={children.length} />
+                  )}
 
-              {activeTab === "directory" && <DirectoryContent />}
+                  {activeTab === "register" && (
+                    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                      <div className="text-center space-y-2">
+                        <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">
+                          የንስሐ ልጅ ምዝገባ
+                        </h2>
+                        <p className="text-xs text-slate-500 font-medium">
+                          አዲስ መንፈሳዊ ልጅን ወደ ዐጸደ ንስሐ ያስገቡ
+                        </p>
+                      </div>
+
+                      <RegisterChildForm
+                        fatherId={fatherId}
+                        fatherEotcId={fatherEotcId}
+                        onSuccess={refetch} // ← important: refresh list after registration
+                      />
+                    </div>
+                  )}
+
+                  {activeTab === "directory" && (
+                    <div className="animate-in fade-in duration-500">
+                      <ChildrenDirectory data={children} />
+                    </div>
+                  )}
+                </>
+              )}
             </SanctuarySurface>
 
             <footer className="mt-8 text-center text-[9px] text-slate-400 font-bold uppercase tracking-widest opacity-60">
@@ -144,25 +172,27 @@ export default function FatherDashboardClient({
   );
 }
 
-/**
- * Overview Section: Displays summary metrics.
- */
-function OverviewContent() {
+/* ────────────────────────────────────────────── */
+
+function OverviewContent({ count }: { count: number }) {
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <h2 className="text-lg font-black uppercase tracking-widest text-slate-800 border-b border-slate-50 pb-4">
         የመቆጣጠሪያ ሰሌዳ
       </h2>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="p-8 bg-slate-50/50 rounded-3xl border border-slate-100 group hover:border-amber-200 transition-colors">
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
             ጠቅላላ የንስሐ ልጆች
           </p>
           <p className="text-4xl font-black text-slate-900 group-hover:scale-110 transition-transform origin-left">
-            0
+            {count}
           </p>
         </div>
-        <div className="p-8 bg-slate-50/50 rounded-3xl border border-slate-100 group hover:border-amber-200 transition-colors">
+
+        {/* You can add more cards here later (unread notes, recent activity, etc.) */}
+        <div className="p-8 bg-slate-50/50 rounded-3xl border border-slate-100 group hover:border-amber-200 transition-colors opacity-60">
           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">
             ያልተነበቡ ማስታወሻዎች
           </p>
@@ -171,22 +201,6 @@ function OverviewContent() {
           </p>
         </div>
       </div>
-    </div>
-  );
-}
-
-/**
- * Directory Section: Lists registered children.
- */
-function DirectoryContent() {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center text-center py-20 animate-in zoom-in-95 duration-300">
-      <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-6">
-        <Users className="w-8 h-8 text-slate-200" />
-      </div>
-      <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">
-        እስካሁን ምንም የተመዘገበ ልጅ የለም
-      </p>
     </div>
   );
 }
