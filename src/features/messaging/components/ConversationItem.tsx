@@ -22,10 +22,10 @@ export function ConversationItem({ convo, active, onSelect }: Props) {
         ${active ? "ring-1 ring-amber-400/40" : ""}`}>
         {/* Sacred Halo */}
         <div className="relative">
-          <div className="p-1.5 rounded-full bg-gradient-to-b from-amber-400 to-amber-100 shadow-xl">
+          <div className="p-1.5 rounded-full bg-linear-to-b from-amber-400 to-amber-100 shadow-xl">
             <Image
-              src={convo.photoUrl ?? "/assets/images/qdst-bite-krstiyan.jpg"}
-              alt=""
+              src={convo.photoUrl || "/assets/images/qdst-bite-krstiyan.jpg"}
+              alt="image"
               width={42}
               height={42}
               className="rounded-full"

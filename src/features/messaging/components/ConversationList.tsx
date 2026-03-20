@@ -1,18 +1,22 @@
-//src/features/messaging/components/ConversationList.tsx
+// src/features/messaging/components/ConversationList.tsx
 "use client";
 
-import { useState } from "react";
+import { FC } from "react";
 
-import { ConversationSummary } from "../types/messaging.types";
+import { ChannelID, ConversationSummary } from "../types/messaging.types";
 import { ConversationItem } from "./ConversationItem";
 
 interface Props {
   conversations: ConversationSummary[];
+  activeChannelId?: ChannelID;
+  onSelect: (channelId: ChannelID) => void;
 }
 
-export function ConversationList({ conversations }: Props) {
-  const [active, setActive] = useState<string | null>(null);
-
+export const ConversationList: FC<Props> = ({
+  conversations,
+  activeChannelId,
+  onSelect,
+}) => {
   if (!conversations.length) {
     return (
       <div className="p-4 text-sm text-slate-400">No conversations found</div>
@@ -25,10 +29,10 @@ export function ConversationList({ conversations }: Props) {
         <ConversationItem
           key={c.channel.id}
           convo={c}
-          active={active === c.channel.id}
-          onSelect={setActive}
+          active={c.channel.id === activeChannelId}
+          onSelect={() => onSelect(c.channel.id)}
         />
       ))}
     </div>
   );
-}
+};

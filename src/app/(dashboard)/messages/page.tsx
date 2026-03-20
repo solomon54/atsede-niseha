@@ -1,20 +1,15 @@
 // src/app/(dashboard)/messages/page.tsx
 
-import { FC } from "react";
-
 import { requireSession } from "@/core/auth/requireSession";
-import Composer from "@/features/messaging/components/Composer";
-import { ConversationList } from "@/features/messaging/components/ConversationList";
-import MessageStream from "@/features/messaging/components/MessageStream";
-import {
-  Channel,
-  ChannelMember,
+import MessagingClient from "@/features/messaging/components/MessagingClient";
+import type {
+  ChannelID,
   ConversationSummary,
-  Message,
+  UID,
 } from "@/features/messaging/types/messaging.types";
 import { adminDb } from "@/services/firebase/admin";
 
-const MessagingPage: FC = async () => {
+export default async function MessagingPage() {
   const session = await requireSession();
 
   const memberDocs = await adminDb
@@ -26,23 +21,23 @@ const MessagingPage: FC = async () => {
   const memberships = memberDocs.docs.map((doc) => ({
     id: doc.id,
     ...doc.data(),
-  })) as ChannelMember[];
+  }));
 
-  const channelIds = memberships.map((m) => m.channelId);
-  console.log("UI conversations:", ConversationList);
-  if (channelIds.length === 0) {
+  const channelIds = memberships.map((m: any) => m.channelId);
+
+  if (!channelIds.length) {
     return <div className="p-6">No conversations yet.</div>;
   }
 
   const channelDocs = await adminDb
-    .collection("channels")
+    .collection("Channels")
     .where("__name__", "in", channelIds)
     .get();
 
   const channels = channelDocs.docs.map((doc) => ({
-    id: doc.id,
+    id: doc.id as ChannelID,
     ...doc.data(),
-  })) as Channel[];
+  }));
 
   const summaries: ConversationSummary[] = await Promise.all(
     channels.map(async (channel) => {
@@ -54,33 +49,26 @@ const MessagingPage: FC = async () => {
         .limit(1)
         .get();
 
-      const lastMessage: Message | undefined = lastMessageSnap.empty
+      const lastMessage = lastMessageSnap.empty
         ? undefined
-        : ({
-            id: lastMessageSnap.docs[0].id,
-            ...lastMessageSnap.docs[0].data(),
-          } as Message);
+        : { id: lastMessageSnap.docs[0].id, ...lastMessageSnap.docs[0].data() };
 
       return {
+        id: channel.id,
         channel,
         lastMessage,
         unreadCount: 0,
-      };
+        photoUrl: "",
+        fullName: "",
+        role: "",
+      } as unknown as ConversationSummary;
     })
   );
 
   return (
-    <div className="flex h-full w-full">
-      <aside className="w-80 border-r border-gray-200">
-        <ConversationList conversations={summaries} />
-      </aside>
-
-      <main className="flex-1 flex flex-col">
-        <MessageStream channelIds={channelIds} />
-        <Composer />
-      </main>
-    </div>
+    <MessagingClient
+      conversations={summaries}
+      currentUserId={session.uid as UID}
+    />
   );
-};
-
-export default MessagingPage;
+}

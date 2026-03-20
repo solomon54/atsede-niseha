@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { fetchConversations } from "../services/conversation.service";
 import { ConversationSummary } from "../types/messaging.types";
 
-const CACHE_KEY = "atsede_conversations";
+const CACHE_KEY = "atsede_conversation";
 
 export function useConversations() {
   const [data, setData] = useState<ConversationSummary[]>([]);
