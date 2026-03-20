@@ -6,7 +6,7 @@ import { adminAuth, adminDb } from "@/services/firebase/admin";
 
 /**
  * SOVEREIGN GATEKEEPER CONFIGURATION
- * Defines public entry points and the session identifier for the sanctuary.
+ * Public entry points and the session cookie for the sanctuary.
  */
 const PUBLIC_ROUTES_PREFIXES = ["/login", "/invite", "/public/", "/biranna/"];
 const SESSION_COOKIE_NAME = "atsede_session";
@@ -31,14 +31,16 @@ export const config = {
 /**
  * Core Middleware Logic
  * Handles session verification, role extraction, and sanctuary access validation.
- * * @param req - Incoming NextRequest
- * @returns NextResponse (Redirect or Proceed with Headers)
+ * Adds robust downstream headers for application services.
+ *
+ * @param req - Incoming NextRequest
+ * @returns NextResponse (Redirect or Proceed)
  */
 export default async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // 1. Public Route Bypass
-  if (PUBLIC_ROUTES_PREFIXES.some((p) => pathname.startsWith(p))) {
+  if (PUBLIC_ROUTES_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
     return NextResponse.next();
   }
 
@@ -49,19 +51,13 @@ export default async function middleware(req: NextRequest) {
   try {
     // 3. Token Verification & Claim Extraction
     const decodedToken = await adminAuth.verifySessionCookie(token, true);
-
     const userId = decodedToken.uid;
     const role = (decodedToken.role as string) || "USER";
-    const eotcUid = decodedToken.eotcUid as string; // Extracted from new Custom Claim
+    const eotcUid = decodedToken.eotcUid as string | undefined; // defensive
     const linkedFatherId = decodedToken.father as string | undefined;
 
-    /**
-     * 4. Optimized Sanctuary Access Validation
-     * Implementation Note: Governors are granted immediate access to bypass
-     * document existence checks in specialized collections.
-     */
+    // 4. Sanctuary Access Validation
     const relation = await validateSanctuaryAccess(userId, eotcUid, role);
-
     if (!relation.valid) {
       console.error(`🔒 Access Denied: Role [${role}] for UID [${userId}]`);
       return NextResponse.redirect(
@@ -69,26 +65,25 @@ export default async function middleware(req: NextRequest) {
       );
     }
 
-    // 5. Header Injection for Downstream Consumption
+    // 5. Header Injection for Downstream Services
     const requestHeaders = new Headers(req.headers);
     requestHeaders.set("x-ats-user-id", userId);
     requestHeaders.set("x-ats-role", role);
-    requestHeaders.set("x-ats-eotc-id", eotcUid || ""); // Sanitized for downstream usage
+    requestHeaders.set("x-ats-eotc-id", eotcUid || "");
 
-    /**
-     * Impersonation Context Header
-     * Injects the target UID if a Governor is managing a specific Father's profile.
-     */
+    // Impersonation header: Only Governors can impersonate
     const target = req.nextUrl.searchParams.get("target");
     if (target && role === "GOVERNOR") {
       requestHeaders.set("x-ats-impersonation-target", target);
     }
 
-    if (linkedFatherId) requestHeaders.set("x-ats-father-id", linkedFatherId);
+    if (linkedFatherId) {
+      requestHeaders.set("x-ats-father-id", linkedFatherId);
+    }
 
     return NextResponse.next({ request: { headers: requestHeaders } });
   } catch (err) {
-    // 6. Token Expiry or Corruption Handling
+    console.error(`[Middleware Error]: ${err}`);
     const response = NextResponse.redirect(
       new URL("/login?expired=1", req.url)
     );
@@ -98,38 +93,37 @@ export default async function middleware(req: NextRequest) {
 }
 
 /**
- * Validates account status with a focus on O(1) performance using eotcUid.
- * * @param userId - Firebase Auth UID
+ * Validates account status with robust fallbacks.
+ * - Governors bypass Firestore checks entirely.
+ * - Fathers and Students are verified via eotcUid, with uid fallback.
+ *
+ * @param userId - Firebase Auth UID
  * @param eotcUid - Spiritual EOTC Identifier (Custom Claim)
  * @param role - Authenticated User Role
- * @returns Object { valid: boolean }
+ * @returns { valid: boolean }
  */
 async function validateSanctuaryAccess(
   userId: string,
-  eotcUid: string,
+  eotcUid: string | undefined,
   role: string
 ) {
-  /**
-   * PROPRIETARY OVERDRIVE: Governor role is self-validating.
-   * This prevents redirects for administrative accounts that do not
-   * exist within the Fathers or Students Firestore collections.
-   */
+  // Governor role is self-validating
   if (role === "GOVERNOR") return { valid: true };
 
   try {
-    // Determine collection based on role
     const isFather = role === "FATHER";
     const collectionName = isFather ? "Fathers" : "Students";
 
-    /**
-     * SMART LOOKUP: Attempt O(1) direct document access using eotcUid first.
-     * This is the prioritized method using the ID provided in custom claims.
-     */
-    const doc = await adminDb.collection(collectionName).doc(eotcUid).get();
-    let data = doc.data();
+    let doc, data;
 
-    // FALLBACK: If eotcUid lookup fails, perform indexed search by the Firebase uid field
-    if (!doc.exists) {
+    // Primary lookup using eotcUid (O(1))
+    if (eotcUid) {
+      doc = await adminDb.collection(collectionName).doc(eotcUid).get();
+      data = doc.exists ? doc.data() : null;
+    }
+
+    // Fallback: Indexed search by Firebase UID
+    if (!data) {
       const query = await adminDb
         .collection(collectionName)
         .where("uid", "==", userId)
@@ -140,7 +134,6 @@ async function validateSanctuaryAccess(
       data = query.docs[0].data();
     }
 
-    // Final Document Status Verification
     const isActive = data?.status === "ACTIVE";
     const isApproved = isFather ? data?.isApproved === true : true;
 

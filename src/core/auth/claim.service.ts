@@ -111,9 +111,22 @@ export async function claimAccount(raw: unknown) {
        * 5. Sovereign Claim Injection
        * Critical: eotcUid is included here to satisfy the Middleware's performance requirement.
        */
+      const role = body.role;
+      let calculatedFamilyId = "";
+
+      if (role === "FATHER") {
+        // Use the newly created UID as the familyId for Fathers
+        calculatedFamilyId = userRecord.uid;
+      } else if (role === "STUDENT") {
+        // Use the fatherId (which is a UID) from the Firestore student doc
+        calculatedFamilyId = data.fatherId || "";
+      }
+
       await adminAuth.setCustomUserClaims(userRecord.uid, {
-        role: body.role,
+        role: role,
         eotcUid: body.eotcUid,
+        familyId: calculatedFamilyId,
+        profileVersion: data.profileVersion ?? 1,
       });
 
       // 6. Record Synchronization
