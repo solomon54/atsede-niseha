@@ -103,6 +103,7 @@ export interface MediaDescriptor {
 }
 
 export interface Message {
+  isRead: boolean;
   id: MessageID;
   channelId: ChannelID;
   senderId: UID;
@@ -221,3 +222,14 @@ export type MessagingEvent =
       type: "PRESENCE_UPDATED";
       payload: UserPresence;
     };
+
+/* ============================================================
+   9. AUTH & SESSION DOMAIN
+============================================================ */
+
+export interface Session {
+  uid: UID;
+  familyId: FamilyID;
+  role: ChannelRole;
+  email?: string;
+}

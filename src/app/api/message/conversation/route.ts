@@ -1,56 +1,95 @@
-//src/app/api/message/conversations/route.ts
+// src/app/api/message/conversations/route.ts
+import { NextResponse } from "next/server";
 
 import { requireSession } from "@/core/auth/requireSession";
+import {
+  Channel,
+  ChannelID,
+  Message,
+} from "@/features/messaging/types/messaging.types";
 import { adminDb } from "@/services/firebase/admin";
 
-export async function GET() {
-  const session = await requireSession();
+// Using the exact constants from your message.service.ts
+const COLLECTIONS = {
+  CHANNELS: "Channels",
+  MEMBERS: "ChannelMembers",
+  MESSAGES: "Messages",
+} as const;
 
-  // 1️⃣ find memberships
-  const memberSnap = await adminDb
-    .collection("channelMembers")
-    .where("userId", "==", session.uid)
-    .where("isActive", "==", true)
-    .get();
+export async function GET(): Promise<Response> {
+  try {
+    const session = await requireSession();
 
-  if (memberSnap.empty) {
-    return Response.json([]);
-  }
+    // 1. Get active memberships for the current user
+    const memberSnap = await adminDb
+      .collection(COLLECTIONS.MEMBERS)
+      .where("userId", "==", session.uid)
+      .where("isActive", "==", true)
+      .get();
 
-  const summaries = await Promise.all(
-    memberSnap.docs.map(async (doc) => {
+    if (memberSnap.empty) {
+      return NextResponse.json([], { status: 200 });
+    }
+
+    // 2. Map memberships to full channel data + last message
+    const summaryPromises = memberSnap.docs.map(async (doc) => {
       const member = doc.data();
+      const channelId = member.channelId;
 
-      const channelDoc = await adminDb
-        .collection("channels")
-        .doc(member.channelId)
+      // Fetch Channel Metadata
+      const channelSnap = await adminDb
+        .collection(COLLECTIONS.CHANNELS)
+        .doc(channelId)
         .get();
 
-      const channel = channelDoc.data();
+      if (!channelSnap.exists) return null;
+      const channelData = channelSnap.data() as Channel;
 
-      let lastMessage = null;
+      let lastMessage: Message | null = null;
 
-      if (channel?.lastMessageId) {
-        const msgDoc = await adminDb
-          .collection("channels")
-          .doc(member.channelId)
-          .collection("messages")
-          .doc(channel.lastMessageId)
+      // Fetch the actual last message document from the sub-collection
+      if (channelData.lastMessageId) {
+        const msgSnap = await adminDb
+          .collection(COLLECTIONS.CHANNELS)
+          .doc(channelId)
+          .collection(COLLECTIONS.MESSAGES)
+          .doc(channelData.lastMessageId)
           .get();
 
-        lastMessage = msgDoc.data() ?? null;
+        if (msgSnap.exists) {
+          lastMessage = msgSnap.data() as Message;
+        }
       }
 
-      return {
-        channel: {
-          id: channelDoc.id,
-          ...channel,
-        },
-        lastMessage,
-        unreadCount: 0, // phase 1
-      };
-    })
-  );
+      // Calculate Unread (Basic Logic)
+      // If the message is newer than the last time the user opened the channel
+      const isUnread =
+        lastMessage &&
+        (!member.lastReadAt || lastMessage.createdAt > member.lastReadAt);
 
-  return Response.json(summaries);
+      return {
+        id: channelId, // Required for UI selection
+        channel: { ...channelData, id: channelId as ChannelID },
+        lastMessage,
+        unreadCount: isUnread ? 1 : 0, // Simplified for now
+      };
+    });
+
+    const summaries = (await Promise.all(summaryPromises)).filter(Boolean);
+
+    // Sort by most recent activity
+    summaries.sort((a, b) => {
+      const timeA = a?.lastMessage?.createdAt || 0;
+      const timeB = b?.lastMessage?.createdAt || 0;
+      return timeB - timeA;
+    });
+
+    return NextResponse.json(summaries, { status: 200 });
+  } catch (err) {
+    console.error("[Conversations API] Critical Failure:", err);
+    return NextResponse.json(
+      { error: "Sacred Ledger connection failed." },
+      { status: 500 }
+    );
+  }
 }

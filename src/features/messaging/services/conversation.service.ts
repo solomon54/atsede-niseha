@@ -3,7 +3,7 @@
 import { ConversationSummary } from "../types/messaging.types";
 
 export async function fetchConversations(): Promise<ConversationSummary[]> {
-  const res = await fetch("/api/message/conversations", {
+  const res = await fetch("/api/message/conversation", {
     credentials: "include",
   });
 
