@@ -1,24 +1,15 @@
-//src/shared/constants/navigation.ts
+// src/shared/constants/navigation.ts
 import {
   Bell,
   BookOpen,
   Home,
+  LayoutDashboard,
   Settings,
   ShieldCheck,
   Users,
 } from "lucide-react";
 
-import { UserRole } from "@/shared/types/auth.types";
-
-export interface NavItem {
-  label: string;
-  ethLabel: string;
-  href: string;
-  icon: any;
-  roles: UserRole[];
-}
-
-export const NAVIGATION_ITEMS: NavItem[] = [
+export const NAVIGATION_ITEMS = [
   {
     label: "Home",
     ethLabel: "መነሻ",
@@ -27,16 +18,23 @@ export const NAVIGATION_ITEMS: NavItem[] = [
     roles: ["FATHER", "STUDENT", "GOVERNOR"],
   },
   {
+    label: "Governor",
+    ethLabel: "ማስተዳደርያ",
+    href: "/governor",
+    icon: LayoutDashboard,
+    roles: ["GOVERNOR"],
+  },
+  {
     label: "Flock",
     ethLabel: "መንጋዬ",
-    href: "/dashboard/father/flock",
+    href: "/dashboard/father",
     icon: Users,
     roles: ["FATHER"],
   },
   {
     label: "Father",
     ethLabel: "አባቴ",
-    href: "/dashboard/student/my-father",
+    href: "/messages",
     icon: ShieldCheck,
     roles: ["STUDENT"],
   },

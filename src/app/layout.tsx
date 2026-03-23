@@ -6,6 +6,7 @@ import "@/styles/themes.css";
 import type { Metadata } from "next";
 import { Inter, Noto_Sans_Ethiopic } from "next/font/google";
 
+import { SanctuaryNavigation } from "@/shared/components/layout/SanctuaryNavigation";
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
 
@@ -58,12 +59,7 @@ export default function RootLayout({
 
         <ImmersiveTransition>{children}</ImmersiveTransition>
 
-        {/* Dock */}
-        {/* <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[90%] max-w-md h-16 bg-white/30 backdrop-blur-2xl border border-white/40 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.1)] z-50 flex items-center justify-around px-8">
-          <div className="dock-icon">⛪</div>
-          <div className="dock-icon">📜</div>
-          <div className="dock-icon active">🔐</div>
-        </nav> */}
+        {/* <SanctuaryNavigation role={"GOVERNOR"} /> */}
       </body>
     </html>
   );
