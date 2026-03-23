@@ -104,6 +104,8 @@ export async function GET(req: NextRequest) {
       const profile = profileMap.get(msg.senderId);
       return {
         ...msg,
+        // Explicitly ensure media is passed through
+        media: msg.media || null,
         senderName: profile?.name || "የቤተሰብ አባል",
         senderRole: profile?.role || "CHILD",
         senderPhoto: profile?.photo || null,
