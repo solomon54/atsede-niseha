@@ -76,7 +76,13 @@ export interface ChannelMember {
    3. MESSAGE DOMAIN
 ============================================================ */
 
-export type MessageType = "TEXT" | "IMAGE" | "VIDEO" | "FILE" | "LINK";
+export type MessageType =
+  | "TEXT"
+  | "IMAGE"
+  | "VIDEO"
+  | "FILE"
+  | "LINK"
+  | "AUDIO";
 
 export type ComposerVersion = "v1";
 
@@ -92,14 +98,15 @@ export interface EncryptionEnvelope {
 /**
  * Media descriptor (Cloudinary compatible)
  */
+
 export interface MediaDescriptor {
   url: string;
   mimeType: string;
   sizeBytes: number;
-  width?: number;
-  height?: number;
-  durationSeconds?: number;
-  thumbnailUrl?: string;
+  width?: number | null;
+  height?: number | null;
+  durationSeconds?: number | null;
+  thumbnailUrl?: string | null;
 }
 
 export interface Message {
@@ -107,22 +114,13 @@ export interface Message {
   id: MessageID;
   channelId: ChannelID;
   senderId: UID;
-
+  clientMessageId?: string | null;
   type: MessageType;
-
-  /**
-   * TEXT → plain string
-   * LINK → serialized LinkMetadata JSON
-   */
   content?: string;
-
-  media?: MediaDescriptor;
-
+  media?: MediaDescriptor | null;
   version: ComposerVersion;
-
   isEncrypted: boolean;
-  encryption?: EncryptionEnvelope;
-
+  encryption?: EncryptionEnvelope | null;
   createdAt: number;
   editedAt?: number;
   deletedAt?: number;
@@ -228,6 +226,9 @@ export type MessagingEvent =
 ============================================================ */
 
 export interface Session {
+  fullName: string;
+  photoUrl: string | undefined;
+  isDiacon: boolean;
   uid: UID;
   familyId: FamilyID;
   role: ChannelRole;

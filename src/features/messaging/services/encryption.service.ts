@@ -1,20 +1,20 @@
 // src/features/messaging/services/encryption.service.ts
 import { decryptAES, encryptAES, EncryptedPayload } from "../crypto/aes";
 import { loadKey } from "../crypto/keyManager";
-import { EncryptionEnvelope } from "../types/messaging.types";
+import { EncryptionEnvelope, FamilyID } from "../types/messaging.types";
 
 /* ------------------------------------------------------------
    Custom Encryption Errors
 ------------------------------------------------------------ */
 export class EncryptionError extends Error {
-  constructor(message: string, public cause?: unknown) {
+  constructor(message: string, public override cause?: unknown) {
     super(message);
     this.name = "EncryptionError";
   }
 }
 
 export class DecryptionError extends Error {
-  constructor(message: string, public cause?: unknown) {
+  constructor(message: string, public override cause?: unknown) {
     super(message);
     this.name = "DecryptionError";
   }
@@ -35,7 +35,9 @@ export const encryptionService = {
     if (!keyId) throw new EncryptionError("Missing keyId for encryption");
 
     try {
-      const key = await loadKey(keyId);
+      // FIX ts(2345): Assert that the keyId is a FamilyID for loadKey
+      const key = await loadKey(keyId as FamilyID);
+
       if (!key)
         throw new EncryptionError(
           `Encryption key not found for keyId: ${keyId}`
@@ -69,7 +71,9 @@ export const encryptionService = {
       throw new DecryptionError("Invalid or incomplete encryption envelope");
 
     try {
-      const key = await loadKey(envelope.keyId);
+      // FIX ts(2345): Assert that envelope.keyId is a FamilyID for loadKey
+      const key = await loadKey(envelope.keyId as FamilyID);
+
       if (!key)
         throw new DecryptionError(
           `Decryption key not found for keyId: ${envelope.keyId}`

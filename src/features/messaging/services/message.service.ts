@@ -113,6 +113,8 @@ function createMessageId(): MessageID {
    SERVICE INPUT TYPES
 ============================================================ */
 
+// Inside message.service.ts
+
 export interface SendMessageInput {
   familyId: FamilyID;
   channelId: ChannelID;
@@ -123,11 +125,12 @@ export interface SendMessageInput {
     url: string;
     mimeType: string;
     sizeBytes: number;
-    width?: number;
-    height?: number;
-    durationSeconds?: number;
-    thumbnailUrl?: string;
-  };
+    width?: number | null;
+    height?: number | null;
+    durationSeconds?: number | null;
+    thumbnailUrl?: string | null;
+    providerMetadata?: { publicId: string };
+  } | null;
   isEncrypted: boolean;
   encryption?: { keyId: string; iv?: string };
   clientMessageId?: string;
@@ -154,7 +157,48 @@ export interface DeleteMessageInput {
 
 export const messageService = {
   /* ------------------------------------------------------------
-     SEND MESSAGE (Transaction-Based)
+     IDEMPOTENCY CHECK (Offline-First Safety)
+  ------------------------------------------------------------ */
+  /**
+   * Finds an existing message by its client-generated UUID.
+   * Scoped to the specific channel to ensure O(1) query performance
+   * and prevent full-database scans.
+   */
+  async findByClientId(
+    channelId: ChannelID,
+    clientMessageId: string
+  ): Promise<Message | null> {
+    if (!clientMessageId) return null;
+
+    try {
+      const messagesRef = adminDb
+        .collection(COLLECTIONS.CHANNELS)
+        .doc(channelId)
+        .collection(COLLECTIONS.MESSAGES);
+
+      const snapshot = await messagesRef
+        .where("clientMessageId", "==", clientMessageId)
+        .limit(1) // Robust: Stop searching after finding the first match
+        .get();
+
+      if (snapshot.empty) {
+        return null;
+      }
+
+      const doc = snapshot.docs[0];
+      return {
+        id: doc.id as MessageID,
+        ...doc.data(),
+      } as Message;
+    } catch (error) {
+      console.error("[MessageService] findByClientId Error:", error);
+      // In case of a database glitch, we return null to allow the send
+      // attempt to proceed, rather than hard-crashing the user's app.
+      return null;
+    }
+  },
+  /* ------------------------------------------------------------
+     SEND MESSAGE (Transaction-Based & Power-Boosted)
   ------------------------------------------------------------ */
   async sendMessage(input: SendMessageInput): Promise<Message> {
     // 1. Pre-flight Validation
@@ -168,8 +212,28 @@ export const messageService = {
       const channelRef = adminDb
         .collection(COLLECTIONS.CHANNELS)
         .doc(input.channelId);
-      const channelSnap = await transaction.get(channelRef);
 
+      /**
+       * POWER-UP: ATOMIC IDEMPOTENCY
+       * We perform the client-side ID check INSIDE the transaction to prevent
+       * rare double-write race conditions.
+       */
+      if (input.clientMessageId) {
+        const idCheckQuery = channelRef
+          .collection(COLLECTIONS.MESSAGES)
+          .where("clientMessageId", "==", input.clientMessageId)
+          .limit(1);
+
+        const idCheckSnap = await transaction.get(idCheckQuery);
+        if (!idCheckSnap.empty) {
+          return {
+            id: idCheckSnap.docs[0].id as MessageID,
+            ...idCheckSnap.docs[0].data(),
+          } as Message;
+        }
+      }
+
+      const channelSnap = await transaction.get(channelRef);
       if (!channelSnap.exists) throw new MessagingError("Channel not found.");
       const channel = channelSnap.data() as Channel;
 
@@ -191,12 +255,12 @@ export const messageService = {
 
       // ADJUSTED: Using mediaPolicy for normalization
       // We pass through your manual normalization logic via the policy.
-      const media = normalizeMedia(input.media) || undefined;
+      const media = normalizeMedia(input.media) || null;
 
       // Find this block inside sendMessage:
 
       let content = input.content;
-      let encryption: Message["encryption"] | undefined = undefined;
+      let encryption: Message["encryption"] = null;
 
       // FIX: Only perform server-side encryption if it ISN'T already E2EE
       if (input.isEncrypted && input.content) {
@@ -235,12 +299,14 @@ export const messageService = {
       }
 
       const message: Message = {
+        isRead: false,
         id: messageId,
         channelId: input.channelId,
         senderId: input.senderId,
+        clientMessageId: input.clientMessageId || null,
         type: input.type,
-        content,
-        media,
+        content: content || "",
+        media: media || null,
         version: "v1",
         isEncrypted: input.isEncrypted,
         encryption,
@@ -251,11 +317,8 @@ export const messageService = {
         .collection(COLLECTIONS.MESSAGES)
         .doc(messageId);
 
-      // FIX: Ensure no 'undefined' fields hit Firestore
-      const firestoreData = JSON.parse(JSON.stringify(message));
-
-      // Atomic Update
-      transaction.set(messageRef, firestoreData, { merge: true });
+      // No any needed because we aligned the interface!
+      transaction.set(messageRef, message, { merge: true });
       transaction.update(channelRef, {
         lastMessageId: messageId,
         lastMessageAt: now,
@@ -303,7 +366,7 @@ export const messageService = {
       if (message.isEncrypted) {
         if (!encryption?.keyId)
           throw new MessagingError("Original encryption keyId missing.");
-        const key = await loadKey(encryption.keyId);
+        const key = await loadKey(encryption.keyId as FamilyID);
         if (!key)
           throw new MessagingError(
             "Encryption key not found for this message."
@@ -325,9 +388,7 @@ export const messageService = {
         editedAt: Date.now(),
       };
 
-      // Ensure clean data for Firestore
-      const firestoreData = JSON.parse(JSON.stringify(updated));
-      transaction.set(messageRef, firestoreData);
+      transaction.set(messageRef, updated);
 
       return updated;
     });
@@ -367,11 +428,11 @@ export const messageService = {
         membership?.role as string
       );
 
-      let encryptedWipe: Message["encryption"] | null = null;
+      let encryptedWipe: Message["encryption"] = null;
 
       // wipe logic for encrypted messages
       if (message.isEncrypted && message.encryption?.keyId) {
-        const key = await loadKey(message.encryption.keyId);
+        const key = await loadKey(message.encryption.keyId as FamilyID);
         if (!key) throw new MessagingError("Encryption key not found.");
 
         const payload: EncryptedPayload = await encryptAES("[deleted]", key);
