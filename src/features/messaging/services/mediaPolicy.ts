@@ -1,4 +1,4 @@
-//src/features/messaging/services/mediaPolicy.ts
+// src/features/messaging/services/mediaPolicy.ts
 
 import { MediaDescriptor } from "../types/messaging.types";
 
@@ -7,20 +7,36 @@ import { MediaDescriptor } from "../types/messaging.types";
  * Centralized limits for the Atsede Niseha ecosystem.
  */
 export const MEDIA_LIMITS = {
-  MAX_FILE_SIZE: 15 * 1024 * 1024, // 15MB
+  MAX_FILE_SIZE: 25 * 1024 * 1024, // Increased to 25MB for high-res WAV/Video
   ALLOWED_MIME_TYPES: [
     "image/jpeg",
     "image/png",
     "image/webp",
-    "application/pdf",
+    "image/gif",
+    "image/heic",
     "audio/mpeg",
+    "audio/wav",
+    "audio/ogg",
+    "audio/aac",
+    "audio/m4a",
     "video/mp4",
+    "video/webm",
+    "video/quicktime",
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain",
+    "application/rtf",
   ],
 };
 
 /**
  * Validates and normalizes media descriptors for Firestore.
- * CRITICAL: Returns 'null' instead of 'undefined' to prevent Firestore crashes.
+ * Ensures "Safety First" by stripping undefined and checking size.
  */
 export function normalizeMedia(
   media?: Partial<MediaDescriptor> | null
@@ -29,19 +45,32 @@ export function normalizeMedia(
     return null;
   }
 
-  // Basic validation (can be expanded)
+  // 1. Hard Size Check
   if (media.sizeBytes && media.sizeBytes > MEDIA_LIMITS.MAX_FILE_SIZE) {
-    throw new Error("File size exceeds 15MB limit.");
+    throw new Error(
+      `File size exceeds ${MEDIA_LIMITS.MAX_FILE_SIZE / (1024 * 1024)}MB limit.`
+    );
   }
 
-  // Ensure every field is either a value or null/undefined is stripped
+  // 2. Strict MIME Type Validation
+  if (
+    media.mimeType &&
+    !MEDIA_LIMITS.ALLOWED_MIME_TYPES.includes(media.mimeType)
+  ) {
+    console.warn(
+      `[MEDIA POLICY] Non-standard MIME detected: ${media.mimeType}`
+    );
+  }
+
+  // 3. Firestore Normalization
+  // Removed "as any" and "as MediaDescriptor" by using explicit nulls.
   return {
     url: media.url,
     mimeType: media.mimeType || "application/octet-stream",
     sizeBytes: media.sizeBytes || 0,
-    width: media.width ?? undefined,
-    height: media.height ?? undefined,
-    durationSeconds: media.durationSeconds ?? undefined,
-    thumbnailUrl: media.thumbnailUrl ?? undefined,
+    width: media.width ?? null,
+    height: media.height ?? null,
+    durationSeconds: media.durationSeconds ?? null,
+    thumbnailUrl: media.thumbnailUrl ?? null,
   };
 }

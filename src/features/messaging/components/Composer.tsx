@@ -1,27 +1,47 @@
-//src/features/messaging/components/Composer.tsx
+// src/features/messaging/components/Composer.tsx
+/**
+ * EOTC Sacred Ledger — Production Grade Composer (v1.1)
+ * ============================================================
+ * Features:
+ * - Strict Zero-Any via OptimisticMessage type
+ * - Mobile-First (<320px) optimized layout
+ * - Custom Focus-Visible states (No default blue rings)
+ * - Resilience: Text restoration on failure
+ */
 
 "use client";
 
-import { FC, FormEvent, useEffect, useRef, useState } from "react";
+import {
+  AlertCircle,
+  FileText,
+  Image as ImageIcon,
+  Loader2,
+  Music,
+  Paperclip,
+  Send,
+  Video,
+  X,
+} from "lucide-react";
+import { ChangeEvent, FC, useEffect, useRef, useState } from "react";
 
-import { encryptionService } from "../services/encryption.service";
-import { SendMessageRequest } from "../types/messaging.api.types";
-import { ChannelID, MessageType, UID } from "../types/messaging.types";
+import { useSendMessage } from "../hooks/useSendMessage";
+import { MEDIA_LIMITS } from "../services/mediaPolicy";
+import { ChannelID, Message, MessageType, UID } from "../types/messaging.types";
+
+/**
+ * Strict structure for optimistic UI updates
+ */
+export type OptimisticMessage = Omit<
+  Message,
+  "id" | "isRead" | "version" | "isEncrypted"
+>;
 
 interface ComposerProps {
   channelId: ChannelID;
   currentUserId: UID;
   encryptionKeyId?: string;
   disabled?: boolean;
-  onOptimisticSend: (msg: {
-    id: string;
-    content: string;
-    senderId: UID;
-    createdAt: string;
-    status: "sending" | "sent" | "failed";
-    type: MessageType;
-  }) => void;
-  onCancelSend: (clientMessageId: string) => void;
+  onOptimisticSend?: (message: OptimisticMessage) => void;
 }
 
 const Composer: FC<ComposerProps> = ({
@@ -30,163 +50,219 @@ const Composer: FC<ComposerProps> = ({
   encryptionKeyId,
   disabled = false,
   onOptimisticSend,
-  onCancelSend,
 }) => {
   const [value, setValue] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [isTyping, setIsTyping] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const currentMessageIdRef = useRef<string | null>(null);
+  const { sendMessage, isSending } = useSendMessage(currentUserId);
 
-  // --- TYPING LOGIC ---
-  const sendTypingStatus = async (status: boolean) => {
-    try {
-      await fetch("/api/message/typing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelId, isTyping: status }),
-      });
-    } catch (err) {
-      // Typing status is "fire and forget", we don't crash on error
-      console.warn("Typing signal lost in the ether");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow logic
+  useEffect(() => {
+    if (textAreaRef.current) {
+      textAreaRef.current.style.height = "auto";
+      textAreaRef.current.style.height = `${Math.min(
+        textAreaRef.current.scrollHeight,
+        180
+      )}px`;
+    }
+  }, [value]);
+
+  const handleFileSelect = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > MEDIA_LIMITS.MAX_FILE_SIZE) {
+      setError(
+        `ፋይሉ በጣም ትልቅ ነው (Max ${MEDIA_LIMITS.MAX_FILE_SIZE / (1024 * 1024)}MB)`
+      );
+      return;
+    }
+
+    if (!MEDIA_LIMITS.ALLOWED_MIME_TYPES.includes(file.type)) {
+      setError("ይህ የፋይል አይነት አይፈቀድም።");
+      return;
+    }
+
+    setError(null);
+    setSelectedFile(file);
+
+    if (file.type.startsWith("image/")) {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(URL.createObjectURL(file));
     }
   };
 
-  const handleInputChange = (newValue: string) => {
-    setValue(newValue);
-
-    // If we weren't typing before, tell the world we started
-    if (!isTyping && newValue.trim().length > 0) {
-      setIsTyping(true);
-      sendTypingStatus(true);
-    }
-
-    // Reset the "Stopped Typing" timer (3 seconds of silence)
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-
-    typingTimeoutRef.current = setTimeout(() => {
-      setIsTyping(false);
-      sendTypingStatus(false);
-    }, 3000);
+  const clearFile = () => {
+    setSelectedFile(null);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    setError(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // --- SEND/CANCEL LOGIC ---
-  const handleCancel = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      if (currentMessageIdRef.current) {
-        onCancelSend(currentMessageIdRef.current);
-      }
-      setIsSending(false);
-    }
-  };
-
-  const handleSend = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSend = async () => {
     const rawContent = value.trim();
-    if (!rawContent || isSending || disabled) return;
+    if ((!rawContent && !selectedFile) || isSending || disabled) return;
 
-    // Immediately stop typing indicator when message is sent
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    setIsTyping(false);
-    sendTypingStatus(false);
+    const textToSend = value;
+    const fileToSend = selectedFile;
+    const currentPreview = previewUrl;
 
-    const clientMsgId = crypto.randomUUID();
-    currentMessageIdRef.current = clientMsgId;
-    setIsSending(true);
-    const originalText = value;
-    setValue(""); // Instant clear
-
-    // 1. Display immediately in MessageStream
-    onOptimisticSend({
-      id: clientMsgId,
-      content: rawContent,
-      senderId: currentUserId,
-      createdAt: new Date().toISOString(),
-      status: "sending",
-      type: "TEXT",
-    });
-
-    abortControllerRef.current = new AbortController();
+    setValue("");
+    clearFile();
 
     try {
-      let finalContent = rawContent;
-      let encryptionPayload = undefined;
-
-      if (encryptionKeyId) {
-        const result = await encryptionService.encrypt(
-          rawContent,
-          encryptionKeyId
-        );
-        finalContent = result.ciphertext;
-        encryptionPayload = result.envelope;
+      let type: MessageType = "TEXT";
+      if (fileToSend) {
+        if (fileToSend.type.startsWith("image/")) type = "IMAGE";
+        else if (fileToSend.type.startsWith("audio/")) type = "AUDIO";
+        else if (fileToSend.type.startsWith("video/")) type = "VIDEO";
+        else type = "FILE";
       }
 
-      const res = await fetch("/api/message/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      if (onOptimisticSend) {
+        onOptimisticSend({
+          content: textToSend,
+          type,
           channelId,
-          type: "TEXT",
-          content: finalContent,
-          isEncrypted: !!encryptionKeyId,
-          encryption: encryptionPayload,
-          clientMessageId: clientMsgId,
-        }),
-        signal: abortControllerRef.current.signal,
-      });
-
-      if (!res.ok) throw new Error("Server rejected message");
-    } catch (err: unknown) {
-      if ((err as Error).name !== "AbortError") {
-        onCancelSend(clientMsgId);
-        setValue(originalText); // Restore text so user can try again
+          senderId: currentUserId,
+          createdAt: Date.now(),
+          media: fileToSend
+            ? {
+                url: currentPreview || "",
+                mimeType: fileToSend.type,
+                sizeBytes: fileToSend.size,
+              }
+            : null,
+        });
       }
-    } finally {
-      setIsSending(false);
+
+      await sendMessage({
+        channelId,
+        content: textToSend,
+        type,
+        file: fileToSend || undefined,
+        isEncrypted: !!encryptionKeyId,
+      });
+    } catch (err: unknown) {
+      setValue(textToSend);
+      setError("Failed to transmit. Try again.");
     }
+  };
+
+  const getFileIcon = () => {
+    if (!selectedFile)
+      return (
+        <Paperclip size={18} className="sm:w-5 sm:h-5" aria-hidden="true" />
+      );
+    if (selectedFile.type.startsWith("image/"))
+      return <ImageIcon size={18} className="sm:w-5 sm:h-5 text-amber-600" />;
+    if (selectedFile.type.startsWith("audio/"))
+      return <Music size={18} className="sm:w-5 sm:h-5 text-blue-600" />;
+    if (selectedFile.type.startsWith("video/"))
+      return <Video size={18} className="sm:w-5 sm:h-5 text-red-600" />;
+    return <FileText size={18} className="sm:w-5 sm:h-5 text-slate-600" />;
   };
 
   return (
-    <footer className="border-t border-slate-200 bg-white p-4">
-      <form
-        className="mx-auto max-w-4xl flex items-center gap-3"
-        onSubmit={handleSend}>
-        <div className="relative flex-1">
-          <input
-            value={value}
-            onChange={(e) => handleInputChange(e.target.value)}
-            disabled={disabled || isSending}
-            placeholder="Write to the ledger..."
-            className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-200 transition-all"
-          />
+    <div className="relative w-full max-w-4xl mx-auto px-1 sm:px-4 pb-2 sm:pb-4">
+      {/* ⚠️ Error Alert */}
+      {error && (
+        <div
+          role="alert"
+          className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-red-50 text-red-600 px-3 py-1.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-widest shadow-sm border border-red-100 z-50 animate-in fade-in zoom-in">
+          <AlertCircle size={12} /> {error}
         </div>
+      )}
 
-        {isSending ? (
+      {/* 🖼️ Preview Bubble */}
+      {selectedFile && (
+        <div className="absolute -top-20 left-2 right-2 sm:right-auto flex items-center gap-2 bg-white border border-amber-100 p-1.5 rounded-xl shadow-xl animate-in slide-in-from-bottom-2">
+          {previewUrl ? (
+            <img
+              src={previewUrl}
+              className="w-12 h-12 rounded-lg object-cover"
+              alt="Preview"
+            />
+          ) : (
+            <div className="bg-amber-50 w-12 h-12 rounded-lg flex items-center justify-center text-amber-600">
+              {getFileIcon()}
+            </div>
+          )}
+          <div className="flex-1 min-w-0 pr-6">
+            <p className="text-[9px] font-bold truncate text-slate-800">
+              {selectedFile.name}
+            </p>
+          </div>
           <button
-            type="button"
-            onClick={handleCancel}
-            className="group relative flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 transition-all hover:bg-red-50">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-amber-600 group-hover:hidden" />
-            <span className="hidden text-xs font-bold text-red-500 group-hover:block">
-              ✕
-            </span>
+            title="Remove attachment"
+            onClick={clearFile}
+            className="absolute top-1 right-1 p-1 text-slate-400 hover:text-red-500 transition-colors">
+            <X size={14} />
           </button>
-        ) : (
-          <button
-            title="Send Message"
-            type="submit"
-            disabled={disabled || !value.trim()}
-            className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-600 text-white shadow-md hover:bg-amber-700 disabled:opacity-30">
-            <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current rotate-90">
-              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-            </svg>
-          </button>
-        )}
-      </form>
-    </footer>
+        </div>
+      )}
+
+      {/* ✍️ Input Surface */}
+      <div
+        className={`flex items-end gap-1 bg-[#fdfcf6] border border-slate-200 rounded-[1.2rem] sm:rounded-[2rem] p-1 transition-all ${
+          isSending
+            ? "opacity-60"
+            : "focus-within:border-amber-400 focus-within:ring-2 focus-within:ring-amber-400/20"
+        }`}>
+        <button
+          type="button"
+          disabled={isSending}
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Attach file"
+          className="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-full text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
+          {getFileIcon()}
+        </button>
+
+        <input
+          title="Attach file"
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileSelect}
+          className="hidden"
+          accept={MEDIA_LIMITS.ALLOWED_MIME_TYPES.join(",")}
+        />
+
+        <textarea
+          id="ledger-input"
+          ref={textAreaRef}
+          rows={1}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !isSending) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          disabled={disabled || isSending}
+          placeholder="ሀሳብዎትን እዚህ ይጻፉ..."
+          className="flex-1 max-h-[180px] min-h-[36px] sm:min-h-[44px] py-2 sm:py-3 px-1 text-sm sm:text-base bg-transparent border-none focus:ring-0 outline-none resize-none text-slate-800 font-medium placeholder:text-slate-400 selection:bg-amber-200"
+        />
+
+        <button
+          onClick={handleSend}
+          disabled={disabled || isSending || (!value.trim() && !selectedFile)}
+          aria-label="Send message"
+          className="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-full bg-slate-900 text-white shadow-md hover:bg-amber-700 disabled:bg-slate-100 disabled:text-slate-300 transition-all active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
+          {isSending ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Send size={16} className="ml-0.5 sm:w-5 sm:h-5" />
+          )}
+        </button>
+      </div>
+    </div>
   );
 };
 

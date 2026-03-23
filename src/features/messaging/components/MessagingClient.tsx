@@ -20,97 +20,98 @@ interface Props {
 }
 
 const MessagingClient: FC<Props> = ({ conversations }) => {
-  // 1. OFFLINE-FIRST: Initialize session from localStorage
-  const [session, setSession] = useState<Session | null>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("sacred_ledger_session");
-      return saved ? JSON.parse(saved) : null;
-    }
-    return null;
-  });
-
+  // --- HYDRATION FIX: Start with null to match Server HTML ---
+  const [session, setSession] = useState<Session | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<ChannelID | undefined>(
     conversations[0]?.channel.id
   );
-
   const [appStatus, setAppStatus] = useState<"loading" | "ready" | "error">(
     "loading"
   );
   const [errorMessage, setErrorMessage] = useState<string>("");
 
-  /**
-   * REFIERENCE FOR OPTIMISTIC UPDATES
-   * This allows the Composer to "push" a message into the Stream
-   * without a page refresh or a Firestore read.
-   */
   const streamRef = useRef<MessageStreamHandle>(null);
 
+  /**
+   * BOOT SANCTUARY
+   * Establish identity and security vault access.
+   */
   const bootSanctuary = useCallback(async () => {
     try {
       setErrorMessage("");
+
+      // 1. Check LocalStorage First (Client-Side only)
+      const saved = localStorage.getItem("sacred_ledger_session");
+      let currentSession: Session | null = saved ? JSON.parse(saved) : null;
+
+      // 2. Refresh Auth via API
       const authRes = await fetch("/api/auth/refresh");
 
-      if (!authRes.ok) {
-        if (session) {
-          console.warn("Auth failed, continuing in offline mode.");
-          setAppStatus("ready");
-          return;
-        }
+      if (authRes.ok) {
+        const sessionData: Session = await authRes.json();
+        localStorage.setItem(
+          "sacred_ledger_session",
+          JSON.stringify(sessionData)
+        );
+        setSession(sessionData);
+        currentSession = sessionData;
+      } else if (!currentSession) {
+        // No local backup and API failed
         throw new Error("Sacred connection lost. Please log in again.");
+      } else {
+        // API failed but we have a local session
+        console.warn("Working in Offline-First mode.");
+        setSession(currentSession);
       }
 
-      const sessionData: Session = await authRes.json();
-      localStorage.setItem(
-        "sacred_ledger_session",
-        JSON.stringify(sessionData)
-      );
-      setSession(sessionData);
-
-      if (!sessionData.familyId) throw new Error("No Family ID assigned.");
-
-      const key = await loadKey(sessionData.familyId as FamilyID);
-      if (!key) throw new Error("Failed to initialize security vault locally.");
+      // 3. Initialize Vault
+      if (currentSession?.familyId) {
+        const key = await loadKey(currentSession.familyId as FamilyID);
+        if (!key)
+          console.warn("Security vault locked. Encryption unavailable.");
+      }
 
       setAppStatus("ready");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Unknown Error";
+      const msg =
+        err instanceof Error ? err.message : "Unknown Connection Error";
       setErrorMessage(msg);
       setAppStatus("error");
     }
-  }, [session]);
+  }, []);
 
+  // Trigger boot on mount (Client-only)
   useEffect(() => {
     bootSanctuary();
   }, [bootSanctuary]);
+
+  // --- UI: HYDRATION LOADING STATE ---
+  // This prevents the mismatch by showing a clean loader until the client is ready
+  if (appStatus === "loading" && !session) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-[#FCFBF7]">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-amber-100 border-t-amber-600 rounded-full animate-spin" />
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-900/40">
+            Establishing Sanctuary...
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // UI: ERROR STATE
   if (appStatus === "error" && !session) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#FCFBF7] p-8">
-        <div className="max-w-md w-full bg-white border border-amber-100 rounded-[2rem] p-10 shadow-2xl shadow-amber-900/5 text-center">
-          <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-6">
-            <svg
-              className="w-8 h-8"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"
-              />
-            </svg>
-          </div>
+        <div className="max-w-md w-full bg-white border border-amber-100 rounded-[2rem] p-10 shadow-2xl text-center">
           <h1 className="text-xl font-bold text-slate-900 mb-2 font-serif">
             Sanctuary Locked
           </h1>
-          <p className="text-sm text-slate-500 mb-8 leading-relaxed">
-            {errorMessage}
-          </p>
+          <p className="text-sm text-slate-500 mb-8">{errorMessage}</p>
           <button
             onClick={() => bootSanctuary()}
-            className="w-full bg-slate-900 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-[0.2em] hover:bg-slate-800 transition-all active:scale-95">
+            className="w-full bg-slate-900 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all">
             Re-Establish Connection
           </button>
         </div>
@@ -122,7 +123,7 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
     <div className="flex h-screen w-full bg-white overflow-hidden selection:bg-amber-100">
       {/* Sidebar */}
       <aside className="w-80 border-r border-slate-200 flex flex-col bg-[#fdfcf6]">
-        <header className="p-6 border-b border-slate-100 bg-white/50 backdrop-blur-md sticky top-0 z-10">
+        <header className="p-6 border-b border-slate-100 bg-white/50">
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-[10px] font-black uppercase tracking-[0.25em] text-amber-700/50">
               EOTC Ledger
@@ -140,10 +141,7 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
                     : "bg-amber-500 animate-pulse"
                 }`}
               />
-              <span
-                className={`text-[8px] font-black uppercase tracking-tighter ${
-                  appStatus === "ready" ? "text-emerald-700" : "text-amber-700"
-                }`}>
+              <span className="text-[8px] font-black uppercase tracking-tighter text-slate-600">
                 {appStatus === "ready" ? "Secure" : "Syncing"}
               </span>
             </div>
@@ -162,18 +160,12 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
         </div>
       </aside>
 
-      {/* Main Stream */}
+      {/* Main Area */}
       <main className="flex-1 flex flex-col bg-[#FCFBF7] relative">
-        {errorMessage && session && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest shadow-lg animate-bounce">
-            Connection Interrupted — Working Offline
-          </div>
-        )}
-
         {activeChannelId && session ? (
           <>
             <MessageStream
-              ref={streamRef} // CONNECTING THE REF
+              ref={streamRef}
               channelId={activeChannelId}
               currentUserId={session.uid}
             />
@@ -184,27 +176,12 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
                   channelId={activeChannelId}
                   currentUserId={session.uid}
                   encryptionKeyId={session.familyId}
-                  onOptimisticSend={(message) => {
-                    // This triggers the addOptimistic method inside MessageStream
-                    streamRef.current?.addOptimistic(message);
-                  }}
-                  onCancelSend={(messageId) => {
-                    // This triggers the removeOptimistic method inside MessageStream
-                    streamRef.current?.removeOptimistic(messageId);
-                  }}
+                  onOptimisticSend={(msg) =>
+                    streamRef.current?.addOptimistic(msg)
+                  }
+                  // The Composer now handles its own state internally
                 />
-
                 <div className="flex items-center justify-center gap-2 mt-4 opacity-40">
-                  <svg
-                    className="w-3 h-3 text-slate-400"
-                    fill="currentColor"
-                    viewBox="0 0 20 20">
-                    <path
-                      fillRule="evenodd"
-                      d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"
-                      clipRule="evenodd"
-                    />
-                  </svg>
                   <p className="text-[9px] text-slate-500 font-bold uppercase tracking-[0.1em]">
                     End-to-End Encrypted via Sacred Vault
                   </p>
@@ -214,9 +191,8 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
           </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center">
-            {/* ... (Empty State Icon) ... */}
             <p className="text-sm font-serif italic text-slate-400">
-              Select a family channel to view the ledger
+              Select a family channel
             </p>
           </div>
         )}
