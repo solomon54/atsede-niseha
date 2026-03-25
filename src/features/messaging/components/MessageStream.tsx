@@ -2,33 +2,43 @@
 
 "use client";
 
-import { forwardRef, useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import { useIsMounted } from "@/shared/hooks/useIsMounted";
 
 import { EnrichedMessage, useMessages } from "../hooks/useMessages";
 import { usePusherListener } from "../hooks/usePusherListener";
-import { ChannelID, UID } from "../types/messaging.types";
+import { ChannelID, OptimisticMessage, UID } from "../types/messaging.types"; // ← Import from central types
 import MessageBubble from "./MessageBubble";
+
+export interface MessageStreamHandle {
+  addOptimistic: (msg: OptimisticMessage) => void;
+}
 
 interface MessageStreamProps {
   channelId: ChannelID;
   currentUserId: UID;
 }
 
-const MessageStream = forwardRef<HTMLDivElement, MessageStreamProps>(
+const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
   ({ channelId, currentUserId }, ref) => {
     const isMounted = useIsMounted();
     const scrollRef = useRef<HTMLDivElement>(null);
     const hasScrolledToBottom = useRef(false);
 
-    // 1. Bridge Pusher to Local Ledger
     usePusherListener(channelId);
 
-    // 2. Reactive query (Now properly Enriched with Names/Roles)
     const { messages, isLoading } = useMessages(channelId);
 
-    // 3. Mobile-First Scroll Logic
+    // Expose addOptimistic to Composer
+    useImperativeHandle(ref, () => ({
+      addOptimistic: (optimisticMsg: OptimisticMessage) => {
+        // Optimistic insertion is handled inside useSendMessage hook
+        // Add extra UI logic here only if needed in the future
+      },
+    }));
+
+    // Auto-scroll logic (Mobile-first)
     useEffect(() => {
       const container = scrollRef.current;
       if (!container || messages.length === 0) return;
@@ -45,13 +55,15 @@ const MessageStream = forwardRef<HTMLDivElement, MessageStreamProps>(
       }
     }, [messages]);
 
+    // Reset scroll flag when channel changes
     useEffect(() => {
       hasScrolledToBottom.current = false;
     }, [channelId]);
 
-    // 4. Read Receipts
+    // Read Receipts
     useEffect(() => {
       if (!isMounted || messages.length === 0) return;
+
       const lastMsg = messages[messages.length - 1];
       if (lastMsg.senderId !== currentUserId && !lastMsg.isRead) {
         fetch("/api/message/read", {
@@ -67,7 +79,8 @@ const MessageStream = forwardRef<HTMLDivElement, MessageStreamProps>(
     return (
       <section
         ref={scrollRef}
-        className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 bg-[#FCFBF7] scroll-smooth custom-scrollbar">
+        className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-8 py-6 bg-[#FCFBF7] 
+                   scroll-smooth custom-scrollbar overscroll-contain">
         <div className="max-w-4xl mx-auto space-y-2">
           {isLoading && messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 animate-pulse">
@@ -102,7 +115,6 @@ const MessageStream = forwardRef<HTMLDivElement, MessageStreamProps>(
                       </span>
                     </div>
                   )}
-                  {/* BUG FIX: Explicitly pass enriched props so Bubble can see them */}
                   <MessageBubble
                     message={msg}
                     isOwn={msg.senderId === currentUserId}
@@ -110,12 +122,15 @@ const MessageStream = forwardRef<HTMLDivElement, MessageStreamProps>(
                     senderRole={msg.senderRole}
                     senderPhoto={msg.senderPhoto}
                     isDiacon={msg.isDiacon}
+                    onDelete={(id) => console.log("Delete", id)} // connect later
+                    onResend={(msg) => console.log("Resend", msg)} // connect later
                   />
                 </div>
               );
             })
           )}
-          <div className="h-4 w-full" />
+
+          <div className="h-8 w-full" />
         </div>
       </section>
     );

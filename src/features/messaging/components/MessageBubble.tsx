@@ -1,4 +1,5 @@
 // src/features/messaging/components/MessageBubble.tsx
+
 "use client";
 
 import { motion } from "framer-motion";
@@ -7,16 +8,19 @@ import {
   Check,
   CheckCheck,
   Download,
+  Edit2,
   FileText,
   Loader2,
+  MoreVertical,
   Music,
   Play,
+  Trash2,
   User,
 } from "lucide-react";
 import { FC, useEffect, useState } from "react";
 
 import { ChannelRole, Message } from "../types/messaging.types";
-import { MediaPreview } from "./MediaPreview"; // 1. Added Import
+import { MediaPreview } from "./MediaPreview";
 
 interface MessageBubbleProps {
   message: Message & { status?: "sending" | "sent" | "error" };
@@ -25,6 +29,9 @@ interface MessageBubbleProps {
   senderName?: string;
   senderPhoto?: string;
   isDiacon?: boolean;
+  onDelete?: (messageId: string) => void;
+  onResend?: (message: Message) => void;
+  onEdit?: (message: Message) => void;
 }
 
 const MessageBubble: FC<MessageBubbleProps> = ({
@@ -34,10 +41,14 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   senderName = "የቤተሰብ አባል",
   senderPhoto,
   isDiacon = false,
+  onDelete,
+  onResend,
+  onEdit,
 }) => {
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [isDownloaded, setIsDownloaded] = useState(false);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false); // 2. Preview State
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
 
   const isUploading = message.status === "sending" && message.media;
 
@@ -122,14 +133,13 @@ const MessageBubble: FC<MessageBubbleProps> = ({
           </div>
         )}
 
-        {/* IMAGE RENDERER */}
+        {/* IMAGE */}
         {isImage && (
           <div
             className={`relative ${
               !isUploading ? "cursor-pointer" : "cursor-default"
             }`}
-            onClick={() => !isUploading && setIsPreviewOpen(true)} // 3. Open Preview
-          >
+            onClick={() => !isUploading && setIsPreviewOpen(true)}>
             <img
               src={message.media.url}
               alt="Sacred Ledger Content"
@@ -154,7 +164,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
           </div>
         )}
 
-        {/* VIDEO RENDERER */}
+        {/* VIDEO */}
         {isVideo && (
           <div className="relative aspect-video bg-black flex items-center justify-center">
             {!isUploading ? (
@@ -169,7 +179,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
           </div>
         )}
 
-        {/* AUDIO RENDERER */}
+        {/* AUDIO */}
         {isAudio && (
           <div className="p-4 bg-amber-50/50 flex items-center gap-3">
             <div className="p-2 bg-amber-100 rounded-full text-amber-600">
@@ -179,7 +189,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
           </div>
         )}
 
-        {/* FILE / DOCUMENT RENDERER */}
+        {/* FILE */}
         {isFile && (
           <div className="flex items-center justify-between gap-3 p-4 bg-slate-50 border-b border-slate-100">
             <div className="flex items-center gap-3 min-w-0">
@@ -266,13 +276,13 @@ const MessageBubble: FC<MessageBubbleProps> = ({
           )}
 
           <div
-            className={`flex flex-col shadow-sm border ${
+            className={`group relative flex flex-col shadow-sm border rounded-2xl overflow-hidden ${
               isOwn
-                ? "bg-slate-900 border-slate-800 text-white rounded-2xl rounded-br-none"
-                : "bg-white border-slate-200 text-slate-900 rounded-2xl rounded-bl-none"
+                ? "bg-slate-900 border-slate-800 text-white rounded-br-none"
+                : "bg-white border-slate-200 text-slate-900 rounded-bl-none"
             }`}>
             {!isOwn && (
-              <div className="px-3 py-1.5 flex items-center justify-between gap-6 border-b border-slate-50">
+              <div className="px-3 py-1.5 flex items-center justify-between border-b border-slate-50">
                 <span className="text-[10px] font-bold text-slate-500">
                   {senderName}
                 </span>
@@ -287,48 +297,94 @@ const MessageBubble: FC<MessageBubbleProps> = ({
 
             {renderMediaContent()}
 
-            <div className="px-3 sm:px-4 py-2 sm:py-2.5 relative">
-              {message.content && (
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+            {/* Text Content - Fixed horizontal overflow */}
+            {message.content && (
+              <div className="px-3 sm:px-4 py-2.5">
+                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
                   {message.content}
                 </p>
+              </div>
+            )}
+
+            <div className="px-3 sm:px-4 py-1.5 flex items-center justify-between text-[9px] opacity-60">
+              <span>
+                {new Date(message.createdAt).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+
+              {isOwn && (
+                <div className="flex items-center gap-1">
+                  {message.status === "sending" ? (
+                    <Loader2
+                      size={10}
+                      className="animate-spin text-amber-500"
+                    />
+                  ) : message.status === "error" ? (
+                    <AlertCircle size={12} className="text-red-500" />
+                  ) : message.isRead ? (
+                    <CheckCheck size={12} className="text-amber-400" />
+                  ) : (
+                    <Check size={12} className="text-slate-400" />
+                  )}
+                </div>
               )}
-              <div
-                className={`flex items-center gap-1.5 mt-1 ${
-                  isOwn ? "justify-end" : "justify-start"
-                }`}>
-                <span className="text-[9px] font-medium opacity-40">
-                  {new Date(message.createdAt).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
-                {isOwn && (
-                  <div className="flex items-center">
-                    {message.status === "sending" ? (
-                      <Loader2
-                        size={10}
-                        className="animate-spin text-amber-500"
-                      />
-                    ) : message.status === "error" ? (
-                      <AlertCircle size={12} className="text-red-500" />
-                    ) : message.isRead ? (
-                      <CheckCheck size={12} className="text-amber-400" />
-                    ) : (
-                      <Check size={12} className="text-slate-400 opacity-50" />
-                    )}
-                  </div>
+            </div>
+
+            {/* Menu Button for own messages */}
+            {isOwn && (
+              <button
+                onClick={() => setShowMenu(!showMenu)}
+                className="absolute top-2 right-2 p-1.5 opacity-0 group-hover:opacity-100 transition-opacity rounded-full hover:bg-white/10"
+                title="Message options">
+                <MoreVertical size={16} className="text-white/70" />
+              </button>
+            )}
+
+            {/* Menu Dropdown */}
+            {isOwn && showMenu && (
+              <div className="absolute top-10 right-2 bg-slate-200 rounded-xl shadow-xl border border-slate-100 py-1 z-20 w-44 text-sm">
+                {onEdit && (
+                  <button
+                    onClick={() => {
+                      onEdit(message);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-slate-50 flex items-center gap-2 text-slate-700">
+                    <Edit2 size={16} /> Edit
+                  </button>
+                )}
+                {onResend && message.status === "error" && (
+                  <button
+                    onClick={() => {
+                      onResend(message);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-slate-200 flex items-center gap-2 text-amber-600">
+                    Resend
+                  </button>
+                )}
+                {onDelete && (
+                  <button
+                    onClick={() => {
+                      onDelete(message.id);
+                      setShowMenu(false);
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-slate-200 flex items-center gap-2 text-red-600">
+                    <Trash2 size={16} /> Delete
+                  </button>
                 )}
               </div>
-            </div>
+            )}
           </div>
         </div>
       </motion.div>
 
-      {/* 4. Media Preview Modal (Outside motion.div for portal-like behavior) */}
       <MediaPreview
         url={message.media?.url || null}
         mimeType={message.media?.mimeType}
+        fileName={message.media?.url?.split("/").pop() || "media"}
         isOpen={isPreviewOpen}
         onClose={() => setIsPreviewOpen(false)}
       />

@@ -1,92 +1,152 @@
 // src/features/messaging/components/MessagingClient.tsx
-
 "use client";
 
-import { FC, useCallback, useEffect, useRef, useState } from "react";
+import { MessageSquare, ShieldCheck, Users } from "lucide-react";
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { loadKey } from "../crypto/keyManager";
 import {
   ChannelID,
   ConversationSummary,
   FamilyID,
+  MemberDisplay,
   Session,
 } from "../types/messaging.types";
 import Composer from "./Composer";
-import { ConversationList } from "./ConversationList";
+import MembersList from "./MemberList";
 import MessageStream, { MessageStreamHandle } from "./MessageStream";
 
-interface Props {
-  conversations: ConversationSummary[];
-}
-
-const MessagingClient: FC<Props> = ({ conversations }) => {
-  // --- HYDRATION FIX: Start with null to match Server HTML ---
+const MessagingClient: FC = () => {
+  // ─────────────────────────────────────────────
+  // CORE STATE
+  // ─────────────────────────────────────────────
   const [session, setSession] = useState<Session | null>(null);
-  const [activeChannelId, setActiveChannelId] = useState<ChannelID | undefined>(
-    conversations[0]?.channel.id
-  );
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeChannelId, setActiveChannelId] = useState<
+    ChannelID | undefined
+  >();
   const [appStatus, setAppStatus] = useState<"loading" | "ready" | "error">(
     "loading"
   );
-  const [errorMessage, setErrorMessage] = useState<string>("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [members, setMembers] = useState<MemberDisplay[]>([]);
+  const [activeTab, setActiveTab] = useState<"chat" | "members">("chat");
 
   const streamRef = useRef<MessageStreamHandle>(null);
 
-  /**
-   * BOOT SANCTUARY
-   * Establish identity and security vault access.
-   */
+  // ─────────────────────────────────────────────
+  // BOOT
+  // ─────────────────────────────────────────────
   const bootSanctuary = useCallback(async () => {
     try {
       setErrorMessage("");
+      setAppStatus("loading");
 
-      // 1. Check LocalStorage First (Client-Side only)
       const saved = localStorage.getItem("sacred_ledger_session");
       let currentSession: Session | null = saved ? JSON.parse(saved) : null;
 
-      // 2. Refresh Auth via API
-      const authRes = await fetch("/api/auth/refresh");
+      const authRes = await fetch("/api/auth/refresh", {
+        credentials: "include",
+      });
 
       if (authRes.ok) {
-        const sessionData: Session = await authRes.json();
+        currentSession = await authRes.json();
         localStorage.setItem(
           "sacred_ledger_session",
-          JSON.stringify(sessionData)
+          JSON.stringify(currentSession)
         );
-        setSession(sessionData);
-        currentSession = sessionData;
+        setSession(currentSession);
       } else if (!currentSession) {
-        // No local backup and API failed
         throw new Error("Sacred connection lost. Please log in again.");
       } else {
-        // API failed but we have a local session
-        console.warn("Working in Offline-First mode.");
         setSession(currentSession);
       }
 
-      // 3. Initialize Vault
       if (currentSession?.familyId) {
-        const key = await loadKey(currentSession.familyId as FamilyID);
-        if (!key)
-          console.warn("Security vault locked. Encryption unavailable.");
+        await loadKey(currentSession.familyId as FamilyID);
       }
+
+      await fetchConversations(currentSession);
 
       setAppStatus("ready");
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : "Unknown Connection Error";
-      setErrorMessage(msg);
+      const message = err instanceof Error ? err.message : "Connection Error";
+      console.error("[BootSanctuary]", err);
+      setErrorMessage(message);
       setAppStatus("error");
     }
   }, []);
 
-  // Trigger boot on mount (Client-only)
   useEffect(() => {
     bootSanctuary();
   }, [bootSanctuary]);
 
-  // --- UI: HYDRATION LOADING STATE ---
-  // This prevents the mismatch by showing a clean loader until the client is ready
+  // ─────────────────────────────────────────────
+  // FETCH CONVERSATIONS
+  // ─────────────────────────────────────────────
+  const fetchConversations = useCallback(
+    async (currentSession: Session | null) => {
+      if (!currentSession) return;
+
+      try {
+        const res = await fetch("/api/message/conversation", {
+          credentials: "include",
+        });
+
+        if (!res.ok) throw new Error("Failed to fetch conversations");
+
+        const data: ConversationSummary[] = await res.json();
+        setConversations(data);
+
+        if (!activeChannelId && data.length > 0) {
+          setActiveChannelId(data[0].channel.id);
+        }
+      } catch (err) {
+        console.error("[FetchConversations]", err);
+      }
+    },
+    [activeChannelId]
+  );
+
+  // ─────────────────────────────────────────────
+  // ACTIVE CONVERSATION
+  // ─────────────────────────────────────────────
+  const activeConversation = useMemo(() => {
+    if (!conversations.length) return undefined;
+    return (
+      conversations.find((c) => c.channel.id === activeChannelId) ??
+      conversations[0]
+    );
+  }, [conversations, activeChannelId]);
+
+  // ─────────────────────────────────────────────
+  // MEMBERS SYNC
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!activeConversation) {
+      setMembers([]);
+      return;
+    }
+
+    const normalized: MemberDisplay[] = (activeConversation.members ?? []).map(
+      (m, idx) => ({
+        id: m.id ?? m.userId ?? `fallback-${idx}`,
+        userId: m.userId ?? `fallback-${idx}`,
+        channelId: activeConversation.channel.id,
+        fullName: m.fullName || m.userId || "Unknown Member",
+        photoUrl: m.photoUrl || "/assets/images/qdst-bite-krstiyan.jpg",
+        role: m.role ?? "MEMBER",
+        joinedAt: m.joinedAt ?? new Date().toISOString(),
+        isActive: m.isActive ?? false,
+      })
+    );
+
+    setMembers(normalized);
+  }, [activeConversation]);
+
+  // ─────────────────────────────────────────────
+  // LOADING
+  // ─────────────────────────────────────────────
   if (appStatus === "loading" && !session) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#FCFBF7]">
@@ -100,7 +160,9 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
     );
   }
 
-  // UI: ERROR STATE
+  // ─────────────────────────────────────────────
+  // ERROR
+  // ─────────────────────────────────────────────
   if (appStatus === "error" && !session) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#FCFBF7] p-8">
@@ -110,8 +172,8 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
           </h1>
           <p className="text-sm text-slate-500 mb-8">{errorMessage}</p>
           <button
-            onClick={() => bootSanctuary()}
-            className="w-full bg-slate-900 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all">
+            onClick={bootSanctuary}
+            className="w-full bg-slate-900 text-white py-4 rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 active:scale-[0.985]">
             Re-Establish Connection
           </button>
         </div>
@@ -119,83 +181,102 @@ const MessagingClient: FC<Props> = ({ conversations }) => {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // MAIN UI (FIXED LAYOUT)
+  // ─────────────────────────────────────────────
   return (
-    <div className="flex h-screen w-full bg-white overflow-hidden selection:bg-amber-100">
-      {/* Sidebar */}
-      <aside className="w-80 border-r border-slate-200 flex flex-col bg-[#fdfcf6]">
-        <header className="p-6 border-b border-slate-100 bg-white/50">
-          <div className="flex items-center justify-between mb-1">
-            <h2 className="text-[10px] font-black uppercase tracking-[0.25em] text-amber-700/50">
-              EOTC Ledger
-            </h2>
-            <div
-              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${
-                appStatus === "ready"
-                  ? "bg-emerald-50 border-emerald-100"
-                  : "bg-amber-50 border-amber-100"
-              }`}>
-              <div
-                className={`h-1.5 w-1.5 rounded-full ${
-                  appStatus === "ready"
-                    ? "bg-emerald-500"
-                    : "bg-amber-500 animate-pulse"
-                }`}
-              />
-              <span className="text-[8px] font-black uppercase tracking-tighter text-slate-600">
-                {appStatus === "ready" ? "Secure" : "Syncing"}
-              </span>
-            </div>
-          </div>
-          <p className="text-lg font-serif font-bold text-slate-900">
-            Sanctuary
-          </p>
+    <div className="flex h-[100dvh] w-full bg-white overflow-hidden fixed inset-0">
+      {/* SIDEBAR */}
+      <aside className="hidden md:flex w-80 border-r border-slate-200 flex-col bg-[#fdfcf6]">
+        <header className="p-6 border-b bg-white flex-none">
+          <h2 className="text-lg font-serif font-bold">Sanctuary</h2>
         </header>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
-          <ConversationList
-            conversations={conversations}
-            activeChannelId={activeChannelId}
-            onSelect={setActiveChannelId}
-          />
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <MembersList members={members} />
         </div>
       </aside>
 
-      {/* Main Area */}
-      <main className="flex-1 flex flex-col bg-[#FCFBF7] relative">
-        {activeChannelId && session ? (
-          <>
-            <MessageStream
-              ref={streamRef}
-              channelId={activeChannelId}
-              currentUserId={session.uid}
-            />
-
-            <footer className="px-8 pb-8 pt-2 bg-gradient-to-t from-[#FCFBF7] via-[#FCFBF7] to-transparent">
-              <div className="max-w-4xl mx-auto">
-                <Composer
-                  channelId={activeChannelId}
-                  currentUserId={session.uid}
-                  encryptionKeyId={session.familyId}
-                  onOptimisticSend={(msg) =>
-                    streamRef.current?.addOptimistic(msg)
-                  }
-                  // The Composer now handles its own state internally
-                />
-                <div className="flex items-center justify-center gap-2 mt-4 opacity-40">
-                  <p className="text-[9px] text-slate-500 font-bold uppercase tracking-[0.1em]">
-                    End-to-End Encrypted via Sacred Vault
-                  </p>
-                </div>
-              </div>
-            </footer>
-          </>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center">
-            <p className="text-sm font-serif italic text-slate-400">
-              Select a family channel
-            </p>
+      {/* MAIN */}
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#FCFBF7]">
+        {/* HEADER */}
+        <header className="flex-none border-b bg-white px-4 md:px-6 pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              <h1 className="text-sm font-bold">Family Sanctuary</h1>
+            </div>
+            <ShieldCheck size={16} />
           </div>
-        )}
+
+          {/* MOBILE TABS */}
+          <div className="flex md:hidden bg-slate-100 p-1 rounded-xl mb-3">
+            <button
+              onClick={() => setActiveTab("chat")}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg ${
+                activeTab === "chat"
+                  ? "bg-white shadow text-amber-700"
+                  : "text-slate-500"
+              }`}>
+              <MessageSquare size={14} /> Chat
+            </button>
+
+            <button
+              onClick={() => setActiveTab("members")}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg ${
+                activeTab === "members"
+                  ? "bg-white shadow text-amber-700"
+                  : "text-slate-500"
+              }`}>
+              <Users size={14} /> Members
+            </button>
+          </div>
+        </header>
+
+        {/* BODY */}
+        <div className="flex-1 flex flex-col min-h-0">
+          <section
+            className={`flex-1 flex flex-col min-h-0 ${
+              activeTab === "chat" ? "flex" : "hidden"
+            } md:flex`}>
+            {activeChannelId && session ? (
+              <>
+                {/* ✅ SCROLL OWNER */}
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  <MessageStream
+                    ref={streamRef}
+                    channelId={activeChannelId}
+                    currentUserId={session.uid}
+                  />
+                </div>
+
+                {/* ✅ FIXED COMPOSER */}
+                <div className="flex-none bg-white border-t pb-[env(safe-area-inset-bottom)]">
+                  <Composer
+                    channelId={activeChannelId}
+                    currentUserId={session.uid}
+                    encryptionKeyId={session.familyId}
+                    onOptimisticSend={(msg) =>
+                      streamRef.current?.addOptimistic(msg)
+                    }
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-slate-400 italic">
+                Harmonizing records...
+              </div>
+            )}
+          </section>
+
+          {/* MEMBERS MOBILE */}
+          <section
+            className={`flex-1 overflow-y-auto bg-white md:hidden ${
+              activeTab === "members" ? "block" : "hidden"
+            }`}>
+            <MembersList members={members} />
+          </section>
+        </div>
       </main>
     </div>
   );

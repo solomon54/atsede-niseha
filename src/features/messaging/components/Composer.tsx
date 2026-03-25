@@ -5,7 +5,8 @@
  * Features:
  * - Strict Zero-Any via OptimisticMessage type
  * - Mobile-First (<320px) optimized layout
- * - Custom Focus-Visible states (No default blue rings)
+ * - Clean spacious layout like the second screenshot
+ * - Icons never clutter even on tiny screens
  * - Resilience: Text restoration on failure
  */
 
@@ -170,7 +171,7 @@ const Composer: FC<ComposerProps> = ({
   };
 
   return (
-    <div className="relative w-full max-w-4xl mx-auto px-1 sm:px-4 pb-2 sm:pb-4">
+    <div className="relative w-full max-w-4xl mx-auto px-1 sm:px-3 md:px-4 pb-1 sm:pb-3">
       {/* ⚠️ Error Alert */}
       {error && (
         <div
@@ -208,9 +209,10 @@ const Composer: FC<ComposerProps> = ({
         </div>
       )}
 
-      {/* ✍️ Input Surface */}
+      {/* ✍️ Input Surface - Clean & Spacious like your second screenshot */}
       <div
-        className={`flex items-end gap-1 bg-[#fdfcf6] border border-slate-200 rounded-[1.2rem] sm:rounded-[2rem] p-1 transition-all ${
+        className={`flex items-end gap-2 sm:gap-3 bg-[#fdfcf6] border border-slate-200 
+        rounded-[1.75rem] sm:rounded-[2rem] px-3 py-1.5 sm:py-2 transition-all ${
           isSending
             ? "opacity-60"
             : "focus-within:border-amber-400 focus-within:ring-2 focus-within:ring-amber-400/20"
@@ -220,7 +222,7 @@ const Composer: FC<ComposerProps> = ({
           disabled={isSending}
           onClick={() => fileInputRef.current?.click()}
           aria-label="Attach file"
-          className="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-full text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
+          className="flex-shrink-0 flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
           {getFileIcon()}
         </button>
 
@@ -247,18 +249,23 @@ const Composer: FC<ComposerProps> = ({
           }}
           disabled={disabled || isSending}
           placeholder="ሀሳብዎትን እዚህ ይጻፉ..."
-          className="flex-1 max-h-[180px] min-h-[36px] sm:min-h-[44px] py-2 sm:py-3 px-1 text-sm sm:text-base bg-transparent border-none focus:ring-0 outline-none resize-none text-slate-800 font-medium placeholder:text-slate-400 selection:bg-amber-200"
+          className="flex-1 min-w-0 max-h-[180px] min-h-[40px] sm:min-h-[44px] 
+                     py-2.5 px-2 text-sm sm:text-base leading-tight
+                     bg-transparent border-none focus:ring-0 outline-none resize-none 
+                     text-slate-800 font-medium placeholder:text-slate-400 
+                     selection:bg-amber-200"
+          style={{ WebkitOverflowScrolling: "touch" }}
         />
 
         <button
           onClick={handleSend}
           disabled={disabled || isSending || (!value.trim() && !selectedFile)}
           aria-label="Send message"
-          className="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-full bg-slate-900 text-white shadow-md hover:bg-amber-700 disabled:bg-slate-100 disabled:text-slate-300 transition-all active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
+          className="flex-shrink-0 flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full bg-slate-900 text-white shadow-md hover:bg-amber-700 disabled:bg-slate-100 disabled:text-slate-300 transition-all active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
           {isSending ? (
-            <Loader2 size={16} className="animate-spin" />
+            <Loader2 size={18} className="animate-spin" />
           ) : (
-            <Send size={16} className="ml-0.5 sm:w-5 sm:h-5" />
+            <Send size={18} className="ml-0.5" />
           )}
         </button>
       </div>
