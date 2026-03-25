@@ -39,18 +39,18 @@ export function TokenSanctuary({
    * dynamic interleaved payload separately.
    */
   return (
-    <div className="bg-slate-900 p-1 md:p-6 rounded-xl md:rounded-3xl text-center relative overflow-hidden shadow-2xl border border-slate-800">
+    <div className="bg-slate-900 p-3 sm:p-6 rounded-xl md:rounded-3xl text-center relative overflow-hidden shadow-2xl border border-slate-800">
       {/* Decorative Label */}
       <label className="text-[8px] font-black text-amber-500/60 uppercase tracking-widest mb-3 block">
         መንፈሳዊ የቃል ኪዳን ቁልፍ (Covenant Link)
       </label>
 
-      <div className="flex flex-wrap justify-center items-center gap-1 font-mono text-[12px] md:text-xl">
+      <div className="flex flex-wrap justify-center items-center gap-2 md:gap-3 font-mono text-[13px] sm:text-[15px] md:text-xl">
         {/* Fixed Ecclesiastical Prefix */}
         <span className="text-slate-500 font-bold">EOTC—</span>
 
         {/* The Interleaved Inter-generational Key */}
-        <span className="text-amber-400 font-black tracking-[0.2em] drop-shadow-[0_0_8px_rgba(251,191,36,0.3)]">
+        <span className="text-amber-400 font-black tracking-[0.2em] drop-shadow-[0_0_8px_rgba(251,191,36,0.3)] break-all">
           {mixedHex}
         </span>
 
@@ -62,19 +62,19 @@ export function TokenSanctuary({
             e.preventDefault();
             onRegenerate();
           }}
-          className="ml-4 p-2 text-amber-500 hover:text-amber-300 hover:rotate-180 transition-all duration-500 active:scale-75">
+          className="ml-2 sm:ml-4 p-1.5 sm:p-2 text-amber-500 hover:text-amber-300 hover:rotate-180 transition-all duration-500 active:scale-75 shrink-0">
           <RefreshCw size={18} />
         </button>
       </div>
 
       {/* Instructional Subtext */}
-      <p className="mt-3 text-[9px] text-slate-500 font-medium">
+      <p className="mt-4 text-[9px] sm:text-[10px] text-slate-500 font-medium px-2 leading-tight">
         ይህ ቁልፍ በልጁ ስልክ ላይ &quot;መለያ&quot; (Token) ሆኖ የሚያገለግል ሲሆን አባታዊ ማንነትዎን
         ይዟል::
       </p>
 
       {/* High-End Background Decorative Element */}
-      <div className="absolute -right-1 bottom-0 opacity-[0.3] md:opacity-[.5] pointer-events-none transform rotate-12">
+      <div className="absolute -right-1 bottom-0 opacity-[0.2] md:opacity-[.5] pointer-events-none transform rotate-12">
         <RefreshCw size={121} className="text-amber-600 " />
       </div>
 

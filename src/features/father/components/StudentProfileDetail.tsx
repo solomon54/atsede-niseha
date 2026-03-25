@@ -2,13 +2,12 @@
 
 "use client";
 
-import { motion } from "framer-motion";
 import {
-  ArrowUpRight,
-  Award,
   BookOpen,
   Calendar,
-  CalendarDays,
+  Church,
+  Compass,
+  Copy,
   Cross,
   Fingerprint,
   Flame,
@@ -17,386 +16,460 @@ import {
   Hash,
   History,
   Landmark,
+  LucideIcon,
   Mail,
+  Map,
   MapPin,
+  Mars,
   Phone,
   ShieldCheck,
   User,
+  Venus,
   Zap,
 } from "lucide-react";
+import { useState } from "react";
 
 import { StudentRecord } from "@/shared/types";
 import { cn } from "@/shared/utils/utils";
 
+/**
+ * EXTENDED TYPE BRIDGE
+ * Intersecting your provided StudentRecord with the missing UI fields
+ * to stop the TS compiler from screaming.
+ */
+interface ExtendedStudentRecord extends StudentRecord {
+  spiritualTitle?: string;
+  gender: "MALE" | "FEMALE";
+  college: string;
+  semester: number | string;
+  region: string;
+  zone: string;
+  city: string;
+  phone: string;
+  language: string;
+  birthDate: {
+    day: number | string;
+    month: number | string;
+    year: number | string;
+  };
+}
+
+// --- Component Prop Types ---
+interface DetailCardProps {
+  title: string;
+  subtitle: string;
+  icon: LucideIcon;
+  accent: "amber" | "slate";
+  children: React.ReactNode;
+}
+
+interface DataPointProps {
+  icon: LucideIcon;
+  label: string;
+  value: string | number | undefined;
+  isEthiopic?: boolean;
+}
+
 export default function StudentProfileDetail({
   student,
 }: {
-  student: StudentRecord;
+  student: ExtendedStudentRecord;
 }) {
-  const isPillar =
-    student.role === "BIG_BROTHER" || student.role === "BIG_SISTER";
+  const [copied, setCopied] = useState(false);
 
-  // Mock data for the Timeline - replace with real fetch later
-  const milestones = [
-    {
-      type: "EUCHARIST",
-      date: "12/6/2016",
-      label: "ቅዱስ ቁርባን (Holy Communion)",
-      location: "Holy Trinity Cathedral",
-    },
-    {
-      type: "PENANCE",
-      date: "01/4/2016",
-      label: "ንስሐ (Penance)",
-      location: "Personal Confession",
-    },
-    {
-      type: "ONBOARDING",
-      date: "18/3/2016",
-      label: "ወደ ዓጸደ ንስሐ ተቀላቀለ (Joined Sanctuary)",
-      location: "System",
-    },
-  ];
+  // Safe check for birthDate to prevent runtime crash if data is partial
+  const birthDateString = student.birthDate
+    ? `${student.birthDate.day}/${student.birthDate.month}/${student.birthDate.year}`
+    : "---";
 
-  return (
-    <div className="space-y-12 pb-20 font-sans">
-      {/* SECTION 1: THE SACRED HALO */}
-      <section className="relative flex flex-col items-center text-center py-10">
-        <div className="relative mb-6">
-          <div className="absolute inset-0 border border-amber-200/40 rounded-full border-dashed animate-spin-[30s_linear_infinite]" />
-          <div className="absolute inset-0 bg-amber-400/10 rounded-full blur-3xl" />
-          <div className="relative p-1.5 bg-gradient-to-b from-amber-400 to-amber-100 rounded-full shadow-2xl">
-            <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white bg-slate-100">
-              {student.photoUrl ? (
-                <img
-                  src={student.photoUrl}
-                  alt=""
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <User className="w-full h-full p-8 text-slate-300" />
-              )}
-            </div>
-          </div>
-          <div
-            className={cn(
-              "absolute -bottom-2 right-0 px-4 py-1 rounded-full text-[8px] font-black uppercase tracking-widest shadow-lg border",
-              student.accountClaimed
-                ? "bg-emerald-500 text-white border-emerald-400"
-                : "bg-amber-500 text-white border-amber-400"
-            )}>
-            {student.accountClaimed ? "Active Sanctuary" : "Pending Claim"}
-          </div>
-        </div>
-        <h1 className="text-3xl font-black text-slate-900 tracking-tighter mb-1">
-          {student.fullName}
-        </h1>
-        <p className="text-lg font-black text-amber-600 font-ethiopic tracking-wide">
-          {student.christianName} <span className="text-slate-300 mx-2">|</span>{" "}
-          {student.spiritualTitle}
-        </p>
-      </section>
+  // Logic to handle the exact joined date from createdAt
+  const joinedDate = student.createdAt
+    ? new Date(student.createdAt).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : "---";
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* LEFT COLUMN: ACADEMIC & PILLAR */}
-        <div className="lg:col-span-7 space-y-8">
-          <div className="bg-white border border-slate-100 rounded-[2.5rem] p-8 shadow-sm">
-            <header className="flex items-center gap-3 mb-8">
-              <div className="p-3 bg-slate-950 text-white rounded-2xl">
-                <GraduationCap size={20} />
-              </div>
-              <div>
-                <p className="text-[10px] font-black text-amber-700 uppercase tracking-[0.3em]">
-                  Academic Journey
-                </p>
-                <h3 className="text-xl font-black text-slate-900 font-ethiopic">
-                  የትምህርት መረጃ
-                </h3>
-              </div>
-            </header>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-y-8 gap-x-12">
-              <InfoBlock
-                icon={Landmark}
-                label="University"
-                value={student.university}
-              />
-              <InfoBlock
-                icon={BookOpen}
-                label="College"
-                value={student.college}
-                isEthiopic
-              />
-              <InfoBlock
-                icon={Zap}
-                label="Department"
-                value={student.department}
-                isEthiopic
-              />
-              <div className="grid grid-cols-2 gap-4">
-                <InfoBlock
-                  icon={Calendar}
-                  label="Year"
-                  value={`${student.academicYear}ኛ ዓመት`}
-                />
-                <InfoBlock
-                  icon={Hash}
-                  label="Semester"
-                  value={`${student.semester}ኛ ሴሚስተር`}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* SPIRITUAL TIMELINE (The "Incense Trail") */}
-          <div className="space-y-6 px-2">
-            <header className="flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-black text-amber-700 uppercase tracking-[0.4em]">
-                  Life Archives
-                </p>
-                <h3 className="text-2xl font-black text-slate-900 font-ethiopic">
-                  የመንፈስ ጉዞ
-                </h3>
-              </div>
-              <div className="p-3 bg-slate-100 rounded-full text-slate-400">
-                <History size={20} />
-              </div>
-            </header>
-            <div className="relative pl-8 space-y-8">
-              <div className="absolute left-[19px] top-2 bottom-2 w-[2px] bg-gradient-to-b from-amber-500 via-amber-200 to-transparent" />
-              {milestones.map((event, idx) => (
-                <TimelineEvent key={idx} event={event} />
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN: IDENTITY & COMMAND */}
-        <div className="lg:col-span-5 space-y-8">
-          <div className="bg-[#fdfcf6] border border-amber-100 rounded-[2.5rem] p-8 shadow-inner">
-            <header className="flex items-center gap-3 mb-8">
-              <div className="p-3 bg-amber-500 text-white rounded-2xl">
-                <Fingerprint size={20} />
-              </div>
-              <div>
-                <p className="text-[10px] font-black text-amber-700 uppercase tracking-[0.3em]">
-                  Origin & Link
-                </p>
-                <h3 className="text-xl font-black text-slate-900 font-ethiopic">
-                  ማንነት እና መገኛ
-                </h3>
-              </div>
-            </header>
-            <div className="space-y-6">
-              <ContactBlock icon={Phone} label="Phone" value={student.phone} />
-              <ContactBlock
-                icon={Mail}
-                label="Digital Mail"
-                value={student.email}
-              />
-              <ContactBlock
-                icon={MapPin}
-                label="Diocese"
-                value={student.diocese}
-                isEthiopic
-              />
-              <div className="pt-4 border-t border-amber-200/40">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">
-                  Born on (Ethiopic)
-                </p>
-                <p className="text-lg font-bold text-slate-800">
-                  {student?.birthDate.day}/{student.birthDate.month}/
-                  {student.birthDate.year}{" "}
-                  <span className="font-ethiopic text-sm">ዓ.ም</span>
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* PERMANENT ID */}
-          <div className="bg-slate-950 rounded-[2rem] p-6 text-white overflow-hidden relative group">
-            <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform">
-              <ShieldCheck size={120} />
-            </div>
-            <p className="text-[9px] font-black text-amber-500 uppercase tracking-[0.4em] mb-4">
-              Ecclesiastical UID
-            </p>
-            <p className="text-xl font-mono tracking-tighter text-amber-100 relative z-10">
-              {student.eotcUid}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* SECTION 4: RULE MONITORING */}
-      <section className="bg-slate-900 rounded-[3rem] p-10 text-white relative overflow-hidden">
-        <div
-          className="absolute inset-0 opacity-5 pointer-events-none"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle, white 1px, transparent 1px)",
-            backgroundSize: "30px 30px",
-          }}
-        />
-        <header className="relative z-10 mb-10 text-center">
-          <p className="text-[10px] font-black text-amber-400 uppercase tracking-[0.5em] mb-2">
-            Active Spiritual Orders
-          </p>
-          <h3 className="text-3xl font-black font-ethiopic">
-            የቀኖና ክትትል (Rule Monitoring)
-          </h3>
-        </header>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 relative z-10">
-          <OrderCard
-            title="ጾም (Fasting)"
-            status="ACTIVE"
-            progress={80}
-            icon={ShieldCheck}
-            color="amber"
-          />
-          <OrderCard
-            title="ጸሎት (Prayer)"
-            status="STREAK"
-            progress={100}
-            icon={Flame}
-            color="emerald"
-          />
-          <OrderCard
-            title="ምጽዋት (Alms)"
-            status="PENDING"
-            progress={30}
-            icon={Cross}
-            color="slate"
-          />
-        </div>
-      </section>
-    </div>
-  );
-}
-
-/* SUB-COMPONENTS */
-
-function TimelineEvent({ event }: { event: any }) {
-  return (
-    <div className="relative group">
-      <div className="absolute -left-[27px] top-1 w-4 h-4 rounded-full border-4 border-[#fdfcf6] bg-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] z-10" />
-      <div className="bg-white border border-slate-100 rounded-3xl p-5 shadow-sm group-hover:shadow-md transition-all">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div
-              className={cn(
-                "p-3 rounded-xl",
-                event.type === "EUCHARIST"
-                  ? "bg-amber-50 text-amber-600"
-                  : "bg-slate-50 text-slate-600"
-              )}>
-              {event.type === "EUCHARIST" ? (
-                <Flame size={20} />
-              ) : (
-                <Cross size={20} />
-              )}
-            </div>
-            <div>
-              <h4 className="text-sm font-black text-slate-900 font-ethiopic">
-                {event.label}
-              </h4>
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">
-                {event.location}
-              </p>
-            </div>
-          </div>
-          <div className="text-right">
-            <span className="text-[10px] font-black text-amber-700 bg-amber-50 px-2 py-1 rounded-md">
-              {event.date} ዓ.ም
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function OrderCard({ title, status, progress, icon: Icon, color }: any) {
-  const colorMap: any = {
-    amber: "text-amber-400 bg-amber-500/20 bar-bg-amber-500",
-    emerald: "text-emerald-400 bg-emerald-500/20 bar-bg-emerald-500",
-    slate: "text-slate-400 bg-slate-500/20 bar-bg-slate-500",
+  const copyToClipboard = () => {
+    if (!student.eotcUid) return;
+    navigator.clipboard.writeText(student.eotcUid);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="bg-white/5 backdrop-blur-xl border border-white/10 p-6 rounded-[2rem] hover:bg-white/10 transition-colors group">
-      <div className="flex items-center justify-between mb-6">
-        <div
-          className={cn(
-            "p-3 rounded-xl",
-            colorMap[color].split(" ").slice(0, 2).join(" ")
-          )}>
-          <Icon size={20} />
+    <div className="space-y-6 sm:space-y-10 pb-20 px-0 sm:px-4 max-w-7xl mx-auto">
+      {/* 1. THE SACRED HEADER */}
+      <section className="relative p-6 sm:p-12 rounded-sm sm:rounded-[3rem] bg-white border-b sm:border border-slate-100 shadow-sm overflow-hidden">
+        <div className="absolute top-0 right-0 p-10 opacity-[0.03] pointer-events-none">
+          <Church size={200} />
         </div>
-        <span className="text-[8px] font-black px-2 py-1 bg-white/10 rounded-md tracking-widest uppercase">
-          {status}
-        </span>
+
+        <div className="flex flex-col items-center gap-6 relative z-10">
+          <div className="relative group">
+            <div className="absolute inset-[-10px] rounded-full border-2 border-amber-200 animate-[pulse_3s_ease-in-out_infinite]" />
+            <div className="absolute inset-[-20px] rounded-full border border-slate-200 shadow-inner" />
+
+            <div className="w-38 h-38 sm:w-48 sm:h-48 rounded-full border-[3px] border-white shadow-2xl overflow-hidden bg-slate-50 relative z-10">
+              {student.photoUrl ? (
+                <img
+                  src={student.photoUrl}
+                  alt={student.secularName}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-amber-50 text-amber-200">
+                  <User size={60} />
+                </div>
+              )}
+            </div>
+
+            <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 px-4 py-1.5 bg-slate-950 text-amber-400 rounded-full border border-amber-500/30 shadow-xl z-20 flex items-center gap-2 whitespace-nowrap">
+              <Church size={12} className="text-amber-500" />
+              <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-[0.15em]">
+                {student.spiritualTitle || "ምዕመን"}
+              </span>
+            </div>
+          </div>
+
+          <div className="text-center space-y-3 mt-6 w-full max-w-sm">
+            <h1 className="text-2xl sm:text-5xl font-black text-slate-900 tracking-tighter leading-tight break-words">
+              {student.secularName}
+            </h1>
+
+            <div className="flex flex-wrap justify-center items-center gap-2 sm:gap-3">
+              <span className="text-lg sm:text-2xl font-bold text-amber-600 font-ethiopic">
+                {student.christianName}
+              </span>
+              <div className="h-4 w-px bg-slate-300 hidden xs:block" />
+              <button
+                onClick={copyToClipboard}
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors active:scale-95">
+                <span
+                  className={cn(
+                    "text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors",
+                    copied ? "text-emerald-600" : "text-slate-500"
+                  )}>
+                  {copied ? "COPIED" : student.eotcUid}
+                </span>
+                <Copy
+                  size={10}
+                  className={copied ? "text-emerald-600" : "text-amber-600/50"}
+                />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap justify-center gap-2 pt-2">
+              <StatusBadge active={student.accountClaimed} />
+              <div className="px-3 py-1 rounded-full text-[9px] font-black uppercase bg-slate-900 text-white flex items-center gap-1.5 border border-slate-800">
+                {student.gender === "MALE" ? (
+                  <Mars size={10} />
+                ) : (
+                  <Venus size={10} />
+                )}
+                {student.gender === "MALE" ? " ወንድ (MALE)" : "ሴት (FEMALE)"}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* 2. INFORMATION BENTO */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        <DetailCard
+          title="የትምህርት መረጃ"
+          subtitle="Academic Credentials"
+          icon={GraduationCap}
+          accent="slate">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <DataPoint
+              icon={Landmark}
+              label="Institution"
+              value={student.university}
+            />
+            <DataPoint
+              icon={BookOpen}
+              label="Faculty"
+              value={student.college}
+              isEthiopic
+            />
+            <DataPoint
+              icon={Zap}
+              label="Department"
+              value={student.department}
+              isEthiopic
+            />
+            <div className="flex gap-4">
+              <DataPoint
+                icon={Calendar}
+                label="Year"
+                value={`${student.academicYear}ኛ ዓመት`}
+              />
+              <DataPoint
+                icon={Hash}
+                label="Semester"
+                value={`${student.semester}ኛ ሴሚ`}
+              />
+            </div>
+          </div>
+        </DetailCard>
+
+        <DetailCard
+          title="የመኖሪያ አድራሻ"
+          subtitle="Geographic Mapping"
+          icon={MapPin}
+          accent="amber">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <DataPoint
+              icon={Compass}
+              label="Region"
+              value={student.region}
+              isEthiopic
+            />
+            <DataPoint
+              icon={Map}
+              label="Zone / Subcity"
+              value={student.zone}
+              isEthiopic
+            />
+            <DataPoint
+              icon={MapPin}
+              label="Exact Address"
+              value={student.city}
+              isEthiopic
+            />
+            <DataPoint
+              icon={Calendar}
+              label="Birth Registry"
+              value={`${birthDateString} ዓ.ም`}
+            />
+          </div>
+        </DetailCard>
+
+        <DetailCard
+          title="የመገናኛ መረጃ"
+          subtitle="Digital Connectivity"
+          icon={Phone}
+          accent="slate">
+          <div className="grid grid-cols-1 gap-3">
+            <ContactRow icon={Phone} label="Line 01" value={student.phone} />
+            <ContactRow
+              icon={Mail}
+              label="Email Address"
+              value={student.email}
+            />
+            <ContactRow
+              icon={Globe}
+              label="Native Tongue"
+              value={student.language}
+              isEthiopic
+            />
+          </div>
+        </DetailCard>
+
+        <DetailCard
+          title="መንፈሳዊ ሁኔታ"
+          subtitle="Spiritual Vitality"
+          icon={Flame}
+          accent="amber">
+          <div className="space-y-6">
+            <div className="p-4 rounded-2xl bg-slate-950 text-white flex items-center justify-between border border-amber-500/20 shadow-inner">
+              <div className="flex items-center gap-3">
+                <Cross className="text-amber-500" size={18} />
+                <span className="text-[10px] font-black uppercase tracking-widest">
+                  Confession State
+                </span>
+              </div>
+              <span className="text-[9px] font-black text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded border border-emerald-400/20">
+                VERIFIED
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              <MiniStat label="Fasts" value="8/8" />
+              <MiniStat label="Prayer" value="STREAK" />
+              <MiniStat label="Alms" value="ACTIVE" />
+            </div>
+          </div>
+        </DetailCard>
       </div>
-      <h4 className="text-xl font-bold font-ethiopic mb-4 flex items-center justify-between">
-        {title}{" "}
-        <ArrowUpRight
-          size={14}
-          className="opacity-0 group-hover:opacity-100 transition-opacity"
-        />
-      </h4>
-      <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
-        <div
-          className={cn(
-            "h-full transition-all duration-1000",
-            color === "amber"
-              ? "bg-amber-500"
-              : color === "emerald"
-              ? "bg-emerald-500"
-              : "bg-slate-500"
-          )}
-          style={{ width: `${progress}%` }}
-        />
-      </div>
+
+      {/* 3. THE ETERNAL ARCHIVE */}
+      <section className="bg-slate-950 rounded-lg sm:rounded-[3rem] p-8 sm:p-16 text-white relative overflow-hidden border-t border-slate-800">
+        <div className="max-w-3xl mx-auto relative z-10">
+          <div className="flex flex-col items-center text-center mb-12">
+            <div className="p-4 rounded-full bg-white/5 border border-white/10 text-amber-500 mb-6 shadow-2xl">
+              <ShieldCheck size={40} />
+            </div>
+            <h2 className="text-lg sm:text-xl font-black font-ethiopic leading-tight mb-4 text-center">
+              ይህ መዝገብ ለዘለዓለም በአባትና ልጅ ምስጢር ሆኖ ይጠበቃል
+            </h2>
+            <p className="text-[10px] font-black text-amber-500 uppercase tracking-[0.4em]">
+              Eternal Sanctuary Protection
+            </p>
+          </div>
+
+          <div className="space-y-8 mb-12">
+            <TimelineItem
+              date={joinedDate}
+              title="Record Created"
+              desc="The child's data was officially entered into the digital diptychs."
+              icon={Fingerprint}
+            />
+            <TimelineItem
+              date="ግንኙነት"
+              title="Spiritual Bond"
+              desc="Successfully verified by the designated spiritual father."
+              icon={History}
+              isLast
+            />
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
 
-function InfoBlock({ icon: Icon, label, value, isEthiopic = false }: any) {
+/* --- REUSABLE UI COMPONENTS (STRICTLY TYPED) --- */
+
+function DetailCard({
+  title,
+  subtitle,
+  icon: Icon,
+  accent,
+  children,
+}: DetailCardProps) {
   return (
-    <div className="space-y-1.5">
+    <div className="bg-white border-y sm:border border-slate-100 rounded-lg sm:rounded-[2.5rem] p-6 sm:p-10 shadow-sm transition-all hover:shadow-md">
+      <header className="flex items-center gap-4 mb-8">
+        <div
+          className={cn(
+            "p-3 rounded-2xl shadow-sm",
+            accent === "amber"
+              ? "bg-amber-500 text-white"
+              : "bg-slate-900 text-white"
+          )}>
+          <Icon size={20} />
+        </div>
+        <div className="min-w-0">
+          <h3 className="text-lg sm:text-xl font-black text-slate-900 font-ethiopic leading-none truncate">
+            {title}
+          </h3>
+          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1 truncate">
+            {subtitle}
+          </p>
+        </div>
+      </header>
+      {children}
+    </div>
+  );
+}
+
+function DataPoint({ icon: Icon, label, value, isEthiopic }: DataPointProps) {
+  return (
+    <div className="space-y-1.5 min-w-0">
       <div className="flex items-center gap-2 text-slate-400">
-        <Icon size={14} />
-        <span className="text-[9px] font-black uppercase tracking-widest">
+        <Icon size={12} strokeWidth={2.5} />
+        <span className="text-[8px] sm:text-[9px] font-black uppercase tracking-widest truncate">
           {label}
         </span>
       </div>
       <p
         className={cn(
-          "text-sm font-bold text-slate-800",
-          isEthiopic && "font-ethiopic text-[15px]"
+          "text-sm font-bold text-slate-900 truncate",
+          isEthiopic && "font-ethiopic text-[16px]"
         )}>
-        {value}
+        {value || "---"}
       </p>
     </div>
   );
 }
 
-function ContactBlock({ icon: Icon, label, value, isEthiopic = false }: any) {
+function ContactRow({
+  icon: Icon,
+  label,
+  value,
+  isEthiopic,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string | undefined;
+  isEthiopic?: boolean;
+}) {
   return (
-    <div className="flex items-center gap-4 group">
-      <div className="w-10 h-10 rounded-xl bg-white border border-amber-100 flex items-center justify-center text-amber-600 group-hover:bg-amber-600 group-hover:text-white transition-colors">
+    <div className="flex items-center gap-4 p-3.5 rounded-2xl bg-slate-50 border border-slate-100 hover:border-amber-200 transition-colors">
+      <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-white flex items-center justify-center text-slate-400 shadow-sm">
         <Icon size={18} />
       </div>
-      <div>
-        <p className="text-[8px] font-black text-slate-400 uppercase tracking-tighter">
+      <div className="min-w-0 flex-1">
+        <p className="text-[8px] font-black text-slate-400 uppercase tracking-tighter mb-0.5">
           {label}
         </p>
         <p
           className={cn(
-            "text-xs font-bold text-slate-800",
-            isEthiopic && "font-ethiopic text-sm"
+            "text-sm font-bold text-slate-900 truncate",
+            isEthiopic && "font-ethiopic"
           )}>
-          {value}
+          {value || "---"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-slate-50 border border-slate-100 p-3 rounded-2xl text-center">
+      <p className="text-[8px] font-black text-slate-400 uppercase mb-1">
+        {label}
+      </p>
+      <p className="text-[10px] font-black text-slate-900">{value}</p>
+    </div>
+  );
+}
+
+function StatusBadge({ active }: { active: boolean }) {
+  return (
+    <div
+      className={cn(
+        "px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest border shadow-sm",
+        active
+          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+          : "bg-amber-50 text-amber-700 border-amber-200"
+      )}>
+      {active ? "● ACTIVE" : "○ PENDING"}
+    </div>
+  );
+}
+
+function TimelineItem({
+  date,
+  title,
+  desc,
+  icon: Icon,
+  isLast,
+}: {
+  date: string;
+  title: string;
+  desc: string;
+  icon: LucideIcon;
+  isLast?: boolean;
+}) {
+  return (
+    <div className="flex gap-4 sm:gap-8 group">
+      <div className="flex flex-col items-center">
+        <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-amber-500 group-hover:bg-amber-500 group-hover:text-slate-950 transition-all">
+          <Icon size={20} />
+        </div>
+        {!isLast && <div className="w-px h-full bg-white/10 my-2" />}
+      </div>
+      <div className="pb-8">
+        <span className="text-[9px] font-black text-amber-500 tracking-[0.2em] mb-1 block uppercase">
+          {date}
+        </span>
+        <h4 className="text-lg font-bold text-white mb-1">{title}</h4>
+        <p className="text-xs text-slate-400 leading-relaxed max-w-sm">
+          {desc}
         </p>
       </div>
     </div>

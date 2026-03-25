@@ -1,13 +1,16 @@
 // src/features/father/components/RegisterChildForm.tsx
 /**
  * EOTC Sacred Ledger - RegisterChildForm
+ * FINAL MERGED BUILD
  * ------------------------------------------------------------
- * Final Production Build: Unified Validation & Pristine Reset.
- * Bridges ecclesiastical tradition with modern technical precision.
- * * FEATURES:
- * - Pristine Reset: Deep scrub of form state post-success to prevent ghost errors.
- * - Premium Toast UI: Smooth floating notifications for success/error states.
- * - Mode 'onTouched': Reduces validation noise while the user is typing.
+ * ✔ Unified validation + pristine reset
+ * ✔ Token generator (stable)
+ * ✔ Image upload + preview
+ * ✔ Compact mobile-first UI (tight spacing)
+ * ✔ Adaptive toast system
+ * ✔ Reduced font + whitespace (ultra-dense but readable)
+ * ✔ Clean separated layout preserved
+ * ✔ Fully adaptable on <320px devices
  */
 
 "use client";
@@ -37,14 +40,17 @@ import { TokenSanctuary } from "./TokenSanctuary";
 interface RegisterChildFormProps {
   fatherId: string;
   fatherEotcId: string;
-  onSuccess?: () => void; // Add this to refresh the directory
+  onSuccess?: () => void;
 }
 
 export default function RegisterChildForm({
   fatherId,
   fatherEotcId,
-  onSuccess, // Destructure here
+  onSuccess,
 }: RegisterChildFormProps) {
+  // ─────────────────────────────────────────────
+  // LOCAL STATE
+  // ─────────────────────────────────────────────
   const [preview, setPreview] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<{
@@ -52,6 +58,9 @@ export default function RegisterChildForm({
     text: string;
   } | null>(null);
 
+  // ─────────────────────────────────────────────
+  // FORM SETUP
+  // ─────────────────────────────────────────────
   const {
     register,
     handleSubmit,
@@ -70,7 +79,7 @@ export default function RegisterChildForm({
       spiritualFatherId: fatherEotcId,
       gender: undefined,
       birthDate: {
-        year: getTodayEthiopian().year - 20, // Default to 20 years ago for convenience
+        year: getTodayEthiopian().year - 20,
         month: 1,
         day: 1,
       },
@@ -92,25 +101,27 @@ export default function RegisterChildForm({
   });
 
   const currentToken = watch("fullToken");
-  const hasErrors = Object.keys(errors).length > 0;
 
-  /**
-   * TOKEN GENERATOR
-   * Interleaves Father and Child IDs for spiritual linkage.
-   */
+  // ─────────────────────────────────────────────
+  // TOKEN GENERATOR
+  // ─────────────────────────────────────────────
   const generateFullToken = useCallback(() => {
     if (!fatherEotcId) return;
+
     const fCore = fatherEotcId.replace("EOTC-", "").toUpperCase();
     const cSeed = Math.random().toString(16).slice(2, 6).toUpperCase();
+
     let mixed = "";
     let fIdx = 0;
     let cIdx = 0;
+
     for (let i = 0; i < 4; i++) {
       mixed +=
         (fCore[fIdx++] || "X") +
         (fCore[fIdx++] || "X") +
         (cSeed[cIdx++] || "Z");
     }
+
     setValue("fullToken", `EOTC-${mixed}`);
   }, [fatherEotcId, setValue]);
 
@@ -118,6 +129,9 @@ export default function RegisterChildForm({
     if (!currentToken) generateFullToken();
   }, [generateFullToken, currentToken]);
 
+  // ─────────────────────────────────────────────
+  // PHOTO HANDLING
+  // ─────────────────────────────────────────────
   const handlePhotoSelect = (selectedFile: File) => {
     setFile(selectedFile);
     const objectUrl = URL.createObjectURL(selectedFile);
@@ -131,35 +145,39 @@ export default function RegisterChildForm({
     setValue("photoUrl", "", { shouldValidate: true });
   };
 
-  /**
-   * SUBMISSION LOGIC
-   */
+  // ─────────────────────────────────────────────
+  // SUBMIT
+  // ─────────────────────────────────────────────
   const onSubmit: SubmitHandler<RegisterChildFormData> = async (data) => {
     setStatus(null);
+
     try {
       let photoUrl = "";
-      // 1. Handle Portrait Upload
+
+      // Upload image
       if (file) {
         const fd = new FormData();
         fd.append("file", file);
         fd.append("type", "student-portrait");
+
         const uploadRes = await fetch("/api/upload", {
           method: "POST",
           body: fd,
         });
+
         if (!uploadRes.ok) throw new Error("የምስል ጭነት አልተሳካም");
+
         const uploadData = await uploadRes.json();
         photoUrl = uploadData.url;
       }
 
-      // 2. Prepare the Sovereign Ledger Payload
-      // We explicitly map spiritualFatherId to ensure the query works!
+      // Payload
       const finalPayload = {
         ...data,
         photoUrl,
-        fatherId, // Auth UID for security rules
-        spiritualFatherId: fatherEotcId, // EOTC ID for directory linking
-        eotcUid: currentToken, // The generated token
+        fatherId,
+        spiritualFatherId: fatherEotcId,
+        eotcUid: currentToken,
       };
 
       const res = await fetch("/api/father/register", {
@@ -173,52 +191,54 @@ export default function RegisterChildForm({
         throw new Error(err.message || "ምዝገባው አልተሳካም");
       }
 
-      // 3. Success Workflow
-      setStatus({ type: "success", text: "የልጁ መረጃ በክብር ተመዝግቧል ✞" });
+      // SUCCESS FLOW
+      setStatus({
+        type: "success",
+        text: "የልጁ መረጃ በክብር ተመዝግቧል ✞",
+      });
 
-      reset(
-        {},
-        {
-          keepValues: false,
-          keepErrors: false,
-          keepDirty: false,
-          keepTouched: true,
-        }
-      );
-
+      reset({}, { keepValues: false, keepErrors: false });
       removePhoto();
       generateFullToken();
 
-      // Trigger directory refresh
-      if (onSuccess) onSuccess();
+      onSuccess?.();
 
       setTimeout(() => setStatus(null), 4000);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "የኔትወርክ ችግር ተፈጥሯል";
+
       setStatus({ type: "error", text: message });
     }
   };
 
+  // ─────────────────────────────────────────────
+  // UI
+  // ─────────────────────────────────────────────
   return (
     <div className="w-full min-h-screen bg-white md:bg-transparent p-0 md:p-4 mb-10">
       <SanctuarySurface className="p-1 md:p-6 border-0 md:border shadow-none md:shadow-xl rounded-none md:rounded-[2rem]">
         <form
           onSubmit={handleSubmit(onSubmit)}
           className="space-y-6 md:space-y-10">
+          {/* HEADER - Clean & Separated */}
           <header className="flex flex-row items-center justify-between px-3 py-2 border-b border-slate-50">
             <div className="flex items-center gap-2">
               <div className="p-1.5 bg-amber-50 rounded-full text-amber-600">
                 <Church size={24} />
               </div>
               <h2 className="text-sm md:text-xl text-slate-600 font-black">
-                የልጆች መዝገብ (Register Spiritual Child)
+                የልጆች መዝገብ <br />
+                <span className="text-[9px] md:text-xs text-amber-600">
+                  (Register Spiritual Child)
+                </span>
               </h2>
             </div>
-            <span className="px-3 py-1 bg-slate-900 text-amber-300 text-[8px] font-black uppercase rounded-full tracking-widest">
-              Sovereign Ledger
+            <span className="shrink-0 px-2 py-1 bg-slate-900 text-amber-300 text-[6px] xs:text-[8px] md:text-[12px] font-black uppercase rounded-full tracking-[0.1em] xs:tracking-widest">
+              ♱ መዝገበ ሕይወት
             </span>
           </header>
 
+          {/* TOKEN SECTION */}
           <div className="px-2">
             <TokenSanctuary
               fatherEotcId={fatherEotcId}
@@ -227,6 +247,7 @@ export default function RegisterChildForm({
             />
           </div>
 
+          {/* FORM GRID - Clear separated layout */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-10 px-1">
             <IdentitySection
               register={register}
@@ -247,6 +268,7 @@ export default function RegisterChildForm({
             />
           </div>
 
+          {/* PORTRAIT + SUBMIT - Spacious and clean */}
           <div className="pt-4 flex flex-col items-center gap-6 pb-6">
             <PortraitPicker
               preview={preview}
@@ -260,28 +282,26 @@ export default function RegisterChildForm({
               disabled={isSubmitting}
               className={cn(
                 "w-full md:w-2/3 lg:w-1/3 py-4 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] flex items-center justify-center gap-2 transition-all active:scale-95 disabled:bg-slate-600",
-                hasErrors
-                  ? "bg-red-50 text-red-500 border border-red-100 cursor-not-allowed"
-                  : "bg-slate-950 hover:bg-amber-600 text-white shadow-lg"
+                "bg-slate-950 hover:bg-amber-600 text-white shadow-lg"
               )}>
               {isSubmitting ? (
                 <RefreshCcw size={16} className="animate-spin text-amber-400" />
               ) : (
-                <UserPlus
-                  size={16}
-                  className={hasErrors ? "text-red-500" : "text-amber-400"}
-                />
+                <UserPlus size={16} className="text-amber-400" />
               )}
-              {isSubmitting
-                ? "በሂደት ላይ..."
-                : hasErrors
-                ? "የጎደሉ መረጃዎችን ይሙሉ"
-                : "መዝግብ ✞"}
+              {isSubmitting ? (
+                "በሂደት ላይ..."
+              ) : (
+                <>
+                  መዝግብ <span className="text-amber-400">✞</span>
+                </>
+              )}
             </button>
           </div>
         </form>
       </SanctuarySurface>
 
+      {/* TOAST - Premium floating style preserved */}
       {status && (
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-bottom-5 duration-300">
           <div
@@ -306,6 +326,7 @@ export default function RegisterChildForm({
         </div>
       )}
 
+      {/* GLOBAL INPUT STYLE - Compact & Readable */}
       <style jsx global>{`
         .sanctuary-input {
           width: 100%;
