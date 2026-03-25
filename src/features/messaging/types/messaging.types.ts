@@ -84,6 +84,12 @@ export type MessageType =
   | "LINK"
   | "AUDIO";
 
+// Shared OptimisticMessage used by Composer and MessageStream
+export type OptimisticMessage = Omit<
+  Message,
+  "id" | "isRead" | "version" | "isEncrypted"
+>;
+
 export type ComposerVersion = "v1";
 
 /**
@@ -175,6 +181,15 @@ export interface UserPresence {
 ============================================================ */
 
 /**
+ * Member as displayed in UI (enriched with profile data)
+ */
+export interface MemberDisplay extends ChannelMember {
+  fullName?: string;
+  photoUrl?: string;
+  // Add any other fields your backend actually returns
+}
+
+/**
  * Read-model optimized for conversation list rendering.
  * Never stored directly — computed projection.
  */
@@ -194,6 +209,9 @@ export interface ConversationSummary {
     photoUrl?: string;
     online?: boolean;
   };
+
+  /** Members enriched with display info */
+  members?: MemberDisplay[];
 }
 
 /* ============================================================

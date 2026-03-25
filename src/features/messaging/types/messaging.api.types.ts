@@ -1,118 +1,131 @@
-//src/features/messaging/types/messaging.api.types.ts
-/**
- * EOTC Sacred Ledger — Messaging API Contracts
- * ------------------------------------------------
- * Authoritative request/response schemas.
- * Preserves existing ledger integrity while enabling
- * End-to-End Encryption (E2EE) and Media Normalization.
- */
+// src/app/api/message/conversations/route.ts
+import { NextResponse } from "next/server";
 
-import { Message, MessageType } from "./messaging.types";
+import { requireSession } from "@/core/auth/requireSession";
+import {
+  Channel,
+  ChannelID,
+  ChannelMember,
+  ConversationSummary,
+  MemberDisplay,
+  Message,
+} from "@/features/messaging/types/messaging.types";
+import { adminDb } from "@/services/firebase/admin";
 
-/* ============================================================
-   SHARED SUB-TYPES
-============================================================ */
+const COLLECTIONS = {
+  CHANNELS: "Channels",
+  MEMBERS: "ChannelMembers",
+  MESSAGES: "Messages",
+} as const;
 
-/**
- * Media payload for requests.
- * Matches the incoming shape from the Composer/Uploader.
- */
-export interface RequestMedia {
-  url: string;
-  mimeType: string;
-  size: number; // Mapping to sizeBytes in the service
-  width?: number;
-  height?: number;
-  durationSeconds?: number;
-  thumbnailUrl?: string;
-}
+export async function GET(): Promise<Response> {
+  try {
+    const session = await requireSession();
 
-/**
- * Encryption metadata required for the Sacred Ledger.
- * Ensures the server knows HOW to handle the ciphertext.
- */
-export interface RequestEncryption {
-  keyId: string; // Reference to the key in the user's local KeyManager
-  iv?: string; // Initialization Vector for AES-GCM
-  algorithm?: string; // Default: 'AES-GCM'
-}
+    // 1. Get current user's active memberships
+    const userMembershipsSnap = await adminDb
+      .collection(COLLECTIONS.MEMBERS)
+      .where("userId", "==", session.uid)
+      .where("isActive", "==", true)
+      .get();
 
-/* ============================================================
-   SEND MESSAGE
-============================================================ */
+    if (userMembershipsSnap.empty) {
+      return NextResponse.json([], { status: 200 });
+    }
 
-export interface SendMessageRequest {
-  channelId: string;
-  type: MessageType;
+    const summaryPromises = userMembershipsSnap.docs.map(async (doc) => {
+      // Use "as ChannelMember" once to define the schema from Firestore
+      const myMemberData = doc.data() as ChannelMember;
+      const channelId = myMemberData.channelId;
 
-  /** Raw text if plaintext, or Ciphertext if isEncrypted is true */
-  content?: string;
+      // Parallel fetch for Channel metadata and ALL members of this channel
+      const [channelSnap, allMembersSnap] = await Promise.all([
+        adminDb.collection(COLLECTIONS.CHANNELS).doc(channelId).get(),
+        adminDb
+          .collection(COLLECTIONS.MEMBERS)
+          .where("channelId", "==", channelId)
+          .where("isActive", "==", true)
+          .get(),
+      ]);
 
-  /** Media attachment descriptor */
-  media?: RequestMedia;
+      if (!channelSnap.exists) return null;
+      const channelData = channelSnap.data() as Channel;
 
-  /** * CRITICAL: Toggle for E2EE.
-   * If true, 'content' must be encrypted on the client.
-   */
-  isEncrypted: boolean;
+      let lastMessage: Message | undefined = undefined;
+      if (channelData.lastMessageId) {
+        const msgSnap = await adminDb
+          .collection(COLLECTIONS.CHANNELS)
+          .doc(channelId)
+          .collection(COLLECTIONS.MESSAGES)
+          .doc(channelData.lastMessageId)
+          .get();
+        if (msgSnap.exists) {
+          lastMessage = msgSnap.data() as Message;
+        }
+      }
 
-  /** Metadata for decryption; mandatory if isEncrypted is true */
-  encryption?: RequestEncryption;
+      /**
+       * 2. Correct Member Fetching
+       * We map all members. Since 'fullName' and 'photoUrl' are in MemberDisplay
+       * but not the base ChannelMember, we treat the firestore data as MemberDisplay
+       * to safely access those optional fields.
+       */
+      const members: MemberDisplay[] = allMembersSnap.docs.map((mDoc) => {
+        const m = mDoc.data() as MemberDisplay;
+        return {
+          ...m,
+          id: mDoc.id, // Ensure document ID is preserved
+          fullName: m.fullName || "የቤተሰብ አባል",
+          photoUrl: m.photoUrl,
+        };
+      });
 
-  /** * Client-side generated UUID (MessageID).
-   * Prevents duplicate messages on retry (Idempotency).
-   */
-  clientMessageId?: string;
-}
+      // 3. Unread Logic (Resilient comparison)
+      const isUnread = !!(
+        lastMessage &&
+        (!myMemberData.lastReadAt ||
+          lastMessage.createdAt > myMemberData.lastReadAt)
+      );
 
-export interface SendMessageResponse {
-  success: true;
-  messageId: string;
-}
+      // 4. Construct Summary based on ConversationSummary interface
+      const summary: ConversationSummary = {
+        id: channelId,
+        // Using ChannelMetadata as defined in your types
+        photoUrl:
+          channelData.metadata?.avatarUrl ||
+          "/assets/images/qdst-bite-krstiyan.jpg",
+        fullName:
+          channelData.metadata?.description ||
+          channelData.title ||
+          "Sacred Channel",
+        role: channelData.type, // Map ChannelType to the role string required by UI
+        channel: { ...channelData, id: channelId },
+        members,
+        lastMessage,
+        unreadCount: isUnread ? 1 : 0,
+      };
 
-/* ============================================================
-   EDIT MESSAGE
-============================================================ */
+      return summary;
+    });
 
-export interface EditMessageRequest {
-  channelId: string;
-  messageId: string;
+    const results = await Promise.all(summaryPromises);
+    const summaries = results.filter(
+      (s): s is ConversationSummary => s !== null
+    );
 
-  /** New content (Plaintext or Ciphertext) */
-  content: string;
+    // Sort by most recent activity
+    summaries.sort((a, b) => {
+      const timeA = a.lastMessage?.createdAt || 0;
+      const timeB = b.lastMessage?.createdAt || 0;
+      return timeB - timeA;
+    });
 
-  /** If the message is being re-encrypted with a new IV */
-  encryption?: RequestEncryption;
-}
-
-export interface EditMessageResponse {
-  success: true;
-}
-
-/* ============================================================
-   DELETE MESSAGE
-============================================================ */
-
-export interface DeleteMessageRequest {
-  channelId: string;
-  messageId: string;
-}
-
-export interface DeleteMessageResponse {
-  success: true;
-}
-
-/* ============================================================
-   LIST MESSAGES (Future-Proofing)
-============================================================ */
-
-export interface ListMessagesRequest {
-  channelId: string;
-  limit?: number;
-  beforeCursor?: string;
-}
-
-export interface ListMessagesResponse {
-  messages: Message[];
-  nextCursor?: string;
+    return NextResponse.json(summaries, { status: 200 });
+  } catch (err) {
+    console.error("[Conversations API] Critical Failure:", err);
+    return NextResponse.json(
+      { error: "Sacred Ledger connection failed." },
+      { status: 500 }
+    );
+  }
 }
