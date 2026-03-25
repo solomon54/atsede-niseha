@@ -1,90 +1,174 @@
 // src/app/api/message/conversations/route.ts
+
 import { NextResponse } from "next/server";
 
 import { requireSession } from "@/core/auth/requireSession";
 import {
   Channel,
   ChannelID,
+  ChannelMember,
+  ConversationSummary,
+  MemberDisplay,
   Message,
 } from "@/features/messaging/types/messaging.types";
 import { adminDb } from "@/services/firebase/admin";
 
-// Using the exact constants from your message.service.ts
 const COLLECTIONS = {
   CHANNELS: "Channels",
   MEMBERS: "ChannelMembers",
   MESSAGES: "Messages",
+  STUDENTS: "Students",
+  FATHERS: "Fathers",
 } as const;
 
+/* ============================================================
+   Route
+============================================================ */
 export async function GET(): Promise<Response> {
   try {
     const session = await requireSession();
 
-    // 1. Get active memberships for the current user
-    const memberSnap = await adminDb
+    // 1️⃣ Load User Memberships
+    const membershipsSnap = await adminDb
       .collection(COLLECTIONS.MEMBERS)
       .where("userId", "==", session.uid)
       .where("isActive", "==", true)
       .get();
 
-    if (memberSnap.empty) {
+    if (membershipsSnap.empty) {
       return NextResponse.json([], { status: 200 });
     }
 
-    // 2. Map memberships to full channel data + last message
-    const summaryPromises = memberSnap.docs.map(async (doc) => {
-      const member = doc.data();
-      const channelId = member.channelId;
+    // 2️⃣ Build Conversation Summaries
+    const summaries = await Promise.all(
+      membershipsSnap.docs.map(async (doc) => {
+        const myMemberData = doc.data() as ChannelMember;
+        const channelId = myMemberData.channelId;
 
-      // Fetch Channel Metadata
-      const channelSnap = await adminDb
-        .collection(COLLECTIONS.CHANNELS)
-        .doc(channelId)
-        .get();
+        // Parallel reads for channel + active members
+        const [channelSnap, membersSnap] = await Promise.all([
+          adminDb.collection(COLLECTIONS.CHANNELS).doc(channelId).get(),
+          adminDb
+            .collection(COLLECTIONS.MEMBERS)
+            .where("channelId", "==", channelId)
+            .where("isActive", "==", true)
+            .get(),
+        ]);
 
-      if (!channelSnap.exists) return null;
-      const channelData = channelSnap.data() as Channel;
+        if (!channelSnap.exists) return null;
 
-      let lastMessage: Message | null = null;
+        const channelData = channelSnap.data() as Channel;
 
-      // Fetch the actual last message document from the sub-collection
-      if (channelData.lastMessageId) {
-        const msgSnap = await adminDb
-          .collection(COLLECTIONS.CHANNELS)
-          .doc(channelId)
-          .collection(COLLECTIONS.MESSAGES)
-          .doc(channelData.lastMessageId)
-          .get();
+        // 3️⃣ Last Message (safe optional read)
+        let lastMessage: Message | undefined;
+        if (channelData.lastMessageId) {
+          const msgSnap = await adminDb
+            .collection(COLLECTIONS.CHANNELS)
+            .doc(channelId)
+            .collection(COLLECTIONS.MESSAGES)
+            .doc(channelData.lastMessageId)
+            .get();
 
-        if (msgSnap.exists) {
-          lastMessage = msgSnap.data() as Message;
+          if (msgSnap.exists) {
+            lastMessage = msgSnap.data() as Message;
+          }
         }
-      }
 
-      // Calculate Unread (Basic Logic)
-      // If the message is newer than the last time the user opened the channel
-      const isUnread =
-        lastMessage &&
-        (!member.lastReadAt || lastMessage.createdAt > member.lastReadAt);
+        // 4️⃣ Enrich Members
+        const memberIds = membersSnap.docs.map((d) => d.data().userId);
 
-      return {
-        id: channelId, // Required for UI selection
-        channel: { ...channelData, id: channelId as ChannelID },
-        lastMessage,
-        unreadCount: isUnread ? 1 : 0, // Simplified for now
-      };
-    });
+        const [studentsSnap, fathersSnap] = await Promise.all([
+          memberIds.length
+            ? adminDb
+                .collection(COLLECTIONS.STUDENTS)
+                .where("uid", "in", memberIds)
+                .get()
+            : Promise.resolve({ docs: [] }),
+          memberIds.length
+            ? adminDb
+                .collection(COLLECTIONS.FATHERS)
+                .where("uid", "in", memberIds)
+                .get()
+            : Promise.resolve({ docs: [] }),
+        ]);
 
-    const summaries = (await Promise.all(summaryPromises)).filter(Boolean);
+        const profileMap = new Map<
+          string,
+          { fullName: string; photoUrl?: string; role: string }
+        >();
 
-    // Sort by most recent activity
-    summaries.sort((a, b) => {
-      const timeA = a?.lastMessage?.createdAt || 0;
-      const timeB = b?.lastMessage?.createdAt || 0;
-      return timeB - timeA;
-    });
+        studentsSnap.docs.forEach((d) => {
+          const data = d.data();
+          profileMap.set(data.uid, {
+            fullName: data.fullName || "የቤተሰብ አባል",
+            photoUrl: data.photoUrl,
+            role: "CHILD",
+          });
+        });
 
-    return NextResponse.json(summaries, { status: 200 });
+        fathersSnap.docs.forEach((d) => {
+          const data = d.data();
+          profileMap.set(data.uid, {
+            fullName: data.fullName || "መምህር",
+            photoUrl: data.photoUrl,
+            role: "FATHER",
+          });
+        });
+
+        const members: MemberDisplay[] = membersSnap.docs.map((d) => {
+          const m = d.data() as ChannelMember;
+          const profile = profileMap.get(m.userId);
+          return {
+            id: d.id,
+            channelId: m.channelId,
+            userId: m.userId,
+            role: m.role ?? profile?.role ?? "CHILD",
+            isActive: m.isActive ?? true,
+            joinedAt: m.joinedAt ?? 0,
+            fullName: profile?.fullName ?? "የቤተሰብ አባል",
+            photoUrl: profile?.photoUrl,
+          };
+        });
+
+        // 5️⃣ Unread Logic
+        const isUnread =
+          !!lastMessage &&
+          (!myMemberData.lastReadAt ||
+            lastMessage.createdAt > myMemberData.lastReadAt);
+
+        // 6️⃣ Summary Projection
+        const summary: ConversationSummary = {
+          id: channelId as ChannelID,
+          photoUrl:
+            channelData.metadata?.avatarUrl ??
+            "/assets/images/qdst-bite-krstiyan.jpg",
+          fullName:
+            channelData.metadata?.description ??
+            channelData.title ??
+            "Sacred Channel",
+          role: channelData.type,
+          channel: { ...channelData, id: channelId as ChannelID },
+          members,
+          lastMessage,
+          unreadCount: isUnread ? 1 : 0,
+        };
+
+        return summary;
+      })
+    );
+
+    // 7️⃣ Filter null
+    const filtered = summaries.filter(
+      (s): s is ConversationSummary => s !== null
+    );
+
+    // 8️⃣ Sort by last activity
+    filtered.sort(
+      (a, b) =>
+        (b.lastMessage?.createdAt ?? 0) - (a.lastMessage?.createdAt ?? 0)
+    );
+
+    return NextResponse.json(filtered, { status: 200 });
   } catch (err) {
     console.error("[Conversations API] Critical Failure:", err);
     return NextResponse.json(
