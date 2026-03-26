@@ -19,25 +19,16 @@ export const viewport = {
 };
 
 /* ---------- FONTS ---------- */
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-});
-
+const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 const ethiopic = Noto_Sans_Ethiopic({
   variable: "--font-ethiopic",
   subsets: ["ethiopic"],
 });
 
-/* ---------- META ---------- */
-
 export const metadata: Metadata = {
   title: "ዐጸደ ንስሐ | Atsede Niseha",
   description: "Digital Logistics for the Ethiopian Orthodox Tewahedo Church",
 };
-
-/* ---------- LAYOUT ---------- */
 
 export default function RootLayout({
   children,
@@ -50,16 +41,20 @@ export default function RootLayout({
         className={[
           inter.variable,
           ethiopic.variable,
-          "font-sans",
-          "antialiased",
-          "text-slate-900",
+          "font-sans antialiased text-slate-900",
           "[font-feature-settings:'ss01','cv01','cv02']",
         ].join(" ")}>
         <SanctuaryBackground />
 
-        <ImmersiveTransition>{children}</ImmersiveTransition>
+        <ImmersiveTransition>
+          {/* 🔥 Main content wrapper with padding for navigation */}
+          <main className="md:pl-20 lg:pl-64 pb-16 md:pb-0 min-h-screen">
+            {children}
+          </main>
+        </ImmersiveTransition>
 
-        <SanctuaryNavigation role={"STUDENT"} />
+        {/* Navigation only appears after login */}
+        <SanctuaryNavigation />
       </body>
     </html>
   );

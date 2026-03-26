@@ -1,30 +1,69 @@
-//src/shared/components/layout/SanctuaryNavigation.tsx
+// src/shared/components/layout/SanctuaryNavigation.tsx
 
 "use client";
 
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
 import { useScrollDirection } from "@/shared/config/useScrollDirection";
 import { NAVIGATION_ITEMS } from "@/shared/constants/navigation";
 import { UserRole } from "@/shared/types/auth.types";
 import { cn } from "@/shared/utils/utils";
 
-export function SanctuaryNavigation({ role }: { role: UserRole }) {
+export function SanctuaryNavigation() {
   const pathname = usePathname();
   const scrollDirection = useScrollDirection();
 
-  // Filter items based on the three roles: GOVERNOR, FATHER, STUDENT
+  //  Lazy initializer + single effect (no synchronous setState warning)
+  const [role, setRole] = useState<UserRole | null>(() => {
+    const saved = localStorage.getItem("sacred_ledger_session");
+    if (!saved) return null;
+    try {
+      const session = JSON.parse(saved);
+      return (session?.role as UserRole) || (session?.uid ? "STUDENT" : null);
+    } catch {
+      return null;
+    }
+  });
+
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    return !!localStorage.getItem("sacred_ledger_session");
+  });
+
+  // Re-check session only when it actually changes (very rare)
+  useEffect(() => {
+    const handleStorageChange = () => {
+      const saved = localStorage.getItem("sacred_ledger_session");
+      if (saved) {
+        try {
+          const session = JSON.parse(saved);
+          setRole(
+            (session?.role as UserRole) || (session?.uid ? "STUDENT" : null)
+          );
+          setIsLoggedIn(true);
+        } catch {}
+      } else {
+        setRole(null);
+        setIsLoggedIn(false);
+      }
+    };
+
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, []);
+
+  if (!isLoggedIn || !role) return null;
+
   const items = NAVIGATION_ITEMS.filter((item) => item.roles.includes(role));
 
   return (
     <>
-      {/* DESKTOP SIDEBAR: Clean and Fixed */}
+      {/* DESKTOP SIDEBAR */}
       <aside className="hidden md:flex fixed left-0 top-0 h-screen w-20 lg:w-64 flex-col border-r border-[#9b2d30]/10 bg-[#fdfaf1] z-50">
         <div className="p-6 lg:p-8 flex justify-center lg:justify-start">
           <h2 className="text-xs lg:text-sm font-black text-[#9b2d30] tracking-[0.2em] font-ethiopic">
-            {/* Show full name only on large screens */}
             <span className="hidden lg:inline">ዐጸደ ንስሐ</span>
             <span className="lg:hidden text-lg">ዐ</span>
           </h2>
@@ -61,7 +100,7 @@ export function SanctuaryNavigation({ role }: { role: UserRole }) {
         </nav>
       </aside>
 
-      {/* MOBILE BOTTOM TABS: Optimized for <320px */}
+      {/* MOBILE BOTTOM TABS */}
       <nav
         className={cn(
           "md:hidden fixed bottom-0 left-0 right-0 h-16 bg-[#fdfaf1]/95 backdrop-blur-xl border-t border-[#9b2d30]/20 px-2 flex items-center justify-around z-50 pb-safe transition-transform duration-500",
@@ -79,8 +118,7 @@ export function SanctuaryNavigation({ role }: { role: UserRole }) {
                   "p-1.5 rounded-lg transition-colors",
                   isActive ? "text-[#9b2d30] bg-[#9b2d30]/5" : "text-slate-500"
                 )}>
-                <item.icon className="w-5 h-5" />{" "}
-                {/* Slightly smaller for <320px */}
+                <item.icon className="w-5 h-5" />
               </div>
               <span
                 className={cn(
