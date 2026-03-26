@@ -59,7 +59,7 @@ export default function RootLayout({
 
         <ImmersiveTransition>{children}</ImmersiveTransition>
 
-        {/* <SanctuaryNavigation role={"GOVERNOR"} /> */}
+        <SanctuaryNavigation role={"STUDENT"} />
       </body>
     </html>
   );
