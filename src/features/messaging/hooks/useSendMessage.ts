@@ -79,7 +79,7 @@ export function useSendMessage(senderId: UID) {
         formData.append("file", options.file);
         formData.append("channelId", options.channelId);
 
-        const uploadRes = await fetch("/api/upload", {
+        const uploadRes = await fetch("/api/message/chat-media-upload", {
           method: "POST",
           body: formData,
         });

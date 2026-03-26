@@ -53,14 +53,13 @@ interface CloudinaryResponse {
 /**
  * MEDIA MAPPING (Wise & Robust - Zero 'any')
  * Normalizes data from Cloudinary and client fallbacks safely.
- * Fixed: Explicitly typed to resolve ts(2322) with nulls.
  */
 function mapMedia(
   media?: RequestMedia | null,
   uploadRes?: Partial<CloudinaryResponse>
 ) {
   const url = uploadRes?.secure_url || media?.url;
-  if (!url) return null; // Use null to satisfy service input
+  if (!url) return null;
 
   const inferredMime =
     uploadRes?.mimetype ||
@@ -85,11 +84,12 @@ function mapMedia(
    POST /api/message/send
 ============================================================ */
 export async function POST(req: NextRequest) {
-  let uploadedPublicId: string | null = null;
+  // We keep this for backward compatibility, but we prefer body.media now
+  const uploadedPublicId: string | null = null;
 
   try {
     const session = await requireSession();
-    const body = (await req.json()) as SendMessageRequest & { file?: string };
+    const body = (await req.json()) as SendMessageRequest;
 
     // 1. BASIC VALIDATION
     if (!body.channelId || !body.type) {
@@ -115,31 +115,23 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. CONTENT VALIDATION
-    if (!body.content?.trim() && !body.file && !body.media?.url) {
+    // Logic: Message is valid if it has text OR if it has a media URL from the first upload
+    if (!body.content?.trim() && !body.media?.url) {
       return NextResponse.json(
         { error: "መልእክቱ ባዶ መሆን አይችልም (Message cannot be empty)" },
         { status: 400 }
       );
     }
 
-    // 4. CLOUDINARY UPLOAD (The "Risky" Step)
-    let uploadResult: Partial<CloudinaryResponse> = {};
-    if (body.file) {
-      try {
-        const res = await cloudinary.uploader.upload(body.file, {
-          folder: `atsede_niseha/messages/${session.familyId}`,
-          resource_type: "auto",
-        });
-        uploadResult = res;
-        uploadedPublicId = res.public_id;
-      } catch (uploadErr) {
-        console.error("[Cloudinary Failure]:", uploadErr);
-        throw new MessagingError("የፋይል መላክ አልተሳካም (Media Upload Failed)");
-      }
-    }
+    /**
+     * 4. REDUNDANT UPLOAD REMOVED
+     * We no longer check 'if (body.file)' because the file was
+     * already uploaded by the 'chat-media-upload' route.
+     * This prevents the "Double Upload" bug.
+     */
 
     // 5. PREPARE & SAVE (The "Sacred Ledger" Step)
-    const finalMedia = mapMedia(body.media, uploadResult);
+    const finalMedia = mapMedia(body.media);
 
     const message = await messageService.sendMessage({
       familyId: asFamilyID(session.familyId),
@@ -159,7 +151,6 @@ export async function POST(req: NextRequest) {
     });
 
     // 6. ASYNC BROADCAST (Non-Blocking)
-    // Preserved: Exact original broadcast parameters
     broadcastNewMessage(
       { uid: session.uid, role: session.role as "FATHER" | "STUDENT" },
       body.channelId,
@@ -174,18 +165,6 @@ export async function POST(req: NextRequest) {
       { status: 200 }
     );
   } catch (error: unknown) {
-    // 7. ATOMIC CLEANUP
-    if (uploadedPublicId) {
-      cloudinary.uploader
-        .destroy(uploadedPublicId)
-        .catch((e) =>
-          console.error(
-            "[Cleanup Failure]: Orphan file remains:",
-            uploadedPublicId,
-            e
-          )
-        );
-    }
     return handleError(error);
   }
 }
@@ -220,7 +199,6 @@ async function broadcastNewMessage(
 
   const profileData = profileSnap.data();
 
-  // Preserved: isDiacon and senderTitle logic exactly as before
   await pusherServer.trigger(`private-chat-${channelId}`, "new-message", {
     ...message,
     senderName: profileData?.fullName || "የቤተሰብ አባል",
@@ -235,7 +213,6 @@ async function broadcastNewMessage(
    CENTRALIZED ERROR HANDLING
 ============================================================ */
 function handleError(error: unknown) {
-  // Use console.error strictly to avoid 'any' linting issues if necessary
   console.error("[api/message/send] Critical Failure:", error);
 
   if (error instanceof MessagingError) {

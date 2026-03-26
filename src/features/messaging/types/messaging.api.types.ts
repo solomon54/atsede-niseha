@@ -9,6 +9,7 @@ import {
   ConversationSummary,
   MemberDisplay,
   Message,
+  MessageType,
 } from "@/features/messaging/types/messaging.types";
 import { adminDb } from "@/services/firebase/admin";
 
@@ -17,6 +18,36 @@ const COLLECTIONS = {
   MEMBERS: "ChannelMembers",
   MESSAGES: "Messages",
 } as const;
+
+/**
+ * Metadata for a media attachment being sent to the API.
+ * This aligns with the MediaDescriptor used in Firestore.
+ */
+export interface RequestMedia {
+  url: string;
+  mimeType: string;
+  size?: number;
+  width?: number | null;
+  height?: number | null;
+  durationSeconds?: number | null;
+  thumbnailUrl?: string | null;
+}
+
+/**
+ * The primary payload for the /api/message/send endpoint.
+ */
+export interface SendMessageRequest {
+  channelId: string;
+  type: MessageType;
+  content?: string;
+  media?: RequestMedia | null;
+  clientMessageId?: string;
+  isEncrypted?: boolean;
+  encryption?: {
+    keyId: string;
+    iv: string;
+  };
+}
 
 export async function GET(): Promise<Response> {
   try {
