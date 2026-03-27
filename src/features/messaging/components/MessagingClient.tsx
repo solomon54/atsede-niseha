@@ -12,14 +12,24 @@ import {
   FamilyID,
   MemberDisplay,
   Session,
+  UID,
 } from "../types/messaging.types";
 import Composer from "./Composer";
 import MembersList from "./MemberList";
 import MessageStream, { MessageStreamHandle } from "./MessageStream";
 
-const MessagingClient: FC = () => {
+interface MessagingClientProps {
+  conversations: ConversationSummary[];
+  currentUserId: UID;
+}
+
+const MessagingClient: FC<MessagingClientProps> = ({
+  conversations: initialConversations,
+  currentUserId,
+}) => {
   const [session, setSession] = useState<Session | null>(null);
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversations, setConversations] =
+    useState<ConversationSummary[]>(initialConversations);
   const [activeChannelId, setActiveChannelId] = useState<
     ChannelID | undefined
   >();

@@ -1,3 +1,6 @@
+/**
+ * 
+
 //src/app/components/notes/HistoryDrawer.tsx
 "use client";
 
@@ -39,7 +42,7 @@ const HistoryDrawer: FC<HistoryDrawerProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-[#fdfaf7] overflow-hidden relative">
-      {/* Compact Header */}
+      {/* Compact Header * /}
       <div className="flex justify-between items-center px-4 py-4 border-b border-[#9b2d30]/10 bg-[#fdfaf7]/95 backdrop-blur-md">
         <div className="flex items-center gap-2.5">
           <List size={20} className="text-[#9b2d30]" />
@@ -59,9 +62,9 @@ const HistoryDrawer: FC<HistoryDrawerProps> = ({
         </button>
       </div>
 
-      {/* Compact Scrollable List – Mobile Optimized */}
+      {/* Compact Scrollable List – Mobile Optimized * /}
       <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-24 overscroll-contain">
-        {/* New Note Button – Compact */}
+        {/* New Note Button – Compact * /}
         <button
           onClick={() => onSelect("NEW_NOTE")}
           className={`w-full flex items-center justify-center gap-2 py-4 rounded-2xl border-2 font-bold text-base active:scale-[0.985] transition-all ${
@@ -178,10 +181,12 @@ const HistoryDrawer: FC<HistoryDrawerProps> = ({
         )}
       </div>
 
-      {/* Bottom gradient to prevent last item clipping on mobile */}
+      {/* Bottom gradient to prevent last item clipping on mobile * /}
       <div className="absolute bottom-0 inset-x-0 h-16 pointer-events-none bg-linear-to-t from-[#fdfaf7] to-transparent" />
     </div>
   );
 };
 
 export default HistoryDrawer;
+
+ */

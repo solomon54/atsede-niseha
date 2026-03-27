@@ -96,6 +96,7 @@ export interface FatherRecord extends BaseDirectoryRecord {
 }
 
 export interface StudentRecord extends BaseDirectoryRecord {
+  gender: string;
   role: "STUDENT";
   university: string;
   department: string;

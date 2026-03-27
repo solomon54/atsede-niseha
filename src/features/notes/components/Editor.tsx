@@ -1,20 +1,19 @@
-//src/app/components/notes/Editor.tsx
+//src/features/notes/components/Editor.tsx
 "use client";
 
-import { useEffect } from "react";
-import {
-  useEditor,
-  EditorContent,
-  type Editor as TiptapEditor,
-} from "@tiptap/react";
-
-import StarterKit from "@tiptap/starter-kit";
-import Underline from "@tiptap/extension-underline";
+import { Color } from "@tiptap/extension-color";
+import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import TextAlign from "@tiptap/extension-text-align";
-import Link from "@tiptap/extension-link";
-import { Color } from "@tiptap/extension-color";
 import { TextStyle } from "@tiptap/extension-text-style";
+import Underline from "@tiptap/extension-underline";
+import {
+  type Editor as TiptapEditor,
+  EditorContent,
+  useEditor,
+} from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import { useEffect } from "react";
 
 interface EditorProps {
   content?: string;

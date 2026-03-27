@@ -9,7 +9,9 @@ import {
   ConversationSummary,
   MemberDisplay,
   Message,
+  MessageID,
   MessageType,
+  UID,
 } from "@/features/messaging/types/messaging.types";
 import { adminDb } from "@/services/firebase/admin";
 
@@ -47,6 +49,28 @@ export interface SendMessageRequest {
     keyId: string;
     iv: string;
   };
+}
+
+//
+export interface DeleteMessageRequest {
+  channelId: ChannelID;
+  messageId: MessageID;
+}
+
+export interface DeleteMessageResponse {
+  success: boolean;
+  error?: string;
+}
+
+export interface EditMessageRequest {
+  channelId: ChannelID;
+  messageId: MessageID;
+  content: string;
+}
+
+export interface EditMessageResponse {
+  success: boolean;
+  error?: string;
 }
 
 export async function GET(): Promise<Response> {

@@ -1,15 +1,16 @@
 // src/app/api/father/children/[id]/route.ts
-
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { adminDb } from "@/services/firebase/admin";
 
 export async function GET(
-  req: Request,
-  { params }: { params: { id: string } }
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
+    // 2. Await the params before destructuring
+    const { id } = await params;
+
     const doc = await adminDb.collection("Students").doc(id).get();
 
     if (!doc.exists) {
@@ -24,6 +25,7 @@ export async function GET(
       student: { id: doc.id, ...doc.data() },
     });
   } catch (error) {
+    console.error("Fetch error:", error);
     return NextResponse.json({ error: "መረጃውን መጫን አልተሳካም" }, { status: 500 });
   }
 }

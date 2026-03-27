@@ -8,10 +8,21 @@ import {
   EditMessageRequest,
   EditMessageResponse,
 } from "@/features/messaging/types/messaging.api.types";
+import {
+  ChannelID,
+  FamilyID,
+  MessageID,
+  UID,
+} from "@/features/messaging/types/messaging.types";
 
 export async function POST(req: NextRequest) {
   try {
     const session = await requireSession();
+
+    // Ensure session and familyId exist for the isolation boundary
+    if (!session?.uid || !session?.familyId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     const body = (await req.json()) as EditMessageRequest;
 
@@ -19,23 +30,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
     }
 
+    // Call service with all required fields + branded casting
     await messageService.editMessage({
-      channelId: body.channelId,
-      messageId: body.messageId,
-      editorId: session.uid,
+      familyId: session.familyId as FamilyID,
+      channelId: body.channelId as ChannelID,
+      messageId: body.messageId as MessageID,
+      editorId: session.uid as UID,
       newContent: body.content,
     });
 
     const response: EditMessageResponse = { success: true };
-
     return NextResponse.json(response);
-  } catch (error) {
-    return handleError(error);
+  } catch (error: any) {
+    console.error("[Edit Message API Error]:", error);
+    return NextResponse.json(
+      { error: error.message || "Internal Server Error" },
+      { status: 500 }
+    );
   }
-}
-
-function handleError(error: unknown) {
-  console.error(error);
-
-  return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
 }

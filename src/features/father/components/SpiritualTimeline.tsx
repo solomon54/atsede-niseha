@@ -3,6 +3,7 @@
 import { CalendarDays, Cross, Flame, History, ShieldCheck } from "lucide-react";
 
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
+import { cn } from "@/shared/utils/utils";
 
 export default function SpiritualTimeline({ student }: { student: any }) {
   // Mock data for demonstration - this would come from the 'spiritualEvents' collection [cite: 55]

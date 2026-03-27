@@ -1,7 +1,7 @@
-// src/features/messaging/crypto/aes.ts
+//src/features/messaging/crypto/aes.ts
 /**
  * AES-256-GCM encryption/decryption utilities.
- * Production-ready: secure random IV, authenticated encryption, base64 output.
+ * EOTC Sacred Ledger — Production-Ready
  */
 
 import { decode as base64Decode, encode as base64Encode } from "./serializer";
@@ -13,19 +13,27 @@ export interface EncryptedPayload {
 
 /**
  * Encrypt a string using AES-GCM
- * @param plaintext UTF-8 string
- * @param key CryptoKey (AES-256-GCM)
  */
 export async function encryptAES(
   plaintext: string,
   key: CryptoKey
 ): Promise<EncryptedPayload> {
-  const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit nonce recommended
+  // Use a standard Uint8Array for the 96-bit nonce
+  const iv = crypto.getRandomValues(new Uint8Array(12));
   const encoder = new TextEncoder();
   const encoded = encoder.encode(plaintext);
 
+  /**
+   * 🔥 CRITICAL BUILD FIX:
+   * We cast 'iv' to 'any' because strict TS DOM types (lib.dom.d.ts)
+   * incorrectly flag Uint8Array as incompatible with BufferSource
+   * due to SharedArrayBuffer property mismatches.
+   */
   const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
+    {
+      name: "AES-GCM",
+      iv: iv as any,
+    },
     key,
     encoded
   );
@@ -38,8 +46,6 @@ export async function encryptAES(
 
 /**
  * Decrypt AES-GCM encrypted payload
- * @param payload EncryptedPayload
- * @param key CryptoKey
  */
 export async function decryptAES(
   payload: EncryptedPayload,
@@ -49,18 +55,25 @@ export async function decryptAES(
     const iv = base64Decode(payload.iv);
     const ciphertext = base64Decode(payload.ciphertext);
 
+    /**
+     * 🔥 CRITICAL BUILD FIX:
+     * Casting 'iv' and 'ciphertext' to 'any' to satisfy the
+     * SubtleCrypto.decrypt signature in strict environments.
+     */
     const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
+      {
+        name: "AES-GCM",
+        iv: iv as any,
+      },
       key,
-      ciphertext
+      ciphertext as any
     );
 
     const decoder = new TextDecoder();
     return decoder.decode(decrypted);
   } catch (error) {
-    // This catches the OperationError (Key Mismatch)
     console.error(
-      "Decryption failed. This usually means the key is incorrect.",
+      "[Crypto Error] Decryption failed. Key mismatch or corrupted data.",
       error
     );
     return "[Decryption Failed: Key Mismatch]";

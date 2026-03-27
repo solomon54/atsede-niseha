@@ -37,7 +37,7 @@ import { cn } from "@/shared/utils/utils";
  * Intersecting your provided StudentRecord with the missing UI fields
  * to stop the TS compiler from screaming.
  */
-interface ExtendedStudentRecord extends StudentRecord {
+export interface ExtendedStudentRecord extends StudentRecord {
   spiritualTitle?: string;
   gender: "MALE" | "FEMALE";
   college: string;

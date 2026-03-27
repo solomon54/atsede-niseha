@@ -1,23 +1,23 @@
-// src/app/(dashboard)/father/children/[id]/page.tsx
-
 import { notFound } from "next/navigation";
 
 import StudentProfileDetail from "@/features/father/components/StudentProfileDetail";
+import { ExtendedStudentRecord } from "@/features/father/components/StudentProfileDetail";
 import { adminDb } from "@/services/firebase/admin";
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 
-// Update the type to reflect that params is a Promise
-interface PageProps {
+// 2. Explicitly define the props for this specific dynamic route
+interface ChildPageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }
 
-export default async function ChildDetailPage({ params }: PageProps) {
-  // 1. Await the params to get the ID
+export default async function ChildDetailPage({ params }: ChildPageProps) {
+  // 3. Await the params as required by Next.js 15+
   const { id } = await params;
 
   if (!id) return notFound();
 
-  // 2. Fetch from Firestore using the resolved ID
+  // 4. Fetch from 'Students' collection (PascalCase as per your schema )
   const snapshot = await adminDb
     .collection("Students")
     .where("eotcUid", "==", id)
@@ -26,10 +26,13 @@ export default async function ChildDetailPage({ params }: PageProps) {
 
   if (snapshot.empty) return notFound();
 
+  const doc = snapshot.docs[0];
+
+  // 5. Cast to the Extended type to satisfy the component's requirements
   const student = {
-    id: snapshot.docs[0].id,
-    ...snapshot.docs[0].data(),
-  };
+    id: doc.id,
+    ...doc.data(),
+  } as unknown as ExtendedStudentRecord;
 
   return (
     <ImmersiveTransition className="pt-24 pb-12 px-8 max-w-5xl mx-auto">

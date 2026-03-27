@@ -16,32 +16,45 @@ export function SanctuaryNavigation() {
   const pathname = usePathname();
   const scrollDirection = useScrollDirection();
 
-  //  Lazy initializer + single effect (no synchronous setState warning)
-  const [role, setRole] = useState<UserRole | null>(() => {
+  const [role, setRole] = useState<UserRole | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  // ✅ Correct role detection — respect real role from session
+  useEffect(() => {
     const saved = localStorage.getItem("sacred_ledger_session");
-    if (!saved) return null;
-    try {
-      const session = JSON.parse(saved);
-      return (session?.role as UserRole) || (session?.uid ? "STUDENT" : null);
-    } catch {
-      return null;
+    if (saved) {
+      try {
+        const session = JSON.parse(saved);
+
+        // Priority: use real role if it exists, else fallback to STUDENT only if we have a uid
+        const detectedRole = session?.role
+          ? (session.role as UserRole)
+          : session?.uid
+          ? "STUDENT"
+          : null;
+
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setRole(detectedRole);
+        setIsLoggedIn(true);
+      } catch (e) {
+        console.warn("Failed to parse sacred_ledger_session");
+      }
     }
-  });
+  }, []);
 
-  const [isLoggedIn, setIsLoggedIn] = useState(() => {
-    return !!localStorage.getItem("sacred_ledger_session");
-  });
-
-  // Re-check session only when it actually changes (very rare)
+  // Listen for login/logout in another tab (optional but useful)
   useEffect(() => {
     const handleStorageChange = () => {
       const saved = localStorage.getItem("sacred_ledger_session");
       if (saved) {
         try {
           const session = JSON.parse(saved);
-          setRole(
-            (session?.role as UserRole) || (session?.uid ? "STUDENT" : null)
-          );
+          const detectedRole = session?.role
+            ? (session.role as UserRole)
+            : session?.uid
+            ? "STUDENT"
+            : null;
+          setRole(detectedRole);
           setIsLoggedIn(true);
         } catch {}
       } else {

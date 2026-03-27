@@ -1,4 +1,4 @@
-import Notepad from "@/features/notes/components/Notepad";
+// import Notepad from "@/features/notes/components/Notepad";
 import { UserSession } from "@/shared/types/shared.types.auth";
 
 function NotesPage() {

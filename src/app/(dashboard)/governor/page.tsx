@@ -75,12 +75,15 @@ async function getDashboardData() {
           uid: doc.id,
           eotcUid: data.eotcUid || doc.id,
           fullName: data.fullName || "ያልታወቀ ስም",
+          secularName: data.secularName || data.fullName || "",
+          christianName: data.christianName || "",
           role: "STUDENT",
-          status: data.status || "ACTIVE", // Fix: No more mandatory pending fallback
+          gender: data.gender || "MALE",
+          status: data.status || "ACTIVE",
           diocese: data.diocese || "ያልተጠቀሰ",
           university: data.university || "ያልታወቀ",
           department: data.department || "ያልተገለጸ",
-          academicYear: data.academicYear || 1,
+          academicYear: Number(data.academicYear) || 1,
           spiritualFatherId: data.spiritualFatherId || "",
           fatherId: data.fatherId || "",
           language: data.language || "Amharic",
@@ -157,6 +160,7 @@ export default async function GovernorDashboard() {
             ethLabel="ጠቅላላ አባቶች"
             value={fathersCount}
             trend="+2 this week"
+            isStatus={false}
           />
           <MetricCard
             icon={<FiUserCheck className="w-5 h-5" />}
@@ -164,6 +168,7 @@ export default async function GovernorDashboard() {
             ethLabel="ንቁ ተማሪዎች"
             value={studentsCount}
             variant="dark"
+            isStatus={false}
           />
           <MetricCard
             icon={<FiServer className="w-5 h-5" />}
@@ -197,7 +202,7 @@ function MetricCard({
   variant = "light",
   trend,
   isStatus = false,
-}: MetricCardProps & { ethLabel: string }) {
+}: MetricCardProps & { ethLabel: string; trend?: string; isStatus: boolean }) {
   const isDark = variant === "dark";
 
   return (
