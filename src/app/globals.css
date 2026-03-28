@@ -1,0 +1,129 @@
+@import "tailwindcss";
+
+@keyframes shake {
+
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+
+  25% {
+    transform: translateX(-4px);
+  }
+
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+.animate-shake {
+  animation: shake 0.2s ease-in-out 0s 2;
+}
+
+@layer components {
+  @keyframes shake {
+
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+
+    25% {
+      transform: translateX(-4px);
+    }
+
+    75% {
+      transform: translateX(4px);
+    }
+  }
+
+  .animate-shake {
+    animation: shake 0.2s ease-in-out 0s 2;
+  }
+}
+
+
+
+/*  Premium Theme Variables */
+@theme {
+  /* Sanctuary Palette */
+  --color-ledger-paper: #FCFBF7;
+  --color-ledger-sidebar: #FDFCF6;
+  --color-ledger-accent: #D97706;
+  --color-ledger-ink: #0F172A;
+  --color-ledger-border: #E2E8F0;
+
+  /* Typography */
+  --font-serif: "Crimson Pro", ui-serif, Georgia, serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Premium Animations */
+  --animate-fade-in-up: fade-in-up 0.5s ease-out forwards;
+  --animate-soft-pulse: soft-pulse 3s infinite ease-in-out;
+
+  @keyframes fade-in-up {
+    0% {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes soft-pulse {
+
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    50% {
+      opacity: 0.7;
+      transform: scale(0.98);
+    }
+  }
+}
+
+/* Base Styles */
+@layer base {
+  body {
+    @apply bg-ledger-paper text-ledger-ink antialiased;
+  }
+}
+
+/* Premium Utilities */
+@layer utilities {
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ledger-accent) transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--color-ledger-accent), transparent 80%);
+    border-radius: 20px;
+  }
+
+  .custom-scrollbar:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--color-ledger-accent), transparent 60%);
+  }
+
+  /* Text Selection - Sacred Amber Highlight */
+  ::selection {
+    background-color: #fef3c7;
+    /* amber-100 */
+    color: #78350f;
+    /* amber-900 */
+  }
+}
