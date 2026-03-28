@@ -1,27 +1,35 @@
 //next.config.ts
+
+import withSerwistInit from "@serwist/next";
 import type { NextConfig } from "next";
+
+const withSerwist = withSerwistInit({
+  swSrc: "src/sw/worker.ts",
+  swDest: "public/sw.js",
+  disable: process.env.NODE_ENV === "development",
+  injectionPoint: "self.__SW_MANIFEST",
+});
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  allowedDevOrigins: ["192.168.8.19:3000", "localhost:3000"],
 
-  // Next.js 15/16 fix: ESLint and TS settings are now under their respective objects
+  images: {
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "res.cloudinary.com",
+      },
+    ],
+  },
 
   typescript: {
     ignoreBuildErrors: false,
   },
 
-  /**
-   * TURBOPACK COMPATIBILITY FIX
-   * In Next 16, Turbopack is the default.
-   * Adding an empty turbopack object silences the "webpack config detected" error.
-   */
-  turbopack: {},
+  poweredByHeader: false,
+  compress: true,
 
-  /**
-   *  RESOURCE MANAGEMENT FOR MAC
-   * Keep the webpack block for fallback/production builds.
-   * Turbopack handles watching internally, so this only applies to --webpack mode.
-   */
   webpack: (config, { isServer, dev }) => {
     if (dev && !isServer) {
       config.watchOptions = {
@@ -31,9 +39,6 @@ const nextConfig: NextConfig = {
     }
     return config;
   },
-
-  poweredByHeader: false,
-  compress: true,
 };
 
-export default nextConfig;
+export default withSerwist(nextConfig);

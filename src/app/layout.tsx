@@ -10,12 +10,14 @@ import { SanctuaryNavigation } from "@/shared/components/layout/SanctuaryNavigat
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
 
+import { SWRegister } from "./sw-register";
+
 /* ---------- VIEWPORT ---------- */
 export const viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  viewportFit: "cover",
+  viewportFit: "cover" as const,
 };
 
 /* ---------- FONTS ---------- */
@@ -25,6 +27,7 @@ const ethiopic = Noto_Sans_Ethiopic({
   subsets: ["ethiopic"],
 });
 
+/* ---------- METADATA ---------- */
 export const metadata: Metadata = {
   title: "ዐጸደ ንስሐ | Atsede Niseha",
   description: "Digital Logistics for the Ethiopian Orthodox Tewahedo Church",
@@ -42,12 +45,16 @@ export default function RootLayout({
           inter.variable,
           ethiopic.variable,
           "font-sans antialiased text-slate-900",
-          "[font-feature-settings:'ss01','cv01','cv02']",
+          "font-features-['ss01','cv01','cv02']",
         ].join(" ")}>
+        {/* Service Worker registration */}
+        <SWRegister />
+
+        {/* Background visuals */}
         <SanctuaryBackground />
 
+        {/* Main content wrapper */}
         <ImmersiveTransition>
-          {/* 🔥 Main content wrapper with padding for navigation */}
           <main className="md:pl-20 lg:pl-64 pb-16 md:pb-0 min-h-screen">
             {children}
           </main>
