@@ -4,8 +4,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Atsede Niseha - EOTC Sacred Ledger",
-    short_name: "Atsede",
+    name: "ዐፀደ ንስሐ",
+    short_name: "ዐ♱ን",
     description: "Spiritual lineage and sacred messaging sanctuary.",
     start_url: "/",
     display: "standalone",
