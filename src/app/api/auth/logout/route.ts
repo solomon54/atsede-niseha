@@ -1,20 +1,14 @@
-// src/features/auth/hooks/useLogout.ts
-import { NextResponse } from "next/server";
+// src/app/api/auth/logout/route.ts
+import { NextRequest, NextResponse } from "next/server";
 
 import { destroySession } from "@/core/auth/session.service";
 
-// Ensure the function is explicitly typed and exported correctly
-export async function POST(): Promise<NextResponse> {
-  try {
-    await destroySession();
-    return NextResponse.json({ success: true }, { status: 200 });
-  } catch (error) {
-    return NextResponse.json(
-      { success: false, error: "Internal Server Error" },
-      { status: 500 }
-    );
-  }
+export async function POST(req: NextRequest): Promise<NextResponse> {
+  await destroySession().catch(() => {});
+
+  // Redirect back to the gateway — works for both form POST and fetch()
+  const origin = req.nextUrl.origin;
+  return NextResponse.redirect(new URL("/", origin), { status: 303 });
 }
 
-// Optional: Force dynamic to ensure it's not pre-rendered at build time
 export const dynamic = "force-dynamic";
