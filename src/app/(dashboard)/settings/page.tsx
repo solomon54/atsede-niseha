@@ -1,22 +1,18 @@
-//src/app/(dashboard)/settings/page.tsx
+// src/app/(dashboard)/settings/page.tsx
 import { redirect } from "next/navigation";
 
 import { getSession } from "@/core/auth/session.service";
+import SettingsClient from "@/features/settings/components/SettingsClient";
 
-async function SettingsPage() {
+export default async function SettingsPage() {
   const session = await getSession();
-
   if (!session) redirect("/");
 
   return (
-    <>
-      <div className="min-h-screen flex items-center justify-center">
-        <h1 className="text-3xl font-bold text-slate-500 shadow-2xl ">
-          Comming Soon!
-        </h1>
-      </div>
-    </>
+    <SettingsClient
+      role={(session.role as string) || "STUDENT"}
+      uid={session.uid}
+      email={session.email || ""}
+    />
   );
 }
-
-export default SettingsPage;
