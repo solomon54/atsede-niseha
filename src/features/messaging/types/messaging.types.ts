@@ -109,6 +109,7 @@ export interface MediaDescriptor {
   url: string;
   mimeType: string;
   sizeBytes: number;
+  originalName?: string;        // preserved original filename from upload
   width?: number | null;
   height?: number | null;
   durationSeconds?: number | null;

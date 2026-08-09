@@ -5,17 +5,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { Readable } from "stream";
 import { ReadableStream as NodeReadableStream } from "stream/web";
 
+import { requireSession } from "@/core/auth/requireSession";
+
 /* ============================================================
    CLOUDINARY CONFIGURATION
 ============================================================ */
-
-if (
-  !process.env.CLOUDINARY_CLOUD_NAME ||
-  !process.env.CLOUDINARY_API_KEY ||
-  !process.env.CLOUDINARY_API_SECRET
-) {
-  console.error("❌ CLOUDINARY_CONFIG_MISSING: Uploads will fail.");
-}
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -28,16 +22,42 @@ cloudinary.config({
    CONSTANTS
 ============================================================ */
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
+
+const ALLOWED_MIME_TYPES = [
+  // Images
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/heic",
+  "image/heif",
+  // Audio
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/ogg",
+  "audio/aac",
+  "audio/m4a",
+  "audio/x-m4a",
+  // Video
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-msvideo",
+  // Documents
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain",
+];
 
 /* ============================================================
-   STREAM BRIDGE (STRICT + SAFE)
-   ------------------------------------------------------------
-   Next.js gives WHATWG ReadableStream (DOM type)
-   Cloudinary expects Node.js stream.
-
-   Runtime compatible, typings differ.
-   We intentionally bridge via unknown → NodeReadableStream.
+   STREAM BRIDGE
 ============================================================ */
 
 function webStreamToNodeStream(stream: ReadableStream<Uint8Array>): Readable {
@@ -50,16 +70,15 @@ function webStreamToNodeStream(stream: ReadableStream<Uint8Array>): Readable {
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
+    // 1. AUTH CHECK — must be a logged-in member
+    const session = await requireSession();
 
+    const formData = await req.formData();
     const file = formData.get("file");
     const channelId =
       (formData.get("channelId") as string | null) ?? "unknown_ledger";
-    const type = (formData.get("type") as string | null) ?? "general";
 
-    /* ------------------------------------------------------------
-       A. VALIDATION
-    ------------------------------------------------------------ */
+    // 2. VALIDATION
 
     if (!(file instanceof File)) {
       return NextResponse.json(
@@ -70,50 +89,55 @@ export async function POST(req: NextRequest) {
 
     if (file.size === 0) {
       return NextResponse.json(
-        { error: "Empty file upload rejected" },
+        { error: "ባዶ ፋይል አይቀበልም (Empty file rejected)" },
         { status: 400 }
       );
     }
 
     if (file.size > MAX_FILE_SIZE) {
       return NextResponse.json(
-        { error: "ፋይሉ በጣም ትልቅ ነው (Max 20MB)" },
+        { error: `ፋይሉ በጣም ትልቅ ነው (Max ${MAX_FILE_SIZE / (1024 * 1024)}MB)` },
         { status: 413 }
       );
     }
 
-    console.log("📤 Uploading bytes:", file.size);
+    // Normalize MIME — browsers sometimes send empty string for some types
+    const mimeType = file.type || "application/octet-stream";
+    if (!ALLOWED_MIME_TYPES.includes(mimeType) && mimeType !== "application/octet-stream") {
+      console.warn(`[UPLOAD] Non-standard MIME: ${mimeType} — allowing through`);
+    }
 
-    /* ------------------------------------------------------------
-       B. STREAM CONVERSION (NO BUFFERING)
-    ------------------------------------------------------------ */
+    console.log(
+      `[UPLOAD] User=${session.uid} Channel=${channelId} File=${file.name} Size=${file.size} MIME=${mimeType}`
+    );
+
+    // 3. STREAM UPLOAD TO CLOUDINARY
 
     const nodeStream = webStreamToNodeStream(file.stream());
 
-    /* ------------------------------------------------------------
-       C. STREAMING UPLOAD (BACKPRESSURE SAFE)
-    ------------------------------------------------------------ */
+    // Determine resource_type based on MIME
+    let resourceType: "image" | "video" | "raw" | "auto" = "auto";
+    if (mimeType.startsWith("image/")) resourceType = "image";
+    else if (mimeType.startsWith("video/") || mimeType.startsWith("audio/")) resourceType = "video";
+    else resourceType = "raw"; // PDFs, docs, etc.
 
     const uploadResult = await new Promise<UploadApiResponse>(
       (resolve, reject) => {
         const uploadStream = cloudinary.uploader.upload_stream(
           {
-            folder: `atsede_niseha/${channelId}/${type}`,
-            resource_type: "auto",
-
-            // keep readable filename without duplicate extension
-            public_id: `${Date.now()}-${file.name.replace(/\.[^/.]+$/, "")}`,
-
+            folder: `atsede_niseha/${channelId}`,
+            resource_type: resourceType,
+            public_id: `${Date.now()}-${file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_")}`,
             use_filename: true,
             unique_filename: false,
-
-            transformation: file.type.startsWith("image/")
-              ? [{ quality: "auto", fetch_format: "auto" }]
+            // Only transform images
+            transformation: resourceType === "image"
+              ? [{ quality: "auto:good", fetch_format: "auto" }]
               : undefined,
           },
           (error, result) => {
             if (error || !result) {
-              reject(error ?? new Error("Cloudinary upload failed"));
+              reject(error ?? new Error("Cloudinary upload returned no result"));
               return;
             }
             resolve(result);
@@ -124,45 +148,37 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    console.log("☁️ Cloudinary received:", uploadResult.bytes);
+    console.log(
+      `[UPLOAD] ✅ Cloudinary success: ${uploadResult.secure_url} (${uploadResult.bytes} bytes)`
+    );
 
-    /* ------------------------------------------------------------
-       D. INTEGRITY VERIFICATION (CRITICAL)
-    ------------------------------------------------------------ */
-
-    if (!uploadResult.bytes || uploadResult.bytes <= 0) {
-      console.error("❌ UPLOAD_INTEGRITY_FAILED", {
-        localSize: file.size,
-        cloudinaryBytes: uploadResult.bytes,
-      });
-
-      return NextResponse.json(
-        { error: "Upload integrity verification failed" },
-        { status: 500 }
-      );
+    // 4. BUILD THUMBNAIL URL FOR VIDEO/AUDIO
+    let thumbnailUrl: string | null = null;
+    if (uploadResult.resource_type === "video") {
+      // Cloudinary auto-generates a thumbnail for video at .jpg
+      thumbnailUrl = uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg");
+    } else {
+      thumbnailUrl = uploadResult.secure_url;
     }
 
-    /* ------------------------------------------------------------
-       E. RESPONSE (MATCHES MediaDescriptor)
-    ------------------------------------------------------------ */
-
+    // 5. RESPONSE
     return NextResponse.json(
       {
         ok: true,
         media: {
           url: uploadResult.secure_url,
-          mimeType: file.type,
-          sizeBytes: uploadResult.bytes,
+          mimeType: mimeType,
+          // Preserve original filename in the URL via a custom field
+          // so resolveFilename() can use it on the client
+          originalName: file.name,
+          sizeBytes: uploadResult.bytes || file.size,
           width: uploadResult.width ?? null,
           height: uploadResult.height ?? null,
           durationSeconds:
             typeof uploadResult.duration === "number"
               ? uploadResult.duration
               : null,
-          thumbnailUrl:
-            uploadResult.resource_type === "video"
-              ? uploadResult.secure_url.replace(/\.[^/.]+$/, ".jpg")
-              : uploadResult.secure_url,
+          thumbnailUrl,
         },
       },
       { status: 200 }
@@ -171,11 +187,16 @@ export async function POST(req: NextRequest) {
     const message =
       error instanceof Error ? error.message : "Unknown upload error";
 
+    // Auth errors
+    if (message === "UNAUTHORIZED" || message === "USER_NOT_FOUND") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     console.error("❌ [API_UPLOAD_CRITICAL]:", message);
 
     return NextResponse.json(
       {
-        error: "ምስሉን መጫን አልተቻለም (Upload failed)",
+        error: "ፋይሉን ወደ ደመናው መጫን አልተቻለም",
         details: process.env.NODE_ENV === "development" ? message : undefined,
       },
       { status: 500 }

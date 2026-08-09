@@ -8,6 +8,7 @@ import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadKey } from "../crypto/keyManager";
 import {
   ChannelID,
+  ChannelType,
   ConversationSummary,
   FamilyID,
   MemberDisplay,
@@ -15,6 +16,7 @@ import {
   UID,
 } from "../types/messaging.types";
 import Composer from "./Composer";
+import { ConversationList } from "./ConversationList";
 import MembersList from "./MemberList";
 import MessageStream, { MessageStreamHandle } from "./MessageStream";
 
@@ -37,7 +39,11 @@ const MessagingClient: FC<MessagingClientProps> = ({
     "loading"
   );
   const [errorMessage, setErrorMessage] = useState("");
-  const [activeTab, setActiveTab] = useState<"chat" | "members">("chat");
+
+  // Mobile: which panel is visible
+  const [mobilePane, setMobilePane] = useState<"convos" | "chat" | "members">(
+    "convos"
+  );
 
   const streamRef = useRef<MessageStreamHandle>(null);
 
@@ -74,6 +80,22 @@ const MessagingClient: FC<MessagingClientProps> = ({
       }
 
       await fetchConversations(currentSession);
+
+      // Silently repair missing DIRECT channels for students who claimed
+      // before the provisioning fix — fully idempotent, runs in background
+      fetch("/api/message/repair-channels", {
+        method: "POST",
+        credentials: "include",
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.repaired) {
+            // Channel was just created — reload conversations to show it
+            fetchConversations(currentSession);
+          }
+        })
+        .catch(() => {}); // non-blocking
+
       setAppStatus("ready");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Connection Error";
@@ -101,44 +123,65 @@ const MessagingClient: FC<MessagingClientProps> = ({
         const data: ConversationSummary[] = await res.json();
         setConversations(data);
 
-        if (!activeChannelId && data.length > 0) {
-          setActiveChannelId(data[0].channel.id);
+        // Default to first channel
+        if (data.length > 0) {
+          setActiveChannelId((prev) => prev ?? data[0].channel.id);
         }
       } catch (err) {
         console.error("[FetchConversations]", err);
       }
     },
-    [activeChannelId]
+    []
   );
 
-  const activeConversation = useMemo(() => {
-    if (!conversations.length) return undefined;
-    return (
+  const activeConversation = useMemo(
+    () =>
       conversations.find((c) => c.channel.id === activeChannelId) ??
-      conversations[0]
-    );
-  }, [conversations, activeChannelId]);
+      conversations[0],
+    [conversations, activeChannelId]
+  );
+
+  // ─────────────────────────────────────────────
+  // CHANNEL LABEL HELPER
+  // ─────────────────────────────────────────────
+  function getChannelLabel(c: ConversationSummary): string {
+    if (c.channel.type === "COMMON_HOUSE") return "የጋራ ቤት";
+    // For DIRECT, find the other member's name
+    const other = c.members?.find((m) => m.userId !== currentUserId);
+    return other?.fullName || c.fullName || "Private Chat";
+  }
+
+  function getChannelSub(type: ChannelType): string {
+    return type === "COMMON_HOUSE" ? "Family · Common House" : "Private · Direct";
+  }
 
   // ─────────────────────────────────────────────
   // MEMBERS
   // ─────────────────────────────────────────────
   const currentMembers: MemberDisplay[] = useMemo(() => {
     if (!activeConversation?.members?.length) return [];
-
     return activeConversation.members.map((m, idx) => ({
       id: m.id ?? m.userId ?? `fallback-${idx}`,
       userId: m.userId ?? `fallback-${idx}`,
       channelId: activeConversation.channel.id as ChannelID,
       fullName: m.fullName || m.userId || "Unknown Member",
       photoUrl: m.photoUrl || "/assets/images/qdst-bite-krstiyan.jpg",
-      role: m.role ?? "MEMBER",
-      joinedAt: m.joinedAt ?? new Date().toISOString(),
+      role: m.role ?? "CHILD",
+      joinedAt: m.joinedAt ?? Date.now(),
       isActive: m.isActive ?? false,
     }));
-  }, [activeConversation]);
+  }, [activeConversation, currentUserId]);
 
   // ─────────────────────────────────────────────
-  // UI
+  // HANDLE SELECT CONVERSATION (mobile-aware)
+  // ─────────────────────────────────────────────
+  const handleSelectConversation = useCallback((channelId: ChannelID) => {
+    setActiveChannelId(channelId);
+    setMobilePane("chat");
+  }, []);
+
+  // ─────────────────────────────────────────────
+  // LOADING / ERROR STATES
   // ─────────────────────────────────────────────
   if (appStatus === "loading" && !session) {
     return (
@@ -171,71 +214,145 @@ const MessagingClient: FC<MessagingClientProps> = ({
     );
   }
 
+  // ─────────────────────────────────────────────
+  // FULL LAYOUT
+  // ─────────────────────────────────────────────
   return (
     <div className="flex h-screen w-full bg-white overflow-hidden fixed inset-0 md:pl-20 lg:pl-64 pb-16 md:pb-0">
-      {/* DESKTOP MEMBERS SIDEBAR */}
-      <aside className="hidden md:flex w-80 border-r border-slate-200 flex-col bg-[#fdfcf6]">
-        <header className="p-6 border-b bg-white flex-none">
-          <h2 className="text-lg font-serif font-bold">Sanctuary</h2>
+
+      {/* ── DESKTOP: Conversations Sidebar ─────────────────── */}
+      <aside className="hidden md:flex w-72 border-r border-slate-100 flex-col bg-[#fdfcf6] flex-none">
+        <header className="px-5 py-4 border-b border-slate-100 bg-white flex-none">
+          <h2 className="text-xs font-black text-slate-900 uppercase tracking-widest">
+            ምስጢር ማኅደር
+          </h2>
+          <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
+            Sacred Ledger
+          </p>
         </header>
         <div className="flex-1 overflow-y-auto min-h-0">
-          <MembersList members={currentMembers} />
+          <ConversationList
+            conversations={conversations}
+            activeChannelId={activeChannelId}
+            onSelect={handleSelectConversation}
+            currentUserId={currentUserId}
+          />
         </div>
       </aside>
 
-      {/* MAIN CHAT AREA */}
+      {/* ── DESKTOP: Members Sidebar ───────────────────────── */}
+      <aside className="hidden lg:flex w-64 border-r border-slate-100 flex-col bg-[#fdfcf6] flex-none order-last">
+        <header className="p-5 border-b bg-white flex-none">
+          <h2 className="text-xs font-black text-slate-900 uppercase tracking-widest">
+            {activeConversation?.channel.type === "COMMON_HOUSE"
+              ? "Family Members"
+              : "Chat Members"}
+          </h2>
+        </header>
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <MembersList members={currentMembers} currentUserId={session?.uid} />
+        </div>
+      </aside>
+
+      {/* ── MAIN AREA ──────────────────────────────────────── */}
       <main className="flex-1 flex flex-col min-w-0 bg-[#FCFBF7] relative">
-        {/* HEADER */}
-        <header className="flex-none border-b bg-white px-4 md:px-6 pt-4 z-10">
+
+        {/* ── HEADER ─────────────────────────────────────────── */}
+        <header className="flex-none border-b bg-white px-4 md:px-5 pt-4 z-10">
           <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-              <h1 className="text-sm font-bold">Family Sanctuary</h1>
+            <div className="flex items-center gap-2 min-w-0">
+              {/* Mobile back button when in chat */}
+              {mobilePane === "chat" && (
+                <button
+                  onClick={() => setMobilePane("convos")}
+                  className="md:hidden mr-1 text-slate-400 hover:text-slate-700 text-xs font-bold">
+                  ← Back
+                </button>
+              )}
+              <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <div className="min-w-0">
+                <h1 className="text-sm font-bold truncate">
+                  {activeConversation
+                    ? getChannelLabel(activeConversation)
+                    : "Sanctuary"}
+                </h1>
+                {activeConversation && (
+                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest -mt-0.5">
+                    {getChannelSub(activeConversation.channel.type)}
+                  </p>
+                )}
+              </div>
             </div>
-            <ShieldCheck size={16} className="text-amber-600/50" />
+            <ShieldCheck size={16} className="text-amber-600/50 shrink-0" />
           </div>
 
-          {/* MOBILE TABS (inside the chat screen) */}
-          <div className="flex md:hidden bg-slate-100 p-1 rounded-xl mb-3">
+          {/* MOBILE TABS */}
+          <div className="flex md:hidden bg-slate-100 p-1 rounded-xl mb-3 gap-1">
             <button
-              onClick={() => setActiveTab("chat")}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg ${
-                activeTab === "chat"
+              onClick={() => setMobilePane("convos")}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${
+                mobilePane === "convos"
                   ? "bg-white shadow text-amber-700"
                   : "text-slate-500"
               }`}>
-              <MessageSquare size={14} className="inline mr-1" />
-              Chat
+              <MessageSquare size={13} className="inline mr-1" />
+              ውይይቶች
             </button>
             <button
-              onClick={() => setActiveTab("members")}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg ${
-                activeTab === "members"
+              onClick={() => setMobilePane("chat")}
+              disabled={!activeChannelId}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors disabled:opacity-40 ${
+                mobilePane === "chat"
                   ? "bg-white shadow text-amber-700"
                   : "text-slate-500"
               }`}>
-              <Users size={14} className="inline mr-1" />
-              Members
+              <MessageSquare size={13} className="inline mr-1" />
+              ምስጢር
+            </button>
+            <button
+              onClick={() => setMobilePane("members")}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${
+                mobilePane === "members"
+                  ? "bg-white shadow text-amber-700"
+                  : "text-slate-500"
+              }`}>
+              <Users size={13} className="inline mr-1" />
+              አባላት
             </button>
           </div>
         </header>
 
-        {/* BODY — SINGLE SCROLL CONTAINER */}
-        <div className="flex-1 flex flex-col min-h-0 relative">
+        {/* ── BODY ────────────────────────────────────────────── */}
+        <div className="flex-1 flex flex-col min-h-0">
+
+          {/* MOBILE: Conversation List Pane */}
+          <section className={`md:hidden flex-1 overflow-y-auto bg-[#fdfcf6] ${mobilePane === "convos" ? "flex flex-col" : "hidden"}`}>
+            <ConversationList
+              conversations={conversations}
+              activeChannelId={activeChannelId}
+              onSelect={handleSelectConversation}
+              currentUserId={currentUserId}
+            />
+          </section>
+
+          {/* MOBILE: Members Pane */}
+          <section className={`md:hidden flex-1 overflow-y-auto bg-white ${mobilePane === "members" ? "block" : "hidden"}`}>
+            <MembersList members={currentMembers} currentUserId={session?.uid} />
+          </section>
+
+          {/* CHAT PANE — visible on desktop always, on mobile only when mobilePane=chat */}
           <section
             className={`flex-1 flex flex-col min-h-0 ${
-              activeTab === "chat" ? "flex" : "hidden"
+              mobilePane === "chat" ? "flex" : "hidden"
             } md:flex`}>
             {activeChannelId && session ? (
               <>
-                {/* 🔥 MessageStream = only scrollable area */}
                 <MessageStream
                   ref={streamRef}
                   channelId={activeChannelId}
                   currentUserId={session.uid}
+                  encryptionKeyId={session.familyId}
                 />
-
-                {/* FIXED COMPOSER — always stays at bottom */}
                 <div className="flex-none bg-white border-t p-2 sm:p-3 pb-[env(safe-area-inset-bottom)]">
                   <div className="max-w-4xl mx-auto w-full px-2 sm:px-4">
                     <Composer
@@ -250,18 +367,13 @@ const MessagingClient: FC<MessagingClientProps> = ({
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex items-center justify-center text-slate-400 italic">
-                Harmonizing records...
+              <div className="flex-1 flex flex-col items-center justify-center text-slate-400 gap-3">
+                <MessageSquare size={32} className="text-slate-200" />
+                <p className="text-xs font-bold uppercase tracking-widest">
+                  ውይይት ይምረጡ
+                </p>
               </div>
             )}
-          </section>
-
-          {/* MOBILE MEMBERS TAB */}
-          <section
-            className={`flex-1 overflow-y-auto bg-white md:hidden ${
-              activeTab === "members" ? "block" : "hidden"
-            }`}>
-            <MembersList members={currentMembers} />
           </section>
         </div>
       </main>

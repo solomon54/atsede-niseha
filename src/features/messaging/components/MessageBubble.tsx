@@ -1,5 +1,4 @@
 // src/features/messaging/components/MessageBubble.tsx
-
 "use client";
 
 import { motion } from "framer-motion";
@@ -8,20 +7,69 @@ import {
   Check,
   CheckCheck,
   Download,
-  Edit2,
   FileText,
   Loader2,
   MoreVertical,
   Music,
-  Play,
+  RefreshCw,
   Trash2,
   User,
+  X,
 } from "lucide-react";
-import { FC, useEffect, useState } from "react";
+import { FC, useCallback, useEffect, useRef, useState } from "react";
 
 import { ChannelRole, Message } from "../types/messaging.types";
 import { MediaPreview } from "./MediaPreview";
 
+/* ─────────────────────────────────────────────
+   MIME → extension
+───────────────────────────────────────────── */
+const MIME_EXT: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/heic": ".heic",
+  "audio/mpeg": ".mp3",
+  "audio/mp3": ".mp3",
+  "audio/wav": ".wav",
+  "audio/ogg": ".ogg",
+  "audio/aac": ".aac",
+  "audio/m4a": ".m4a",
+  "audio/x-m4a": ".m4a",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "video/quicktime": ".mov",
+  "application/pdf": ".pdf",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.ms-powerpoint": ".ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+  "text/plain": ".txt",
+};
+
+export function resolveFilename(url: string, mimeType?: string, originalName?: string): string {
+  // Prefer the stored original filename if available
+  if (originalName) {
+    if (/\.[a-zA-Z0-9]{2,5}$/.test(originalName)) return originalName;
+    return originalName + (MIME_EXT[mimeType ?? ""] ?? "");
+  }
+  const raw = url.split("/").pop()?.split("?")[0] ?? "file";
+  if (/\.[a-zA-Z0-9]{2,5}$/.test(raw)) return raw;
+  return raw + (MIME_EXT[mimeType ?? ""] ?? "");
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
+}
+
+/* ─────────────────────────────────────────────
+   PROPS
+───────────────────────────────────────────── */
 interface MessageBubbleProps {
   message: Message & { status?: "sending" | "sent" | "error" };
   isOwn: boolean;
@@ -30,10 +78,13 @@ interface MessageBubbleProps {
   senderPhoto?: string;
   isDiacon?: boolean;
   onDelete?: (messageId: string) => void;
+  onCancel?: (messageId: string) => void;
   onResend?: (message: Message) => void;
-  onEdit?: (message: Message) => void;
 }
 
+/* ─────────────────────────────────────────────
+   COMPONENT
+───────────────────────────────────────────── */
 const MessageBubble: FC<MessageBubbleProps> = ({
   message,
   isOwn,
@@ -42,349 +93,403 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   senderPhoto,
   isDiacon = false,
   onDelete,
+  onCancel,
   onResend,
-  onEdit,
 }) => {
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [isDownloaded, setIsDownloaded] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
-  const isUploading = message.status === "sending" && message.media;
+  // ref for outside-click detection
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
+  const isSending = message.status === "sending";
+  const isError = message.status === "error";
+
+  // Close menu when clicking outside
   useEffect(() => {
-    const checkLocalLedger = async () => {
-      if (message.status === "sent" && !message.media?.url.startsWith("http")) {
-        setIsDownloaded(true);
+    if (!showMenu) return;
+    function handleClick(e: MouseEvent) {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(e.target as Node) &&
+        triggerRef.current &&
+        !triggerRef.current.contains(e.target as Node)
+      ) {
+        setShowMenu(false);
       }
-    };
-    checkLocalLedger();
-  }, [message.id, message.status, message.media?.url]);
-
-  const handleSmartDownload = async (url: string, filename: string) => {
-    if (isDownloaded || isUploading) return;
-    try {
-      setDownloadProgress(0);
-      const response = await fetch(url);
-      if (!response.body) throw new Error("ReadableStream not supported");
-
-      const reader = response.body.getReader();
-      const contentLength = +(response.headers.get("Content-Length") ?? 0);
-
-      let receivedLength = 0;
-      const chunks = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        receivedLength += value.length;
-        if (contentLength) {
-          setDownloadProgress(
-            Math.round((receivedLength / contentLength) * 100)
-          );
-        }
-      }
-
-      const blob = new Blob(chunks);
-      const blobUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(blobUrl);
-
-      setIsDownloaded(true);
-      setDownloadProgress(null);
-    } catch (err) {
-      console.error("Smart Download failed", err);
-      setDownloadProgress(null);
-      window.open(url, "_blank");
     }
-  };
+    // Use capture so it fires before anything else
+    document.addEventListener("mousedown", handleClick, true);
+    return () => document.removeEventListener("mousedown", handleClick, true);
+  }, [showMenu]);
 
-  const renderMediaContent = () => {
+  // Close menu on scroll
+  useEffect(() => {
+    if (!showMenu) return;
+    const handle = () => setShowMenu(false);
+    window.addEventListener("scroll", handle, { passive: true, capture: true });
+    return () => window.removeEventListener("scroll", handle, true);
+  }, [showMenu]);
+
+  /* ── download with correct MIME + filename ── */
+  const handleDownload = useCallback(
+    async (e?: React.MouseEvent) => {
+      e?.stopPropagation();
+      if (!message.media?.url || downloading) return;
+      try {
+        setDownloading(true);
+        const res = await fetch(message.media.url);
+        const blob = await res.blob();
+        const mime =
+          message.media.mimeType || blob.type || "application/octet-stream";
+        const typedBlob = new Blob([blob], { type: mime });
+        const blobUrl = URL.createObjectURL(typedBlob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = resolveFilename(message.media.url, mime);
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        if (message.media?.url) window.open(message.media.url, "_blank");
+      } finally {
+        setDownloading(false);
+      }
+    },
+    [message.media, downloading]
+  );
+
+  /* ── role badge ── */
+  const roleBadge =
+    senderRole === "FATHER"
+      ? { text: "አባታችን", cls: "bg-amber-100 text-amber-700" }
+      : isDiacon
+      ? { text: "ዲያቆን", cls: "bg-blue-100 text-blue-700" }
+      : null;
+
+  /* ── context menu — shown outside bubble so overflow:hidden doesn't clip it ── */
+  const ContextMenu = showMenu ? (
+    <div
+      ref={menuRef}
+      // Portal-like: positioned relative to viewport via fixed, but we
+      // approximate by using absolute on the outer wrapper (see below)
+      className={`absolute z-50 min-w-[130px] bg-white rounded-xl shadow-2xl
+        border border-slate-100 py-1 overflow-hidden
+        ${isOwn ? "right-0" : "left-0"} top-full mt-1`}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {isError && onResend && (
+        <button
+          type="button"
+          onClick={() => {
+            onResend(message);
+            setShowMenu(false);
+          }}
+          className="w-full px-3 py-2.5 text-left hover:bg-amber-50 flex items-center
+            gap-2 text-[12px] text-amber-700 font-bold transition-colors">
+          <RefreshCw size={12} />
+          እንደገና ላክ
+        </button>
+      )}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={() => {
+            onDelete(message.id);
+            setShowMenu(false);
+          }}
+          className="w-full px-3 py-2.5 text-left hover:bg-red-50 flex items-center
+            gap-2 text-[12px] text-red-600 font-bold transition-colors">
+          <Trash2 size={12} />
+          ሰርዝ
+        </button>
+      )}
+    </div>
+  ) : null;
+
+  /* ── media rendering ── */
+  const renderMedia = () => {
     if (!message.media?.url) return null;
+    const { url, mimeType = "", sizeBytes = 0 } = message.media;
+    const isImage = message.type === "IMAGE" || mimeType.startsWith("image/");
+    const isVideo = message.type === "VIDEO" || mimeType.startsWith("video/");
+    const isAudio = message.type === "AUDIO" || mimeType.startsWith("audio/");
+    const filename = resolveFilename(url, mimeType, message.media.originalName);
 
-    const isImage = message.type === "IMAGE";
-    const isVideo = message.type === "VIDEO";
-    const isAudio = message.type === "AUDIO";
-    const isFile =
-      message.type === "FILE" || (message.type as string) === "DOCUMENT";
-
-    const fileName =
-      message.media.url.split("/").pop()?.split("?")[0] || "የተቀደሰ መዝገብ";
-    const sizeInBytes = message.media.sizeBytes || 0;
-    const sizeFormatted =
-      sizeInBytes > 1024 * 1024
-        ? `${(sizeInBytes / (1024 * 1024)).toFixed(1)} MB`
-        : `${(sizeInBytes / 1024).toFixed(1)} KB`;
-
-    return (
-      <div className="relative overflow-hidden rounded-t-xl group">
-        {isUploading && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm">
-            <Loader2 className="w-6 h-6 text-amber-400 animate-spin mb-2" />
-            <span className="text-[10px] text-white font-bold tracking-widest uppercase">
-              በመጫን ላይ...
+    /* uploading placeholder */
+    if (isSending) {
+      return (
+        <div className="relative w-full min-h-[72px] flex items-center justify-center
+          bg-slate-800/50 overflow-hidden">
+          {isImage && (
+            <img
+              src={url}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover blur opacity-30"
+            />
+          )}
+          <div className="relative z-10 flex flex-col items-center gap-1 py-3">
+            <Loader2 size={18} className="animate-spin text-amber-400" />
+            <span className="text-[9px] font-bold text-white/60 uppercase tracking-widest">
+              በመጫን ላይ…
             </span>
           </div>
-        )}
+          {onCancel && (
+            <button
+              type="button"
+              onClick={() => onCancel(message.id)}
+              title="Cancel upload"
+              className="absolute top-1.5 right-1.5 p-1 bg-black/50 hover:bg-red-600
+                rounded-full text-white transition-colors">
+              <X size={11} />
+            </button>
+          )}
+        </div>
+      );
+    }
 
-        {/* IMAGE */}
-        {isImage && (
+    if (isImage) {
+      return (
+        <div
+          className="relative cursor-pointer group/img overflow-hidden"
+          onClick={() => setIsPreviewOpen(true)}>
+          <img
+            src={url}
+            alt={filename}
+            loading="lazy"
+            className="max-h-60 sm:max-h-72 w-full object-cover
+              transition-transform duration-200 group-hover/img:scale-[1.02]"
+          />
+          <div className="absolute inset-0 bg-transparent group-hover/img:bg-black/15
+            transition-colors flex items-end justify-end p-2">
+            <button
+              type="button"
+              onClick={handleDownload}
+              title="Download"
+              className="opacity-0 group-hover/img:opacity-100 transition-opacity
+                p-1.5 bg-black/60 hover:bg-black rounded-full text-white">
+              {downloading
+                ? <Loader2 size={12} className="animate-spin" />
+                : <Download size={12} />}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (isVideo) {
+      return (
+        <div
+          className="relative cursor-pointer overflow-hidden bg-black"
+          onClick={() => setIsPreviewOpen(true)}>
+          <video
+            src={url}
+            preload="metadata"
+            className="max-h-48 sm:max-h-56 w-full object-cover opacity-80"
+          />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-white/90
+              flex items-center justify-center shadow-lg">
+              <span className="text-slate-800 font-black text-sm ml-0.5">▶</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (isAudio) {
+      return (
+        <div className="flex items-center gap-2.5 px-3 py-2.5 w-full">
+          {/* tap the icon/name area to preview */}
           <div
-            className={`relative ${
-              !isUploading ? "cursor-pointer" : "cursor-default"
-            }`}
-            onClick={() => !isUploading && setIsPreviewOpen(true)}>
-            <img
-              src={message.media.url}
-              alt="Sacred Ledger Content"
-              className={`max-h-80 w-full object-cover transition-all hover:brightness-90 ${
-                isUploading ? "blur-md scale-105" : ""
-              }`}
-            />
-            {!isUploading && (
-              <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleSmartDownload(message.media!.url, fileName);
-                  }}
-                  className={`p-2 rounded-full text-white transition-colors ${
-                    isDownloaded ? "bg-green-600" : "bg-black/50 hover:bg-black"
-                  }`}>
-                  {isDownloaded ? <Check size={16} /> : <Download size={16} />}
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* VIDEO */}
-        {isVideo && (
-          <div className="relative aspect-video bg-black flex items-center justify-center">
-            {!isUploading ? (
-              <video
-                src={message.media.url}
-                controls
-                className="w-full h-full"
-              />
-            ) : (
-              <Play className="text-white/20 w-12 h-12" />
-            )}
-          </div>
-        )}
-
-        {/* AUDIO */}
-        {isAudio && (
-          <div className="p-4 bg-amber-50/50 flex items-center gap-3">
-            <div className="p-2 bg-amber-100 rounded-full text-amber-600">
-              <Music size={18} />
+            role="button"
+            tabIndex={0}
+            onClick={() => setIsPreviewOpen(true)}
+            onKeyDown={(e) => e.key === "Enter" && setIsPreviewOpen(true)}
+            className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer
+              hover:opacity-80 transition-opacity">
+            <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center
+              justify-center shrink-0">
+              <Music size={14} className="text-amber-600" />
             </div>
-            <audio src={message.media.url} controls className="h-8 w-full" />
-          </div>
-        )}
-
-        {/* FILE */}
-        {isFile && (
-          <div className="flex items-center justify-between gap-3 p-4 bg-slate-50 border-b border-slate-100">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="p-2 bg-amber-100 rounded-lg text-amber-700 relative">
-                <FileText size={20} />
-                {downloadProgress !== null && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-amber-100/90 rounded-lg">
-                    <span className="text-[8px] font-black">
-                      {downloadProgress}%
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div className="flex flex-col min-w-0">
-                <span className="text-xs font-bold truncate text-slate-700">
-                  {fileName}
-                </span>
-                <span className="text-[10px] text-slate-400 font-medium uppercase tracking-tight">
-                  {isDownloaded ? "በማስታወሻ ላይ ተቀምጧል" : sizeFormatted}
-                </span>
-              </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] sm:text-xs font-bold truncate">{filename}</p>
+              <p className="text-[9px] opacity-50">{formatSize(sizeBytes)}</p>
             </div>
-            {!isUploading && (
-              <button
-                onClick={() =>
-                  handleSmartDownload(message.media!.url, fileName)
-                }
-                className={`p-2 rounded-full transition-colors ${
-                  isDownloaded
-                    ? "text-green-500 bg-green-50"
-                    : "text-slate-400 hover:text-amber-600 hover:bg-amber-50"
-                }`}>
-                {isDownloaded ? <Check size={18} /> : <Download size={18} />}
-              </button>
-            )}
           </div>
-        )}
+          <button
+            type="button"
+            onClick={handleDownload}
+            title="Download audio"
+            className="shrink-0 p-1.5 rounded-full hover:bg-black/10 transition-colors">
+            {downloading
+              ? <Loader2 size={12} className="animate-spin" />
+              : <Download size={12} />}
+          </button>
+        </div>
+      );
+    }
+
+    /* PDF / DOC / other — file card; tap name/icon to preview, button to download */
+    return (
+      <div className="flex items-center gap-2.5 px-3 py-3 w-full">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setIsPreviewOpen(true)}
+          onKeyDown={(e) => e.key === "Enter" && setIsPreviewOpen(true)}
+          className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer
+            hover:opacity-80 transition-opacity">
+          <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center
+            justify-center shrink-0 text-amber-700">
+            <FileText size={15} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] sm:text-xs font-bold truncate">{filename}</p>
+            <p className="text-[9px] opacity-50 uppercase tracking-tight">
+              {mimeType.split("/")[1]?.toUpperCase() || "FILE"} · {formatSize(sizeBytes)}
+            </p>
+          </div>
+        </div>
+        {/* download button — separate interactive element, NOT nested in button */}
+        <button
+          type="button"
+          onClick={handleDownload}
+          title="Download file"
+          className="shrink-0 p-1.5 rounded-full hover:bg-black/10 transition-colors">
+          {downloading
+            ? <Loader2 size={12} className="animate-spin" />
+            : <Download size={12} />}
+        </button>
       </div>
     );
   };
 
-  const roleStyles = {
-    FATHER: { label: "አባታችን", color: "text-amber-600", bg: "bg-amber-50" },
-    CHILD: {
-      label: isDiacon ? "ዲያቆን" : "",
-      color: "text-blue-600",
-      bg: "bg-blue-50",
-    },
-    READONLY: { label: "ተመልካች", color: "text-slate-400", bg: "bg-slate-50" },
-  };
-
-  const currentRole = roleStyles[senderRole as keyof typeof roleStyles] || {
-    label: "",
-    color: "text-slate-400",
-    bg: "bg-slate-50",
-  };
+  /* ── own bubble actions (shown as permanent tiny row under footer on error, hover otherwise) ── */
+  const showActions = isOwn && (isError || (!isSending && (onDelete || onResend)));
 
   return (
     <>
       <motion.div
-        initial={{ opacity: 0, y: 10 }}
+        initial={{ opacity: 0, y: 5 }}
         animate={{ opacity: 1, y: 0 }}
-        className={`flex w-full mb-4 px-1 ${
+        transition={{ duration: 0.12 }}
+        className={`flex w-full mb-1 sm:mb-1.5 px-2 sm:px-3 ${
           isOwn ? "justify-end" : "justify-start"
         }`}>
-        <div
-          className={`flex items-end gap-2 max-w-[88%] sm:max-w-[70%] ${
-            isOwn ? "flex-row-reverse" : "flex-row"
-          }`}>
+
+        <div className={`flex items-end gap-1.5 sm:gap-2 max-w-[86%] sm:max-w-[72%] md:max-w-[60%]
+          ${isOwn ? "flex-row-reverse" : "flex-row"}`}>
+
+          {/* avatar — other person only */}
           {!isOwn && (
-            <div className="h-7 w-7 sm:h-8 sm:w-8 rounded-full ring-1 ring-slate-200 overflow-hidden shrink-0 mb-1">
-              {senderPhoto ? (
-                <img
-                  src={senderPhoto}
-                  alt=""
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="h-full w-full bg-slate-100 flex items-center justify-center text-slate-400">
-                  <User size={14} />
-                </div>
-              )}
+            <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-full ring-1 ring-slate-200
+              overflow-hidden shrink-0 mb-0.5">
+              {senderPhoto
+                ? <img src={senderPhoto} alt="" className="w-full h-full object-cover" />
+                : <div className="w-full h-full bg-slate-100 flex items-center justify-center">
+                    <User size={11} className="text-slate-400" />
+                  </div>
+              }
             </div>
           )}
 
-          <div
-            className={`group relative flex flex-col shadow-sm border rounded-2xl overflow-hidden ${
-              isOwn
-                ? "bg-slate-900 border-slate-800 text-white rounded-br-none"
-                : "bg-white border-slate-200 text-slate-900 rounded-bl-none"
-            }`}>
-            {!isOwn && (
-              <div className="px-3 py-1.5 flex items-center justify-between border-b border-slate-50">
-                <span className="text-[10px] font-bold text-slate-500">
-                  {senderName}
-                </span>
-                {currentRole.label && (
-                  <span
-                    className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded-sm ${currentRole.bg} ${currentRole.color}`}>
-                    {currentRole.label}
+          {/* wrapper — relative so context menu can be positioned here */}
+          <div className="relative flex flex-col">
+
+            {/* bubble */}
+            <div className={`flex flex-col shadow-sm border overflow-hidden
+              ${isOwn
+                ? "bg-slate-900 border-slate-700 text-white rounded-2xl rounded-br-[4px]"
+                : "bg-white border-slate-200 text-slate-900 rounded-2xl rounded-bl-[4px]"
+              }
+              ${isError ? "border-red-400/40" : ""}
+            `}>
+
+              {/* sender name — others only, non-empty */}
+              {!isOwn && senderName && (
+                <div className="px-2.5 sm:px-3 pt-2 pb-0.5 flex items-center gap-1.5">
+                  <span className="text-[10px] sm:text-[11px] font-bold text-slate-600">
+                    {senderName}
                   </span>
-                )}
-              </div>
-            )}
-
-            {renderMediaContent()}
-
-            {/* Text Content - Fixed horizontal overflow */}
-            {message.content && (
-              <div className="px-3 sm:px-4 py-2.5">
-                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                  {message.content}
-                </p>
-              </div>
-            )}
-
-            <div className="px-3 sm:px-4 py-1.5 flex items-center justify-between text-[9px] opacity-60">
-              <span>
-                {new Date(message.createdAt).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </span>
-
-              {isOwn && (
-                <div className="flex items-center gap-1">
-                  {message.status === "sending" ? (
-                    <Loader2
-                      size={10}
-                      className="animate-spin text-amber-500"
-                    />
-                  ) : message.status === "error" ? (
-                    <AlertCircle size={12} className="text-red-500" />
-                  ) : message.isRead ? (
-                    <CheckCheck size={12} className="text-amber-400" />
-                  ) : (
-                    <Check size={12} className="text-slate-400" />
+                  {roleBadge && (
+                    <span className={`text-[8px] px-1.5 py-0.5 rounded font-black
+                      uppercase leading-none ${roleBadge.cls}`}>
+                      {roleBadge.text}
+                    </span>
                   )}
                 </div>
               )}
+
+              {renderMedia()}
+
+              {message.content && (
+                <p className={`px-2.5 sm:px-3 text-[13px] sm:text-sm leading-relaxed
+                  whitespace-pre-wrap break-words
+                  ${message.media ? "py-1.5" : "pt-2 pb-1.5"}`}>
+                  {message.content}
+                </p>
+              )}
+
+              {/* footer row: time + tick + three-dot */}
+              <div className={`px-2.5 sm:px-3 pb-1.5 pt-0.5 flex items-center gap-1.5
+                ${isOwn ? "justify-between" : "justify-end"}`}>
+
+                {/* three-dot — only own messages, positioned INSIDE footer so
+                    it's never clipped and always visible */}
+                {showActions && (
+                  <button
+                    ref={triggerRef}
+                    type="button"
+                    title="Message options"
+                    onClick={() => setShowMenu((v) => !v)}
+                    className={`p-0.5 rounded-full transition-colors
+                      ${isOwn
+                        ? "text-white/40 hover:text-white/90 hover:bg-white/10"
+                        : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                      }`}>
+                    <MoreVertical size={13} />
+                  </button>
+                )}
+
+                <div className={`flex items-center gap-1 text-[9px] sm:text-[10px]
+                  ${isOwn ? "opacity-50 ml-auto" : "opacity-40"}`}>
+                  <span>
+                    {new Date(message.createdAt).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  {isOwn && (
+                    isSending
+                      ? <Loader2 size={9} className="animate-spin text-amber-400" />
+                      : isError
+                      ? <AlertCircle size={10} className="text-red-400" />
+                      : message.isRead
+                      ? <CheckCheck size={11} className="text-amber-400" />
+                      : <Check size={11} />
+                  )}
+                </div>
+              </div>
             </div>
 
-            {/* Menu Button for own messages */}
-            {isOwn && (
-              <button
-                onClick={() => setShowMenu(!showMenu)}
-                className="absolute top-2 right-2 p-1.5 opacity-0 group-hover:opacity-100 transition-opacity rounded-full hover:bg-white/10"
-                title="Message options">
-                <MoreVertical size={16} className="text-white/70" />
-              </button>
-            )}
-
-            {/* Menu Dropdown */}
-            {isOwn && showMenu && (
-              <div className="absolute top-10 right-2 bg-slate-200 rounded-xl shadow-xl border border-slate-100 py-1 z-20 w-44 text-sm">
-                {onEdit && (
-                  <button
-                    onClick={() => {
-                      onEdit(message);
-                      setShowMenu(false);
-                    }}
-                    className="w-full px-4 py-2 text-left hover:bg-slate-50 flex items-center gap-2 text-slate-700">
-                    <Edit2 size={16} /> Edit
-                  </button>
-                )}
-                {onResend && message.status === "error" && (
-                  <button
-                    onClick={() => {
-                      onResend(message);
-                      setShowMenu(false);
-                    }}
-                    className="w-full px-4 py-2 text-left hover:bg-slate-200 flex items-center gap-2 text-amber-600">
-                    Resend
-                  </button>
-                )}
-                {onDelete && (
-                  <button
-                    onClick={() => {
-                      onDelete(message.id);
-                      setShowMenu(false);
-                    }}
-                    className="w-full px-4 py-2 text-left hover:bg-slate-200 flex items-center gap-2 text-red-600">
-                    <Trash2 size={16} /> Delete
-                  </button>
-                )}
-              </div>
-            )}
+            {/* Context menu — rendered outside bubble div so no overflow clipping */}
+            {ContextMenu}
           </div>
         </div>
       </motion.div>
 
       <MediaPreview
-        url={message.media?.url || null}
-        mimeType={message.media?.mimeType}
-        fileName={message.media?.url?.split("/").pop() || "media"}
+        url={message.media?.url ?? null}
+        mimeType={message.media?.mimeType ?? ""}
+        fileName={resolveFilename(
+          message.media?.url ?? "media",
+          message.media?.mimeType,
+          message.media?.originalName
+        )}
         isOpen={isPreviewOpen}
         onClose={() => setIsPreviewOpen(false)}
       />

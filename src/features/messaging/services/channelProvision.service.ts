@@ -262,100 +262,182 @@ export async function joinStudentToFamilyChannels(
   studentEotcUid: string
 ): Promise<void> {
   try {
-    // ── 1. Get student document using eotcUid (doc ID) ──
+    // ── 1. Resolve fatherUid from the student Firestore document ──
+    // Students are stored with eotcUid as the document ID
     const studentSnap = await adminDb
       .collection("Students")
       .doc(studentEotcUid)
       .get();
 
     if (!studentSnap.exists) {
-      console.warn(
-        `[joinStudentToFamilyChannels] Student doc missing after claim: eotcUid=${studentEotcUid}, uid=${studentUid}`
-      );
-      return;
+      // Fallback: query by eotcUid field in case doc ID differs
+      const qSnap = await adminDb
+        .collection("Students")
+        .where("eotcUid", "==", studentEotcUid)
+        .limit(1)
+        .get();
+      if (qSnap.empty) {
+        console.warn(
+          `[joinStudentToFamilyChannels] Student doc missing: eotcUid=${studentEotcUid}`
+        );
+        return;
+      }
     }
 
-    const studentData = studentSnap.data();
-    const fatherUid = (studentData?.fatherUid ?? studentData?.fatherId) as
+    const studentData = (
+      studentSnap.exists ? studentSnap : null
+    )?.data() ?? (
+      await adminDb
+        .collection("Students")
+        .where("eotcUid", "==", studentEotcUid)
+        .limit(1)
+        .get()
+    ).docs[0]?.data();
+
+    if (!studentData) return;
+
+    // fatherId stores the father's Firebase Auth UID (set during child registration)
+    const fatherUid = (studentData.fatherId ?? studentData.fatherUid) as
       | UID
       | undefined;
 
     if (!fatherUid) {
       console.warn(
-        `[joinStudentToFamilyChannels] No fatherUid in student doc: eotcUid=${studentEotcUid}, uid=${studentUid}`
+        `[joinStudentToFamilyChannels] No fatherId in student doc: eotcUid=${studentEotcUid}`
       );
       return;
     }
 
-    // ── 2. Transaction: safe membership checks + adds ──
+    const familyId = fatherUid as unknown as FamilyID;
+    const now = Date.now();
+
+    // ── 2. ALL READS FIRST (Firestore transaction requirement) ──
     await adminDb.runTransaction(async (tx) => {
-      const now = Date.now();
+      // Read: COMMON_HOUSE channel
+      const familySnap = await tx.get(
+        adminDb
+          .collection("Channels")
+          .where("familyId", "==", familyId)
+          .where("type", "==", "COMMON_HOUSE" as ChannelType)
+          .limit(1)
+      );
 
-      // ─────────────────────────
-      // READ PHASE (ALL READS FIRST)
-      // ─────────────────────────
+      // Read: existing DIRECT channel between father and this student
+      // We search by familyId + type only (not createdBy) to avoid missing it
+      const directSnap = await tx.get(
+        adminDb
+          .collection("Channels")
+          .where("familyId", "==", familyId)
+          .where("type", "==", "DIRECT" as ChannelType)
+          .limit(30) // get all direct channels in family, filter below
+      );
 
-      const familyQuery = adminDb
-        .collection("Channels")
-        .where("familyId", "==", fatherUid as unknown as FamilyID)
-        .where("type", "==", "COMMON_HOUSE" as ChannelType)
-        .limit(1);
+      // Find the specific direct channel that has BOTH father and this student
+      // We'll check membership after reads
+      let existingDirectChannelId: ChannelID | null = null;
+      const directChannelIds = directSnap.docs.map(
+        (d) => d.data().id as ChannelID
+      );
 
-      const familySnap = await tx.get(familyQuery);
+      // Read: all member records for direct channels to find the right one
+      const directMemberSnaps = directChannelIds.length
+        ? await Promise.all(
+            directChannelIds.map((cid) =>
+              tx.get(
+                adminDb
+                  .collection("ChannelMembers")
+                  .where("channelId", "==", cid)
+                  .where("userId", "==", studentUid)
+                  .limit(1)
+              )
+            )
+          )
+        : [];
 
-      if (familySnap.empty) {
-        console.log(
-          `[joinStudentToFamilyChannels] No COMMON_HOUSE found yet for father ${fatherUid} — skipping`
+      // Read: family channel membership for student
+      let familyMemberSnap = null;
+      let familyChannelId: ChannelID | null = null;
+
+      if (!familySnap.empty) {
+        familyChannelId = (familySnap.docs[0].data() as Channel).id;
+        familyMemberSnap = await tx.get(
+          adminDb
+            .collection("ChannelMembers")
+            .where("channelId", "==", familyChannelId)
+            .where("userId", "==", studentUid)
+            .limit(1)
         );
-        return;
       }
 
-      const familyChannel = familySnap.docs[0].data() as Channel;
-      const familyChannelId = familyChannel.id;
-
-      const familyMemberQuery = adminDb
-        .collection("ChannelMembers")
-        .where("channelId", "==", familyChannelId)
-        .where("userId", "==", studentUid)
-        .limit(1);
-
-      const familyMemberSnap = await tx.get(familyMemberQuery);
-
-      // DIRECT channel lookup (READ moved BEFORE writes)
-      const directQuery = adminDb
-        .collection("Channels")
-        .where("type", "==", "DIRECT" as ChannelType)
-        .where("familyId", "==", fatherUid as unknown as FamilyID)
-        .where("createdBy", "in", [fatherUid, studentUid])
-        .limit(1);
-
-      const directSnap = await tx.get(directQuery);
-
-      let directMemberSnap = null;
-      let directChannelId: ChannelID | null = null;
-
-      if (!directSnap.empty) {
-        const directChannel = directSnap.docs[0].data() as Channel;
-        directChannelId = directChannel.id;
-
-        const directMemberQuery = adminDb
-          .collection("ChannelMembers")
-          .where("channelId", "==", directChannelId)
-          .where("userId", "==", studentUid)
-          .limit(1);
-
-        directMemberSnap = await tx.get(directMemberQuery);
+      // Determine if a direct channel already includes this student
+      for (let i = 0; i < directChannelIds.length; i++) {
+        if (!directMemberSnaps[i].empty) {
+          existingDirectChannelId = directChannelIds[i];
+          break;
+        }
       }
 
-      // ─────────────────────────
-      // WRITE PHASE (ONLY WRITES)
-      // ─────────────────────────
+      // ── 3. WRITES ──
 
-      if (familyMemberSnap.empty) {
-        const memberRef = adminDb.collection("ChannelMembers").doc();
-        tx.set(memberRef, {
-          id: memberRef.id,
-          channelId: familyChannelId,
+      // A. Add student to COMMON_HOUSE if not already a member
+      if (familyChannelId) {
+        if (familyMemberSnap?.empty) {
+          const ref = adminDb.collection("ChannelMembers").doc();
+          tx.set(ref, {
+            id: ref.id,
+            channelId: familyChannelId,
+            userId: studentUid,
+            role: "CHILD" as ChannelRole,
+            joinedAt: now,
+            isActive: true,
+          } satisfies ChannelMember);
+          console.log(
+            `[joinStudent] ✅ Added ${studentUid} to COMMON_HOUSE ${familyChannelId}`
+          );
+        } else {
+          console.log(
+            `[joinStudent] Already in COMMON_HOUSE — skipping`
+          );
+        }
+      } else {
+        console.log(
+          `[joinStudent] No COMMON_HOUSE found for father ${fatherUid} — will be created on next father login`
+        );
+      }
+
+      // B. Create a NEW DIRECT channel if none exists for this student
+      if (!existingDirectChannelId) {
+        const newChannelId = generateId() as ChannelID;
+        const channelRef = adminDb
+          .collection("Channels")
+          .doc(newChannelId);
+
+        const directChannel: Channel = {
+          id: newChannelId,
+          familyId,
+          type: "DIRECT",
+          createdBy: fatherUid,
+          createdAt: now,
+        };
+
+        tx.set(channelRef, directChannel);
+
+        // Father member in DIRECT channel
+        const fatherMemberRef = adminDb.collection("ChannelMembers").doc();
+        tx.set(fatherMemberRef, {
+          id: fatherMemberRef.id,
+          channelId: newChannelId,
+          userId: fatherUid,
+          role: "FATHER" as ChannelRole,
+          joinedAt: now,
+          isActive: true,
+        } satisfies ChannelMember);
+
+        // Student member in DIRECT channel
+        const studentMemberRef = adminDb.collection("ChannelMembers").doc();
+        tx.set(studentMemberRef, {
+          id: studentMemberRef.id,
+          channelId: newChannelId,
           userId: studentUid,
           role: "CHILD" as ChannelRole,
           joinedAt: now,
@@ -363,23 +445,11 @@ export async function joinStudentToFamilyChannels(
         } satisfies ChannelMember);
 
         console.log(
-          `[joinStudentToFamilyChannels] Added student ${studentUid} to COMMON_HOUSE ${familyChannelId}`
+          `[joinStudent] ✅ Created DIRECT channel ${newChannelId} for ${fatherUid} ↔ ${studentUid}`
         );
-      }
-
-      if (directChannelId && directMemberSnap?.empty) {
-        const memberRef = adminDb.collection("ChannelMembers").doc();
-        tx.set(memberRef, {
-          id: memberRef.id,
-          channelId: directChannelId,
-          userId: studentUid,
-          role: "CHILD" as ChannelRole,
-          joinedAt: now,
-          isActive: true,
-        } satisfies ChannelMember);
-
+      } else {
         console.log(
-          `[joinStudentToFamilyChannels] Added student ${studentUid} to DIRECT channel ${directChannelId}`
+          `[joinStudent] DIRECT channel already exists: ${existingDirectChannelId}`
         );
       }
     });
@@ -389,6 +459,6 @@ export async function joinStudentToFamilyChannels(
       studentEotcUid,
       error: err,
     });
-    // Deliberately not throwing — login must succeed
+    // Non-blocking — login must succeed regardless
   }
 }

@@ -7,21 +7,29 @@ import { MediaDescriptor } from "../types/messaging.types";
  * Centralized limits for the Atsede Niseha ecosystem.
  */
 export const MEDIA_LIMITS = {
-  MAX_FILE_SIZE: 25 * 1024 * 1024, // Increased to 25MB for high-res WAV/Video
+  MAX_FILE_SIZE: 25 * 1024 * 1024, // 25MB
   ALLOWED_MIME_TYPES: [
+    // Images
     "image/jpeg",
     "image/png",
     "image/webp",
     "image/gif",
     "image/heic",
+    "image/heif",
+    // Audio
     "audio/mpeg",
+    "audio/mp3",
     "audio/wav",
     "audio/ogg",
     "audio/aac",
     "audio/m4a",
+    "audio/x-m4a",
+    // Video
     "video/mp4",
     "video/webm",
     "video/quicktime",
+    "video/x-msvideo",
+    // Documents
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -30,7 +38,6 @@ export const MEDIA_LIMITS = {
     "application/vnd.ms-powerpoint",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "text/plain",
-    "application/rtf",
   ],
 };
 
