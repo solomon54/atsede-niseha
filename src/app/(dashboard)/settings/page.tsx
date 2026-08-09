@@ -1,7 +1,5 @@
 //src/app/(dashboard)/settings/page.tsx
-import { exp } from "firebase/firestore/pipelines";
 import { redirect } from "next/navigation";
-import { de } from "zod/locales";
 
 import { getSession } from "@/core/auth/session.service";
 

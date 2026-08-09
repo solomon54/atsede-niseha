@@ -1,36 +1,35 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ዐጸደ ንስሐ — Atsede Niseha
 
-## Getting Started
+Progressive Web App for Ethiopian Orthodox spiritual father–child stewardship: **appointments**, **private guidance**, and a **common house** for the flock — never a place to record confession content.
 
-First, run the development server:
+## Docs
+
+| Doc | Role |
+| :-- | :--- |
+| [`docs/PRODUCT.md`](./docs/PRODUCT.md) | **Product source of truth** |
+| [`docs/SRS.md`](./docs/SRS.md) | Technical requirements |
+| [`docs/architecture.md`](./docs/architecture.md) | Church operational guide (Amharic) |
+| [`TaskPriority.md`](./TaskPriority.md) | Build order |
+
+## Core model
+
+- **Governor** authorizes Fathers  
+- **Father** registers Children (EOTC UID) → Child **claims** account  
+- **Private Room** — Father ↔ one Child  
+- **Common House** — Father + entire flock  
+- **Appointments + notifications** — primary loop for in-person confession/counseling logistics  
+
+## Develop
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Requires Firebase, Pusher, and Cloudinary env vars (see server/client Firebase and messaging config).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Stack
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Next.js · Firebase · Pusher · Dexie · Serwist (PWA) · Tailwind

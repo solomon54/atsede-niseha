@@ -43,7 +43,7 @@ export default async function ProfilePage() {
   let profile: UnifiedProfile;
 
   try {
-    if (session.role === "CHILED") {
+    if (session.role === "STUDENT") {
       const data = await StudentProfileService.getProfile(session.uid);
       profile = {
         ...data,

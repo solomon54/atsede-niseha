@@ -150,5 +150,84 @@ export function isValidEthiopianDate(date: EthiopianDate): boolean {
 
 export function formatEthiopianDate(date: EthiopianDate): string {
   if (!date.year) return "---";
-  return `${ETHIOPIAN_MONTHS[date.month - 1]} ${date.day}, ${date.year}`;
+  return `${ETHIOPIAN_MONTHS[date.month - 1]} ${date.day} ቀን ${date.year} ዓ.ም.`;
+}
+
+/**
+ * JDN-Based Ethiopian → Gregorian (inverse of gregorianToEthiopian)
+ */
+export function ethiopianToGregorian(date: EthiopianDate): Date {
+  const era = 1723856;
+  const jdn =
+    era +
+    365 * (date.year - 1) +
+    Math.floor(date.year / 4) +
+    30 * (date.month - 1) +
+    date.day -
+    1;
+
+  // JDN → Unix ms (UTC noon-safe via date parts)
+  const unixDays = jdn - 2440588;
+  return new Date(unixDays * 86400000);
+}
+
+export type EthiopianDayPeriod = "ጥዋት" | "ከሰዓት";
+
+export interface EthiopianClockTime {
+  /** 1–12 Ethiopian hour */
+  hour: number;
+  minute: number;
+  period: EthiopianDayPeriod;
+}
+
+/**
+ * Western local time → traditional Ethiopian clock
+ * (Western 06:00 ≈ 12/0 start of ጥዋት cycle; 18:00 ≈ start of ከሰዓት)
+ */
+export function westernToEthiopianClock(date: Date): EthiopianClockTime {
+  const total = date.getHours() * 60 + date.getMinutes();
+  const ethTotal = (total - 6 * 60 + 24 * 60) % (24 * 60);
+  const ethHour24 = Math.floor(ethTotal / 60);
+  const minute = ethTotal % 60;
+  const period: EthiopianDayPeriod = ethHour24 < 12 ? "ጥዋት" : "ከሰዓት";
+  let hour = ethHour24 % 12;
+  if (hour === 0) hour = 12;
+  return { hour, minute, period };
+}
+
+/**
+ * Ethiopian clock + Eth date → JS Date (local wall time approximation via EAT offset storage as ISO)
+ */
+export function ethiopianDateTimeToDate(
+  date: EthiopianDate,
+  clock: EthiopianClockTime
+): Date {
+  const base = ethiopianToGregorian(date);
+  // Build UTC date from JDN day, then apply Eth clock → Western hours
+  const ethHour24 =
+    (clock.hour % 12) + (clock.period === "ከሰዓት" ? 12 : 0);
+  // Eth 0 = Western 6:00
+  const westernMinutes = (ethHour24 * 60 + clock.minute + 6 * 60) % (24 * 60);
+  const wh = Math.floor(westernMinutes / 60);
+  const wm = westernMinutes % 60;
+
+  // Use calendar Y-M-D from Gregorian conversion in local components
+  const g = new Date(base.getTime());
+  const y = g.getUTCFullYear();
+  const m = g.getUTCMonth();
+  const d = g.getUTCDate();
+  // Interpret as East Africa local: store as Date with those components in local TZ
+  return new Date(y, m, d, wh, wm, 0, 0);
+}
+
+export function formatEthiopianDateTime(isoOrDate: string | Date): string {
+  const date =
+    typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate;
+  if (Number.isNaN(date.getTime())) return "---";
+
+  const eth = gregorianToEthiopian(date);
+  const clock = westernToEthiopianClock(date);
+  const hh = String(clock.hour).padStart(2, "0");
+  const mm = String(clock.minute).padStart(2, "0");
+  return `${formatEthiopianDate(eth)} — ${hh}:${mm} ${clock.period}`;
 }

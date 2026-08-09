@@ -16,24 +16,32 @@ interface Props {
     day: number;
   };
   onChange: (date: { year: number; month: number; day: number }) => void;
+  /** Allow selecting future years (appointments). Default: birth-safe (today only). */
+  allowFutureYears?: number;
+  invalid?: boolean;
 }
 
 /**
  * EthiopianDateInput: A high-precision ecclesiastical date selector.
  * Optimized for Pagume logic and EOTC production standards.
  */
-export default function EthiopianDateInput({ value, onChange }: Props) {
+export default function EthiopianDateInput({
+  value,
+  onChange,
+  allowFutureYears = 0,
+  invalid,
+}: Props) {
   const todayEC = getTodayEthiopian();
 
-  // 1. Generate Year Range (from current EC year back to 1900)
+  // 1. Generate Year Range
   const years = useMemo(() => {
     const startYear = 1900;
-    const endYear = todayEC.year;
+    const endYear = todayEC.year + allowFutureYears;
     return Array.from(
       { length: endYear - startYear + 1 },
       (_, i) => endYear - i
     );
-  }, [todayEC.year]);
+  }, [todayEC.year, allowFutureYears]);
 
   // 2. Calculate Max Days for the selected Month/Year (Handles Pagume Leap Years)
   const maxDays = useMemo(() => {
@@ -63,7 +71,10 @@ export default function EthiopianDateInput({ value, onChange }: Props) {
           title="ዓመት ይምረጡ"
           value={value.year || ""}
           onChange={(e) => update("year", Number(e.target.value))}
-          className="sanctuary-input appearance-none cursor-pointer hover:border-amber-400 transition-colors">
+          className={`sanctuary-input appearance-none cursor-pointer hover:border-amber-400 transition-colors ${
+            invalid ? "border-red-400 ring-1 ring-red-200" : ""
+          }`}
+        >
           <option value="" disabled>
             ዓመት
           </option>
