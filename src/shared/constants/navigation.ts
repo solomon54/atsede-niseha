@@ -2,29 +2,39 @@
 import {
   Bell,
   BookOpen,
-  Home,
   LayoutDashboard,
+  MessageSquare,
   Settings,
-  ShieldCheck,
   User,
   Users,
 } from "lucide-react";
 
 export const NAVIGATION_ITEMS = [
+  // ── Messaging (all roles) ──
   {
-    label: "Home",
-    ethLabel: "መነሻ",
+    label: "Messages",
+    ethLabel: "ምስጢር",
     href: "/messages",
-    icon: Home,
+    icon: MessageSquare,
     roles: ["FATHER", "STUDENT", "GOVERNOR"],
   },
+  // ── Appointments (Father + Student only) ──
+  {
+    label: "Appointments",
+    ethLabel: "ቀጠሮ",
+    href: "/appointments",
+    icon: Bell,
+    roles: ["FATHER", "STUDENT"],
+  },
+  // ── Governor dashboard ──
   {
     label: "Governor",
-    ethLabel: "ማስተዳደርያ",
+    ethLabel: "ቁጥጥር",
     href: "/governor",
     icon: LayoutDashboard,
     roles: ["GOVERNOR"],
   },
+  // ── Father flock management ──
   {
     label: "Flock",
     ethLabel: "መንጋዬ",
@@ -32,30 +42,26 @@ export const NAVIGATION_ITEMS = [
     icon: Users,
     roles: ["FATHER"],
   },
+  // ── Student notes/ledger ──
   {
-    label: "Father",
-    ethLabel: "አባቴ",
-    href: "/message",
-    icon: ShieldCheck,
-    roles: ["STUDENT"],
-  },
-  {
-    label: "Ledger",
+    label: "Notes",
     ethLabel: "ማኅደር",
     href: "/notes",
     icon: BookOpen,
     roles: ["STUDENT"],
   },
+  // ── Profile (all roles) ──
   {
-    label: "Updates",
+    label: "Profile",
     ethLabel: "መገለጫ",
     href: "/profile",
     icon: User,
     roles: ["FATHER", "STUDENT", "GOVERNOR"],
   },
+  // ── Settings (all roles) ──
   {
     label: "Settings",
-    ethLabel: "ማስተካከያ",
+    ethLabel: "ቅንብሮች",
     href: "/settings",
     icon: Settings,
     roles: ["FATHER", "STUDENT", "GOVERNOR"],

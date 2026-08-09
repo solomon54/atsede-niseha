@@ -92,6 +92,33 @@
 @layer base {
   body {
     @apply bg-ledger-paper text-ledger-ink antialiased;
+    /* Fluid base font — 14px on 320px screens, scales to 16px at 768px+ */
+    font-size: clamp(14px, 1.8vw + 10px, 16px);
+  }
+
+  /* All headings scale down gracefully on small screens */
+  h1 {
+    font-size: clamp(1.25rem, 4vw + 0.5rem, 2rem);
+  }
+
+  h2 {
+    font-size: clamp(1.1rem, 3vw + 0.4rem, 1.5rem);
+  }
+
+  h3 {
+    font-size: clamp(0.95rem, 2.5vw + 0.3rem, 1.25rem);
+  }
+
+  /* Prevent text overflow everywhere */
+  * {
+    min-width: 0;
+  }
+
+  /* Better tap targets on mobile */
+  button,
+  a,
+  [role="button"] {
+    min-height: 36px;
   }
 }
 
@@ -117,6 +144,15 @@
 
   .custom-scrollbar:hover::-webkit-scrollbar-thumb {
     background-color: color-mix(in srgb, var(--color-ledger-accent), transparent 60%);
+  }
+
+  /* Media preview helpers — avoids inline style warnings */
+  .preview-video {
+    max-height: calc(100vh - 120px);
+  }
+
+  .preview-iframe {
+    min-height: 70vh;
   }
 
   /* Text Selection - Sacred Amber Highlight */
