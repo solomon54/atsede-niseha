@@ -146,6 +146,16 @@
     background-color: color-mix(in srgb, var(--color-ledger-accent), transparent 60%);
   }
 
+  /* Hide scrollbar but keep scroll functionality */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Media preview helpers — avoids inline style warnings */
   .preview-video {
     max-height: calc(100vh - 120px);

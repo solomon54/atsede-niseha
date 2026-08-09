@@ -12,7 +12,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlignCenter, AlignLeft, AlignRight,
-  Bold, BookOpen, ChevronLeft,
+  Bold, BookOpen, ChevronDown, ChevronLeft,
   Italic, Link2, Link2Off, List,
   ListOrdered, Loader2, Lock,
   Palette, Plus, RotateCcw, Trash2,
@@ -263,11 +263,12 @@ export default function NotesPage({ userId }: Props) {
       {/* ── EDITOR AREA ── */}
       <main className="relative flex-1 flex flex-col min-w-0 h-full overflow-hidden z-10">
 
-        {/* Toolbar */}
-        <div className="flex items-center gap-0.5 px-2 py-1.5 bg-white/95
-          backdrop-blur-sm border-b border-slate-100 shrink-0 overflow-x-auto">
+        {/* Toolbar — sticky floating bar over the writing area */}
+        <div className="sticky top-0 z-20 flex items-center gap-0.5 px-2 py-1.5
+          bg-white/95 backdrop-blur-md border-b border-slate-100
+          overflow-x-auto overscroll-x-contain no-scrollbar shrink-0">
           <button type="button" onClick={() => setSidebarOpen((v) => !v)}
-            title="Toggle sidebar"
+            title="Toggle sidebar" aria-label="Toggle sidebar"
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700
               hover:bg-slate-100 transition-colors mr-1 shrink-0">
             <List className="w-4 h-4" />
@@ -276,15 +277,15 @@ export default function NotesPage({ userId }: Props) {
 
           {editor && <EditorToolbar editor={editor} />}
 
-          <div className="ml-auto flex items-center gap-2 shrink-0 pl-2">
+          <div className="ml-auto flex items-center gap-2 shrink-0 pl-3">
             {saving && (
-              <span className="flex items-center gap-1 text-[9px] text-slate-400 font-bold">
+              <span className="flex items-center gap-1 text-[9px] text-slate-400 font-bold whitespace-nowrap">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 <span className="hidden sm:inline">Saving…</span>
               </span>
             )}
             <span className="flex items-center gap-1 px-1.5 py-1 bg-amber-50
-              rounded-lg border border-amber-100">
+              rounded-lg border border-amber-100 whitespace-nowrap">
               <Lock className="w-2.5 h-2.5 text-amber-600" />
               <span className="text-[7px] font-black text-amber-700 uppercase tracking-widest
                 hidden sm:inline">Encrypted</span>
@@ -303,8 +304,8 @@ export default function NotesPage({ userId }: Props) {
           <div className="mt-1.5 h-px bg-gradient-to-r from-[#9b2d30]/15 to-transparent" />
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-4 sm:px-10 py-4">
+        {/* Body — this is the only scrollable zone */}
+        <div className="flex-1 overflow-y-auto px-4 sm:px-10 py-4 overscroll-contain">
           {loading ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="w-6 h-6 animate-spin text-amber-600" />
@@ -333,113 +334,158 @@ export default function NotesPage({ userId }: Props) {
    TOOLBAR
 ───────────────────────────────────────────── */
 function EditorToolbar({ editor }: { editor: Editor }) {
-  const [linkOpen, setLinkOpen]   = useState(false);
-  const [colorOpen, setColorOpen] = useState(false);
-  const [linkValue, setLinkValue] = useState("");
+  const [linkOpen, setLinkOpen]     = useState(false);
+  const [colorOpen, setColorOpen]   = useState(false);
+  const [styleOpen, setStyleOpen]   = useState(false);
+  const [linkValue, setLinkValue]   = useState("");
+
   const linkRef  = useRef<HTMLDivElement>(null);
   const colorRef = useRef<HTMLDivElement>(null);
+  const styleRef = useRef<HTMLDivElement>(null);
 
-  /* close popups on outside click */
+  // Popup anchor positions (fixed to viewport so they float over the editor)
+  const [linkPos,  setLinkPos]  = useState({ top: 0, left: 0 });
+  const [colorPos, setColorPos] = useState({ top: 0, left: 0 });
+  const [stylePos, setStylePos] = useState({ top: 0, left: 0 });
+
+  /* close all popups on outside click */
   useEffect(() => {
     function handler(e: MouseEvent) {
-      if (linkRef.current && !linkRef.current.contains(e.target as Node)) setLinkOpen(false);
-      if (colorRef.current && !colorRef.current.contains(e.target as Node)) setColorOpen(false);
+      const t = e.target as Node;
+      if (linkRef.current  && !linkRef.current.contains(t))  setLinkOpen(false);
+      if (colorRef.current && !colorRef.current.contains(t)) setColorOpen(false);
+      if (styleRef.current && !styleRef.current.contains(t)) setStyleOpen(false);
     }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  function applyLink() {
-    const url = linkValue.trim();
-    if (!url) { editor.chain().focus().unsetLink().run(); }
-    else {
-      const href = url.startsWith("http") ? url : `https://${url}`;
-      editor.chain().focus().setLink({ href }).run();
-    }
-    setLinkValue("");
-    setLinkOpen(false);
+  /* compute fixed position below a button */
+  function anchorBelow(ref: React.RefObject<HTMLDivElement | null>): { top: number; left: number } {
+    if (!ref.current) return { top: 0, left: 0 };
+    const r = ref.current.getBoundingClientRect();
+    return { top: r.bottom + 6, left: Math.min(r.left, window.innerWidth - 280) };
   }
 
   function openLink() {
-    setColorOpen(false);
+    setColorOpen(false); setStyleOpen(false);
+    setLinkPos(anchorBelow(linkRef));
     setLinkValue(editor.getAttributes("link").href || "");
     setLinkOpen((v) => !v);
   }
-
   function openColor() {
-    setLinkOpen(false);
+    setLinkOpen(false); setStyleOpen(false);
+    setColorPos(anchorBelow(colorRef));
     setColorOpen((v) => !v);
   }
+  function openStyle() {
+    setLinkOpen(false); setColorOpen(false);
+    setStylePos(anchorBelow(styleRef));
+    setStyleOpen((v) => !v);
+  }
 
-  /* toolbar button helper */
-  const Btn = ({
-    onClick, active, title: t, children,
-  }: {
+  function applyLink() {
+    const url = linkValue.trim();
+    if (!url) editor.chain().focus().unsetLink().run();
+    else editor.chain().focus().setLink({ href: url.startsWith("http") ? url : `https://${url}` }).run();
+    setLinkValue(""); setLinkOpen(false);
+  }
+
+  /* current block type label */
+  const blockLabel = editor.isActive("heading", { level: 1 }) ? "H1"
+    : editor.isActive("heading", { level: 2 }) ? "H2"
+    : editor.isActive("heading", { level: 3 }) ? "H3"
+    : "본";  // "Body" glyph placeholder — replaced below
+
+  const blockDisplay = editor.isActive("heading", { level: 1 }) ? "H1"
+    : editor.isActive("heading", { level: 2 }) ? "H2"
+    : editor.isActive("heading", { level: 3 }) ? "H3"
+    : "¶";
+
+  /* toolbar button */
+  const Btn = ({ onClick, active, title: t, children }: {
     onClick: () => void; active?: boolean; title: string; children: React.ReactNode;
   }) => (
-    <button type="button" title={t} onClick={onClick}
+    <button type="button" title={t} aria-label={t} onClick={onClick}
       className={cn(
         "p-1.5 rounded-lg transition-colors shrink-0",
-        active
-          ? "bg-[#9b2d30] text-white"
-          : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+        active ? "bg-[#9b2d30] text-white" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
       )}>
       {children}
     </button>
   );
 
-  const sep = <div className="w-px h-4 bg-slate-200 mx-0.5 shrink-0" />;
+  const sep = <div className="w-px h-4 bg-slate-200 mx-0.5 shrink-0" aria-hidden />;
   const sz  = "w-3.5 h-3.5";
 
   return (
-    <div className="flex items-center gap-0.5 flex-wrap">
+    <div className="flex items-center gap-0.5">
+      {/* ── BLOCK / TEXT STYLE DROPDOWN ── */}
+      <div ref={styleRef} className="relative shrink-0">
+        <button type="button" title="Text style" aria-label="Text style" onClick={openStyle}
+          className={cn(
+            "flex items-center gap-1 px-2 py-1.5 rounded-lg transition-colors text-xs font-bold",
+            styleOpen ? "bg-slate-100 text-slate-800" : "text-slate-500 hover:bg-slate-100"
+          )}>
+          <span className="w-5 text-center font-black">{blockDisplay}</span>
+          <ChevronDown className="w-3 h-3 opacity-60" />
+        </button>
+
+        <AnimatePresence>
+          {styleOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -4, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.97 }}
+              transition={{ duration: 0.1 }}
+              style={{ position: "fixed", top: stylePos.top, left: stylePos.left, zIndex: 9999 }}
+              className="bg-white rounded-2xl shadow-2xl border border-slate-100 py-1.5 w-44"
+              onMouseDown={(e) => e.stopPropagation()}>
+              {[
+                { label: "ርዕስ 1", sub: "Heading 1", action: () => editor.chain().focus().toggleHeading({ level: 1 }).run(), active: editor.isActive("heading", { level: 1 }) },
+                { label: "ርዕስ 2", sub: "Heading 2", action: () => editor.chain().focus().toggleHeading({ level: 2 }).run(), active: editor.isActive("heading", { level: 2 }) },
+                { label: "ርዕስ 3", sub: "Heading 3", action: () => editor.chain().focus().toggleHeading({ level: 3 }).run(), active: editor.isActive("heading", { level: 3 }) },
+                { label: "ይዘት", sub: "Normal body", action: () => editor.chain().focus().setParagraph().run(), active: !editor.isActive("heading") },
+              ].map(({ label, sub, action, active }) => (
+                <button key={sub} type="button" aria-label={sub}
+                  onClick={() => { action(); setStyleOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-2 text-left transition-colors",
+                    active ? "bg-[#9b2d30]/8 text-[#9b2d30]" : "hover:bg-slate-50 text-slate-700"
+                  )}>
+                  <span className="text-sm font-bold">{label}</span>
+                  <span className="text-[9px] text-slate-400 uppercase tracking-widest">{sub}</span>
+                </button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {sep}
+
       {/* Format */}
-      <Btn onClick={() => editor.chain().focus().toggleBold().run()}
-        active={editor.isActive("bold")} title="Bold">
-        <Bold className={sz} />
-      </Btn>
-      <Btn onClick={() => editor.chain().focus().toggleItalic().run()}
-        active={editor.isActive("italic")} title="Italic">
-        <Italic className={sz} />
-      </Btn>
-      <Btn onClick={() => editor.chain().focus().toggleUnderline().run()}
-        active={editor.isActive("underline")} title="Underline">
-        <UnderlineIcon className={sz} />
-      </Btn>
+      <Btn onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive("bold")} title="Bold"><Bold className={sz} /></Btn>
+      <Btn onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive("italic")} title="Italic"><Italic className={sz} /></Btn>
+      <Btn onClick={() => editor.chain().focus().toggleUnderline().run()} active={editor.isActive("underline")} title="Underline"><UnderlineIcon className={sz} /></Btn>
 
       {sep}
 
       {/* Lists */}
-      <Btn onClick={() => editor.chain().focus().toggleBulletList().run()}
-        active={editor.isActive("bulletList")} title="Bullet list">
-        <List className={sz} />
-      </Btn>
-      <Btn onClick={() => editor.chain().focus().toggleOrderedList().run()}
-        active={editor.isActive("orderedList")} title="Ordered list">
-        <ListOrdered className={sz} />
-      </Btn>
+      <Btn onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive("bulletList")} title="Bullet list"><List className={sz} /></Btn>
+      <Btn onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive("orderedList")} title="Ordered list"><ListOrdered className={sz} /></Btn>
 
       {sep}
 
-      {/* Alignment — hidden on very small screens */}
-      <div className="hidden sm:flex items-center gap-0.5">
-        <Btn onClick={() => editor.chain().focus().setTextAlign("left").run()}
-          active={editor.isActive({ textAlign: "left" })} title="Align left">
-          <AlignLeft className={sz} />
-        </Btn>
-        <Btn onClick={() => editor.chain().focus().setTextAlign("center").run()}
-          active={editor.isActive({ textAlign: "center" })} title="Center">
-          <AlignCenter className={sz} />
-        </Btn>
-        <Btn onClick={() => editor.chain().focus().setTextAlign("right").run()}
-          active={editor.isActive({ textAlign: "right" })} title="Align right">
-          <AlignRight className={sz} />
-        </Btn>
-        {sep}
-      </div>
+      {/* Alignment */}
+      <Btn onClick={() => editor.chain().focus().setTextAlign("left").run()} active={editor.isActive({ textAlign: "left" })} title="Align left"><AlignLeft className={sz} /></Btn>
+      <Btn onClick={() => editor.chain().focus().setTextAlign("center").run()} active={editor.isActive({ textAlign: "center" })} title="Center"><AlignCenter className={sz} /></Btn>
+      <Btn onClick={() => editor.chain().focus().setTextAlign("right").run()} active={editor.isActive({ textAlign: "right" })} title="Align right"><AlignRight className={sz} /></Btn>
+
+      {sep}
 
       {/* ── LINK ── */}
-      <div className="relative" ref={linkRef}>
+      <div ref={linkRef} className="shrink-0">
         <Btn onClick={openLink} active={editor.isActive("link") || linkOpen} title="Link">
           <Link2 className={sz} />
         </Btn>
@@ -449,42 +495,29 @@ function EditorToolbar({ editor }: { editor: Editor }) {
               initial={{ opacity: 0, y: -4, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4, scale: 0.97 }}
-              transition={{ duration: 0.12 }}
-              className="absolute top-full left-0 mt-2 z-50 bg-white rounded-2xl
-                shadow-2xl border border-slate-100 p-3 w-64">
+              transition={{ duration: 0.1 }}
+              style={{ position: "fixed", top: linkPos.top, left: linkPos.left, zIndex: 9999 }}
+              className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-3 w-64"
+              onMouseDown={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-2">
-                <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest">
-                  አገናኝ / Link
-                </p>
-                <button type="button" onClick={() => setLinkOpen(false)}
-                  className="p-0.5 text-slate-400 hover:text-slate-700">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest">አገናኝ / Link</p>
+                <button type="button" aria-label="Close link popup" onClick={() => setLinkOpen(false)} className="p-0.5 text-slate-400 hover:text-slate-700"><X className="w-3.5 h-3.5" /></button>
               </div>
-              <input
-                autoFocus
-                type="url"
-                value={linkValue}
+              <input autoFocus type="url" value={linkValue}
                 onChange={(e) => setLinkValue(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && applyLink()}
                 placeholder="https://example.com"
-                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl
-                  outline-none focus:ring-2 focus:ring-[#9b2d30]/20 focus:border-[#9b2d30]/30
-                  mb-2"
-              />
+                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-[#9b2d30]/20 mb-2" />
               <div className="flex gap-1.5">
                 {editor.isActive("link") && (
-                  <button type="button"
+                  <button type="button" aria-label="Remove link"
                     onClick={() => { editor.chain().focus().unsetLink().run(); setLinkOpen(false); }}
-                    className="flex items-center gap-1 px-3 py-1.5 rounded-xl
-                      border border-slate-200 text-slate-500 text-[10px] font-bold
-                      hover:bg-slate-50 transition-colors">
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-200 text-slate-500 text-[10px] font-bold hover:bg-slate-50 transition-colors">
                     <Link2Off className="w-3 h-3" /> Remove
                   </button>
                 )}
-                <button type="button" onClick={applyLink}
-                  className="flex-1 py-1.5 bg-[#9b2d30] text-white rounded-xl
-                    text-[10px] font-bold hover:bg-[#7f2428] transition-colors">
+                <button type="button" aria-label="Apply link" onClick={applyLink}
+                  className="flex-1 py-1.5 bg-[#9b2d30] text-white rounded-xl text-[10px] font-bold hover:bg-[#7f2428] transition-colors">
                   Apply
                 </button>
               </div>
@@ -494,22 +527,18 @@ function EditorToolbar({ editor }: { editor: Editor }) {
       </div>
 
       {/* ── COLOR ── */}
-      <div className="relative" ref={colorRef}>
-        {/* Show current color as dot on button */}
-        <button type="button" title="Text color" onClick={openColor}
+      <div ref={colorRef} className="shrink-0">
+        <button type="button" title="Text color" aria-label="Text color" onClick={openColor}
           className={cn(
             "relative p-1.5 rounded-lg transition-colors shrink-0",
-            colorOpen
-              ? "bg-slate-100 text-slate-800"
-              : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            colorOpen ? "bg-slate-100 text-slate-800" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           )}>
           <Palette className={sz} />
-          {/* Color indicator underline */}
+          {/* Color indicator — use CSS var to avoid inline style warning */}
           <span
-            className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-3 h-0.5 rounded-full"
-            style={{
-              backgroundColor: editor.getAttributes("textStyle").color || "#1a1a1a",
-            }}
+            className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-3 h-[3px] rounded-full note-color-indicator"
+            data-color={editor.getAttributes("textStyle").color || "#1a1a1a"}
+            style={{ backgroundColor: editor.getAttributes("textStyle").color || "#1a1a1a" }}
           />
         </button>
 
@@ -519,50 +548,32 @@ function EditorToolbar({ editor }: { editor: Editor }) {
               initial={{ opacity: 0, y: -4, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4, scale: 0.97 }}
-              transition={{ duration: 0.12 }}
-              className="absolute top-full left-0 mt-2 z-50 bg-white rounded-2xl
-                shadow-2xl border border-slate-100 p-3 w-52">
+              transition={{ duration: 0.1 }}
+              style={{ position: "fixed", top: colorPos.top, left: colorPos.left, zIndex: 9999 }}
+              className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-3 w-52"
+              onMouseDown={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-3">
-                <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest">
-                  ቀለም / Color
-                </p>
-                <button type="button" onClick={() => setColorOpen(false)}
-                  className="p-0.5 text-slate-400 hover:text-slate-700">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest">ቀለም / Color</p>
+                <button type="button" aria-label="Close color picker" onClick={() => setColorOpen(false)} className="p-0.5 text-slate-400 hover:text-slate-700"><X className="w-3.5 h-3.5" /></button>
               </div>
-
-              {/* Color swatches */}
               <div className="grid grid-cols-5 gap-2 mb-3">
                 {COLORS.map((c) => {
                   const isActive = editor.getAttributes("textStyle").color === c.hex;
                   return (
-                    <button
-                      key={c.hex}
-                      type="button"
-                      title={c.label}
-                      onClick={() => {
-                        editor.chain().focus().setColor(c.hex).run();
-                        setColorOpen(false);
-                      }}
+                    <button key={c.hex} type="button" title={c.label} aria-label={c.label}
+                      onClick={() => { editor.chain().focus().setColor(c.hex).run(); setColorOpen(false); }}
+                      style={{ backgroundColor: c.hex }}
                       className={cn(
                         "w-7 h-7 rounded-full border-2 transition-transform hover:scale-110",
                         isActive ? "border-slate-800 scale-110" : "border-white shadow-sm"
-                      )}
-                      style={{ backgroundColor: c.hex }}
-                    />
+                      )} />
                   );
                 })}
               </div>
-
-              {/* Reset color */}
-              <button type="button"
+              <button type="button" aria-label="Reset color"
                 onClick={() => { editor.chain().focus().unsetColor().run(); setColorOpen(false); }}
-                className="w-full flex items-center justify-center gap-1.5 py-1.5
-                  rounded-xl border border-slate-200 text-slate-500 text-[10px]
-                  font-bold hover:bg-slate-50 transition-colors">
-                <RotateCcw className="w-3 h-3" />
-                Reset Color
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-xl border border-slate-200 text-slate-500 text-[10px] font-bold hover:bg-slate-50 transition-colors">
+                <RotateCcw className="w-3 h-3" /> Reset Color
               </button>
             </motion.div>
           )}
