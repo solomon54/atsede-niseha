@@ -1,9 +1,13 @@
-// src/app/api/father/register/route.ts
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 
 import { saveChildRecord } from "@/features/auth/services/childRegistration.service";
 import { RegisterChildSchema } from "@/features/father/services/validators";
+import { adminDb } from "@/services/firebase/admin";
+import {
+  sendChildRegistrationEmail,
+  verifyEmailDeliverability,
+} from "@/services/email/email.service";
 
 /**
  * API Route Handler for Spiritual Child Registration
@@ -53,13 +57,64 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    const childData = validation.data;
+
     /**
-     * Phase 4: Persistence
+     * Phase 4: Email Verification (Deliverability Check)
+     */
+    if (childData.email) {
+      const isDeliverable = await verifyEmailDeliverability(childData.email);
+      if (!isDeliverable) {
+        return NextResponse.json(
+          {
+            error: "Invalid Email Domain",
+            message: "እባክዎ ትክክለኛ እና የሚሰራ የኢሜይል አድራሻ ያስገቡ። (Please enter a deliverable email address)",
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    /**
+     * Phase 5: Fetch Father's Name for Personalized Email
+     */
+    let fatherName = "መምህረ ንስሐ (Spiritual Father)";
+    try {
+      if (childData.spiritualFatherId) {
+        const fQuery = await adminDb
+          .collection("Fathers")
+          .where("eotcUid", "==", childData.spiritualFatherId)
+          .limit(1)
+          .get();
+        if (!fQuery.empty) {
+          const fData = fQuery.docs[0].data();
+          fatherName = fData.fullName || fData.christianName || fatherName;
+          if (fData.title) fatherName = `${fData.title} ${fatherName}`;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to fetch father name for email", e);
+    }
+
+    /**
+     * Phase 6: Persistence
      * Delegate the database write operation to the service layer.
      * The service uses .set() which allows for future 're-registrations' to
      * act as updates if the Token (Document ID) remains the same.
      */
-    const result = await saveChildRecord(fatherId, validation.data);
+    const result = await saveChildRecord(fatherId, childData);
+
+    /**
+     * Phase 7: Dispatch Email with Token and Deep Link
+     */
+    if (childData.email) {
+      await sendChildRegistrationEmail(
+        childData.email,
+        childData.secularName,
+        fatherName,
+        childData.fullToken
+      );
+    }
 
     return NextResponse.json({
       success: true,
@@ -69,7 +124,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
   } catch (error: unknown) {
     /**
-     * Phase 5: Graceful Error Handling
+     * Phase 8: Graceful Error Handling
      * Differentiates between validation failures and internal infrastructure errors.
      */
     console.error("[STUDENT_REGISTRATION_CRITICAL]:", error);
@@ -80,7 +135,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error: "Internal Server Error",
-        message: "የውስጥ ችግር ተፈጥሯል - እባክዎ ቆይተው ይሞክሩ", // Localized error for production
+        message: errorMessage || "የውስጥ ችግር ተፈጥሯል - እባክዎ ቆይተው ይሞክሩ", // Localized error for production
       },
       { status: 500 }
     );
