@@ -186,75 +186,109 @@ const MessageBubble: FC<MessageBubbleProps> = ({
       ? { text: "ዲያቆን", cls: "bg-blue-900/20 text-blue-300" }
       : null;
 
-  /* ── context menu — shown outside bubble so overflow:hidden doesn't clip it ── */
+  /* ── context menu — shown as a centered modal to avoid composer overlap on small devices ── */
   const ContextMenu = showMenu ? (
     <div
-      ref={menuRef}
-      className={`absolute z-50 min-w-[150px] bg-white rounded-xl shadow-2xl
-        border border-slate-100 py-1 overflow-hidden
-        ${isOwn ? "right-0" : "left-0"} top-full mt-1`}
-      onMouseDown={(e) => e.stopPropagation()}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-4 animate-in fade-in duration-200"
+      onMouseDown={(e) => {
+        e.stopPropagation();
+        setShowMenu(false);
+      }}
     >
-      {isSending && onCancel && (
-        <button
-          type="button"
-          onClick={() => {
-            onCancel(message.id);
-            setShowMenu(false);
-          }}
-          className="w-full px-3 py-2.5 text-left hover:bg-orange-50 flex items-center
-            gap-2 text-[12px] text-orange-600 font-bold transition-colors">
-          <X size={12} />
-          ሰርዝ (Cancel)
-        </button>
-      )}
-      {isError && onResend && (
-        <button
-          type="button"
-          onClick={() => {
-            onResend(message);
-            setShowMenu(false);
-          }}
-          className="w-full px-3 py-2.5 text-left hover:bg-amber-50 flex items-center
-            gap-2 text-[12px] text-amber-700 font-bold transition-colors">
-          <RefreshCw size={12} />
-          እንደገና ላክ
-        </button>
-      )}
-      {onDelete && !isSending && (
-        confirmDelete ? (
-          <div className="px-3 py-2.5">
-            <p className="text-[10px] text-red-600 font-bold mb-2">እርግጠኛ ነዎት?</p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  onDelete(message.id);
-                  setShowMenu(false);
-                  setConfirmDelete(false);
-                }}
-                className="flex-1 px-2 py-1.5 bg-red-500 text-white rounded-lg text-[10px] font-bold">
-                አዎ ሰርዝ
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(false)}
-                className="flex-1 px-2 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-bold">
-                ተው
-              </button>
-            </div>
-          </div>
-        ) : (
+      <div
+        ref={menuRef}
+        className="w-full max-w-[280px] bg-white rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+          <span className="text-[13px] font-bold text-slate-500 uppercase tracking-wider">አማራጮች</span>
           <button
-            type="button"
-            onClick={() => setConfirmDelete(true)}
-            className="w-full px-3 py-2.5 text-left hover:bg-red-50 flex items-center
-              gap-2 text-[12px] text-red-600 font-bold transition-colors">
-            <Trash2 size={12} />
-            ሰርዝ
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowMenu(false);
+            }}
+            className="p-1 -mr-1 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-200/50 transition-colors"
+          >
+            <X size={16} />
           </button>
-        )
-      )}
+        </div>
+
+        <div className="py-1">
+          {isSending && onCancel && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCancel(message.id);
+                setShowMenu(false);
+              }}
+              className="w-full px-4 py-3.5 text-left hover:bg-orange-50 flex items-center gap-3 text-[14px] text-orange-600 font-bold transition-colors"
+            >
+              <X size={16} />
+              መላክ ሰርዝ (Cancel)
+            </button>
+          )}
+
+          {isError && onResend && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onResend(message);
+                setShowMenu(false);
+              }}
+              className="w-full px-4 py-3.5 text-left hover:bg-amber-50 flex items-center gap-3 text-[14px] text-amber-700 font-bold transition-colors"
+            >
+              <RefreshCw size={16} />
+              እንደገና ላክ (Resend)
+            </button>
+          )}
+
+          {onDelete && !isSending && (
+            confirmDelete ? (
+              <div className="px-4 py-4 bg-red-50">
+                <p className="text-[13px] text-red-700 font-bold mb-3 text-center">ይህንን መልዕክት መሰረዝ ይፈልጋሉ?</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(message.id);
+                      setShowMenu(false);
+                      setConfirmDelete(false);
+                    }}
+                    className="flex-1 px-3 py-2.5 bg-red-600 hover:bg-red-700 transition-colors text-white rounded-xl text-[13px] font-bold"
+                  >
+                    አዎ፣ ይሰረዝ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDelete(false);
+                    }}
+                    className="flex-1 px-3 py-2.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors rounded-xl text-[13px] font-bold"
+                  >
+                    ተው
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmDelete(true);
+                }}
+                className="w-full px-4 py-3.5 text-left hover:bg-red-50 flex items-center gap-3 text-[14px] text-red-600 font-bold transition-colors"
+              >
+                <Trash2 size={16} />
+                መልዕክቱን ሰርዝ (Delete)
+              </button>
+            )
+          )}
+        </div>
+      </div>
     </div>
   ) : null;
 

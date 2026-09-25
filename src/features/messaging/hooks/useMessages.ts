@@ -84,11 +84,16 @@ export function useMessages(channelId: ChannelID) {
       .between([channelId, Dexie.minKey], [channelId, Dexie.maxKey])
       .toArray();
 
+    // Filter out messages that are marked as deleted either by content or the deletedAt flag
+    const activeMessages = rawMessages.filter(
+      (msg) => msg.content !== "[deleted]" && !msg.deletedAt
+    );
+
     // Cache member lookups within this single query run to avoid redundant DB hits
     const memberCache = new Map<string, CachedMember>();
 
     return await Promise.all(
-      rawMessages.map(async (msg): Promise<EnrichedMessage> => {
+      activeMessages.map(async (msg): Promise<EnrichedMessage> => {
         // 1. Resolve Identity
         let memberInfo = memberCache.get(msg.senderId);
         if (!memberInfo) {
