@@ -8,6 +8,7 @@ import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadKey } from "../crypto/keyManager";
 import {
   ChannelID,
+  ChannelRole,
   ChannelType,
   ConversationSummary,
   FamilyID,
@@ -352,6 +353,8 @@ const MessagingClient: FC<MessagingClientProps> = ({
                   channelId={activeChannelId}
                   currentUserId={session.uid}
                   encryptionKeyId={session.familyId}
+                  currentUserRole={session.role as ChannelRole}
+                  currentUserName={session.fullName}
                 />
                 <div className="flex-none bg-white border-t p-2 sm:p-3 pb-[env(safe-area-inset-bottom)]">
                   <div className="max-w-4xl mx-auto w-full px-2 sm:px-4">

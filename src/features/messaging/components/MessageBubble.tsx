@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { FC, useCallback, useEffect, useRef, useState } from "react";
 
+import { formatEthiopianTimeShort } from "@/shared/utils/calendar/ethiopianCalendar";
+
 import { ChannelRole, Message } from "../types/messaging.types";
 import { MediaPreview } from "./MediaPreview";
 
@@ -77,6 +79,9 @@ interface MessageBubbleProps {
   senderName?: string;
   senderPhoto?: string;
   isDiacon?: boolean;
+  /** Role of the current user (to display premium badge on own messages) */
+  currentUserRole?: ChannelRole;
+  currentUserName?: string;
   onDelete?: (messageId: string) => void;
   onCancel?: (messageId: string) => void;
   onResend?: (message: Message) => void;
@@ -92,6 +97,8 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   senderName = "የቤተሰብ አባል",
   senderPhoto,
   isDiacon = false,
+  currentUserRole,
+  currentUserName,
   onDelete,
   onCancel,
   onResend,
@@ -99,6 +106,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // ref for outside-click detection
   const menuRef = useRef<HTMLDivElement>(null);
@@ -162,7 +170,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     [message.media, downloading]
   );
 
-  /* ── role badge ── */
+  /* ── role badge (for received messages) ── */
   const roleBadge =
     senderRole === "FATHER"
       ? { text: "አባታችን", cls: "bg-amber-100 text-amber-700" }
@@ -170,17 +178,36 @@ const MessageBubble: FC<MessageBubbleProps> = ({
       ? { text: "ዲያቆን", cls: "bg-blue-100 text-blue-700" }
       : null;
 
+  /* ── own sender badge (premium identity for own bubbles) ── */
+  const ownBadge =
+    isOwn && currentUserRole === "FATHER"
+      ? { text: "አባት", cls: "bg-amber-900/20 text-amber-300" }
+      : isOwn && isDiacon
+      ? { text: "ዲያቆን", cls: "bg-blue-900/20 text-blue-300" }
+      : null;
+
   /* ── context menu — shown outside bubble so overflow:hidden doesn't clip it ── */
   const ContextMenu = showMenu ? (
     <div
       ref={menuRef}
-      // Portal-like: positioned relative to viewport via fixed, but we
-      // approximate by using absolute on the outer wrapper (see below)
-      className={`absolute z-50 min-w-[130px] bg-white rounded-xl shadow-2xl
+      className={`absolute z-50 min-w-[150px] bg-white rounded-xl shadow-2xl
         border border-slate-100 py-1 overflow-hidden
         ${isOwn ? "right-0" : "left-0"} top-full mt-1`}
       onMouseDown={(e) => e.stopPropagation()}
     >
+      {isSending && onCancel && (
+        <button
+          type="button"
+          onClick={() => {
+            onCancel(message.id);
+            setShowMenu(false);
+          }}
+          className="w-full px-3 py-2.5 text-left hover:bg-orange-50 flex items-center
+            gap-2 text-[12px] text-orange-600 font-bold transition-colors">
+          <X size={12} />
+          ሰርዝ (Cancel)
+        </button>
+      )}
       {isError && onResend && (
         <button
           type="button"
@@ -194,18 +221,39 @@ const MessageBubble: FC<MessageBubbleProps> = ({
           እንደገና ላክ
         </button>
       )}
-      {onDelete && (
-        <button
-          type="button"
-          onClick={() => {
-            onDelete(message.id);
-            setShowMenu(false);
-          }}
-          className="w-full px-3 py-2.5 text-left hover:bg-red-50 flex items-center
-            gap-2 text-[12px] text-red-600 font-bold transition-colors">
-          <Trash2 size={12} />
-          ሰርዝ
-        </button>
+      {onDelete && !isSending && (
+        confirmDelete ? (
+          <div className="px-3 py-2.5">
+            <p className="text-[10px] text-red-600 font-bold mb-2">እርግጠኛ ነዎት?</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onDelete(message.id);
+                  setShowMenu(false);
+                  setConfirmDelete(false);
+                }}
+                className="flex-1 px-2 py-1.5 bg-red-500 text-white rounded-lg text-[10px] font-bold">
+                አዎ ሰርዝ
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                className="flex-1 px-2 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-bold">
+                ተው
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            className="w-full px-3 py-2.5 text-left hover:bg-red-50 flex items-center
+              gap-2 text-[12px] text-red-600 font-bold transition-colors">
+            <Trash2 size={12} />
+            ሰርዝ
+          </button>
+        )
       )}
     </div>
   ) : null;
@@ -368,8 +416,8 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     );
   };
 
-  /* ── own bubble actions (shown as permanent tiny row under footer on error, hover otherwise) ── */
-  const showActions = isOwn && (isError || (!isSending && (onDelete || onResend)));
+  /* ── own bubble actions (shown as permanent tiny row under footer on error/sending, hover otherwise) ── */
+  const showActions = isOwn && (isError || isSending || (!isSending && (onDelete || onResend)));
 
   return (
     <>
@@ -409,7 +457,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
               ${isError ? "border-red-400/40" : ""}
             `}>
 
-              {/* sender name — others only, non-empty */}
+              {/* sender name + role badge */}
               {!isOwn && senderName && (
                 <div className="px-2.5 sm:px-3 pt-2 pb-0.5 flex items-center gap-1.5">
                   <span className="text-[10px] sm:text-[11px] font-bold text-slate-600">
@@ -421,6 +469,18 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                       {roleBadge.text}
                     </span>
                   )}
+                </div>
+              )}
+              {/* Premium identity badge on own messages */}
+              {isOwn && ownBadge && currentUserName && (
+                <div className="px-2.5 sm:px-3 pt-2 pb-0.5 flex items-center gap-1.5 justify-end">
+                  <span className="text-[10px] font-bold text-white/60">
+                    {currentUserName}
+                  </span>
+                  <span className={`text-[8px] px-1.5 py-0.5 rounded font-black
+                    uppercase leading-none ${ownBadge.cls}`}>
+                    {ownBadge.text}
+                  </span>
                 </div>
               )}
 
@@ -458,10 +518,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                 <div className={`flex items-center gap-1 text-[9px] sm:text-[10px]
                   ${isOwn ? "opacity-50 ml-auto" : "opacity-40"}`}>
                   <span>
-                    {new Date(message.createdAt).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {formatEthiopianTimeShort(message.createdAt)}
                   </span>
                   {isOwn && (
                     isSending

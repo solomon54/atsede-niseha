@@ -4,6 +4,7 @@
 
 import { Lock, Users } from "lucide-react";
 import Image from "next/image";
+import { formatEthiopianTimeShort } from "@/shared/utils/calendar/ethiopianCalendar";
 
 import { ConversationSummary, UID } from "../types/messaging.types";
 
@@ -39,10 +40,7 @@ export function ConversationItem({ convo, active, onSelect, currentUserId }: Pro
     : null;
 
   const lastTime = convo.lastMessage?.createdAt
-    ? new Date(convo.lastMessage.createdAt).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      })
+    ? formatEthiopianTimeShort(convo.lastMessage.createdAt)
     : null;
 
   return (
