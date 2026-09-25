@@ -130,11 +130,25 @@ export async function GET(): Promise<Response> {
           };
         });
 
-        // 5️⃣ Unread Logic
-        const isUnread =
-          !!lastMessage &&
-          (!myMemberData.lastReadAt ||
-            lastMessage.createdAt > myMemberData.lastReadAt);
+        // 5️⃣ Unread Logic (Accurate Counter)
+        let unreadCount = 0;
+        if (lastMessage) {
+          try {
+            const countQuery = await adminDb
+              .collection(COLLECTIONS.CHANNELS)
+              .doc(channelId as string)
+              .collection(COLLECTIONS.MESSAGES)
+              .where("createdAt", ">", myMemberData.lastReadAt || 0)
+              .count()
+              .get();
+              
+            unreadCount = countQuery.data().count;
+          } catch (error) {
+            console.error("Failed to fetch unread count:", error);
+            // Fallback to 1 if there is a newer message but count fails
+            unreadCount = (!myMemberData.lastReadAt || lastMessage.createdAt > myMemberData.lastReadAt) ? 1 : 0;
+          }
+        }
 
         // 6️⃣ Summary Projection
         const summary: ConversationSummary = {
@@ -150,7 +164,7 @@ export async function GET(): Promise<Response> {
           channel: { ...channelData, id: channelId as ChannelID },
           members,
           lastMessage,
-          unreadCount: isUnread ? 1 : 0,
+          unreadCount,
         };
 
         return summary;

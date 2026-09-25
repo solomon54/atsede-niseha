@@ -171,13 +171,14 @@ export function ethiopianToGregorian(date: EthiopianDate): Date {
   return new Date(unixDays * 86400000);
 }
 
-export type EthiopianDayPeriod = "ጥዋት" | "ከሰዓት";
+export type EthiopianDayPeriod = "ጥዋት" | "እኩለ ቀን" | "ከሰዓት" | "ምሽት" | "ማታ";
 
 export interface EthiopianClockTime {
   /** 1–12 Ethiopian hour */
   hour: number;
   minute: number;
   period: EthiopianDayPeriod;
+  isNight: boolean;
 }
 
 /**
@@ -189,10 +190,21 @@ export function westernToEthiopianClock(date: Date): EthiopianClockTime {
   const ethTotal = (total - 6 * 60 + 24 * 60) % (24 * 60);
   const ethHour24 = Math.floor(ethTotal / 60);
   const minute = ethTotal % 60;
-  const period: EthiopianDayPeriod = ethHour24 < 12 ? "ጥዋት" : "ከሰዓት";
+  
+  const h = date.getHours();
+  let period: EthiopianDayPeriod;
+  
+  if (h >= 6 && h < 12) period = "ጥዋት"; // 6:00 AM - 11:59 AM
+  else if (h >= 12 && h < 14) period = "እኩለ ቀን"; // 12:00 PM - 1:59 PM
+  else if (h >= 14 && h < 17) period = "ከሰዓት"; // 2:00 PM - 4:59 PM
+  else if (h >= 17 && h < 20) period = "ምሽት"; // 5:00 PM - 7:59 PM
+  else period = "ማታ"; // 8:00 PM - 5:59 AM
+
+  const isNight = ethHour24 >= 12;
+
   let hour = ethHour24 % 12;
   if (hour === 0) hour = 12;
-  return { hour, minute, period };
+  return { hour, minute, period, isNight };
 }
 
 /**
@@ -204,8 +216,7 @@ export function ethiopianDateTimeToDate(
 ): Date {
   const base = ethiopianToGregorian(date);
   // Build UTC date from JDN day, then apply Eth clock → Western hours
-  const ethHour24 =
-    (clock.hour % 12) + (clock.period === "ከሰዓት" ? 12 : 0);
+  const ethHour24 = (clock.hour % 12) + (clock.isNight ? 12 : 0);
   // Eth 0 = Western 6:00
   const westernMinutes = (ethHour24 * 60 + clock.minute + 6 * 60) % (24 * 60);
   const wh = Math.floor(westernMinutes / 60);
