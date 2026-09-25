@@ -496,22 +496,35 @@ export const TOP_UNIVERSITIES = [
 // Accademic structure of Ethiopian universities
 export type AcademicMap = Record<string, Record<string, string[]>>;
 export const UNIVERSITY_MASTER_MAP: AcademicMap = {
-  "ዋቸሞ ዩኒቨርሲቲ (Wachemo University - WCU)": {
+    "ዋቸሞ ዩኒቨርሲቲ (Wachemo University - WCU)": {
     "ኢንጂነሪንግና ቴክኖሎጂ ኮሌጅ (College of Engineering & Technology)": [
-      "BSc. in Architecture",
-      "BSc. in Chemical Engineering",
-      "BSc. in Civil Engineering",
-      "BSc. in Computer Science",
-      "BSc. in Construction Technology and Management",
-      "BSc. in Electrical and Computer Engineering",
-      "BSc. in Electro-Mechanical Engineering",
-      "BSc. in Surveying Engineering",
-      "BSc. in Information System(IS)",
-      "BSc. in Information Technology(IT)",
-      "BSc. in Mechanical Engineering",
-      "BSc. in Software Engineering",
+      "BSc in Architecture",
+      "BSc in Chemical Engineering",
+      "BSc in Civil Engineering",
+      "BSc in Computer Science",
+      "BSc in Construction Technology and Management",
+      "BSc in Electrical and Computer Engineering",
+      "BSc in Electro-Mechanical Engineering",
+      "BSc in Surveying Engineering",
+      "BSc in Information System (IS)",
+      "BSc in Information Technology (IT)",
+      "BSc in Mechanical Engineering",
+      "BSc in Software Engineering",
       "BSc in Hydraulic and Water Resource Engineering",
       "BSc in Biomedical Engineering",
+      "MSc in Electrical Power Engineering",
+      "MSc in Electrical and Communication Engineering",
+      "MSc in Computer Science",
+      "MSc in Process Engineering",
+      "MSc in Geo-informatics",
+      "MSc in Geo-informatics Engineering",
+      "MSc in Computer Engineering",
+      "MSC in Thermal Engineering",
+      "MSC in Structural Engineering",
+      "MSc in Water Supply & Sanitary Engineering",
+      "MSc in Information Technology (IT)",
+      "MSc in Construction Technology & Management",
+      "MSc in Road & Transport Engineering"
     ],
     "ተፈጥሮና ቀመር ሳይንስ ኮሌጅ (College of Natural and Computational Science)": [
       "BSc in Biology",
@@ -522,6 +535,22 @@ export const UNIVERSITY_MASTER_MAP: AcademicMap = {
       "BSc in Geology",
       "BSc in Sport Science",
       "BSc in Industrial Chemistry",
+      "MSc in Applied Statistics",
+      "MSc in Organic Chemistry",
+      "MSc in Football Coaching",
+      "MSc in Valley Ball Coaching",
+      "MSc in Sport Management",
+      "MSc in Biostatistics",
+      "MSc in Quantum Optics",
+      "MSc in Condensed Matter",
+      "MSc in Biotechnology",
+      "MSc in Botanical Science",
+      "MSc in Applied Microbiology",
+      "MEd in Mathematical Education",
+      "MSc in Exercises Physiology",
+      "MSc in Analysis (Mathematics)",
+      "MSc in Animal Biotechnology",
+      "MSc in Physics (Condensed matter)"
     ],
     "ሕክምናና ጤና ሳይንስ ኮሌጅ (College of Medicine and Health Science)": [
       "BSc in Anesthesia",
@@ -532,9 +561,19 @@ export const UNIVERSITY_MASTER_MAP: AcademicMap = {
       "BSc in Health Informatics",
       "BSc in Medical Laboratory Technology",
       "BSc in Pharmacy",
-      "BSc in Surgical Nursing(PB)",
-      "BSc in Paediatrics & Chilled Health Nursing (PB)",
+      "BSc in Surgical Nursing (PB)",
+      "BSc in Paediatrics & Child Health Nursing (PB)",
       "BSc in Dental Medicine",
+      "MPH in General Public Health",
+      "MPH in Health Education and Promotion",
+      "MPH in Epidemiology",
+      "MPH in Reproductive Health",
+      "MPH in Clinical Pharmacy",
+      "Specialty in Gynecology",
+      "Specialty in General Surgery",
+      "Specialty in Pediatrics and Child Health",
+      "Specialty in Internal Medicine",
+      "Specialty in Orthopedics and Trauma Surgery"
     ],
     "ግብርና ሳይንስ ኮሌጅ (College of Agricultural Sciences)": [
       "BSc in Animal Science",
@@ -545,6 +584,18 @@ export const UNIVERSITY_MASTER_MAP: AcademicMap = {
       "BSc in Food Science and Postharvest Technology",
       "BSc in Agro Economics",
       "BSc in Rural Development & Agricultural Extension",
+      "MSc in Animal Production",
+      "MSc in Animal breeding & Genetics",
+      "MSc in Agroforestry",
+      "MSc in Agronomy",
+      "MSc in Agricultural Economics",
+      "MSc in Environmental Science",
+      "MSc in Rural Development and Agricultural Extension",
+      "MSc in Soil Science",
+      "MSc in Plant Breeding",
+      "MSc in Livelihood and Food Security",
+      "MSc in Integrated Watershed Management",
+      "PhD in Soil Science"
     ],
     "ቢዝነስና ኢኮኖሚክስ ኮሌጅ (College of Business and Economics)": [
       "BA in Accounting and Finance",
@@ -553,31 +604,332 @@ export const UNIVERSITY_MASTER_MAP: AcademicMap = {
       "BA in Marketing Management",
       "BA in Public Administration and Development Management",
       "BA in Tourism & Hotel Management",
+      "MA in Accounting and Finance",
+      "MA in Development Economics",
+      "Masters of Business Administration (MBA)",
+      "MA in Development Management"
     ],
     "ማኅበራዊ ሳይንስና ሂዩማኒቲስ ኮሌጅ (College of Social Science and Humanities)": [
       "BA in Political Science and International Relation",
       "BA in English Language and Literature",
       "BA in Geography and Environmental Studies",
-      "BA in Hadiyissa Language & Literature (Main Campus)",
+      "BA in Hadiyissa Language & Literature",
       "BA in Sociology",
       "BA in History & Heritage Management",
       "BA in Governance & Development Studies",
       "BA in Journalism",
-      "BA in Kambatisa (Durame Campus)",
+      "BA in Kambatisa",
+      "MA in Teaching English as a Foreign Language (TEFL)",
+      "MA in Peace and Conflict Studies",
+      "MSc in Geography and Environmental Science",
+      "MA in Social Anthropology",
+      "MA in Applied Linguistics and Communication in Hadiyyisa"
     ],
     "ትምህርትና ባህሪ ሳይንስ ኮሌጅ (College of Education & Behavioral Science)": [
       "BA in Psychology",
-      "Educational Leadership & Management",
       "BA in Educational Leadership and Management",
-      "Special Needs and Inclusive Education",
+      "BA in Special Needs and Inclusive Education",
+      "MA in Educational Leadership and Management (EDPM)",
+      "PhD in Educational Leadership and Policy Studies"
     ],
-    "የሕግ ትምህርት ቤት (School of Law)": ["BA in Law (LLB)"],
+    "የሕግ ትምህርት ቤት (School of Law)": [
+      "BA in Law (LLB)",
+      "LLM in Environmental Law and policy"
+    ],
     "የእንስሳት ሕክምና ትምህርት ቤት (School of Veterinary Medicine)": [
       "Doctor of Veterinary Medicine (DVM)",
-      "BSc in Veterinary Science",
-    ],
+      "BSc in Veterinary Science"
+    ]
   },
 
+  "አዲስ አበባ ዩኒቨርሲቲ (Addis Ababa University - AAU)": {
+    "ቴክኖሎጂ ኢንስቲትዩት (AAiT)": [
+      "BSc in Civil Engineering",
+      "BSc in Electrical and Computer Engineering",
+      "BSc in Mechanical Engineering",
+      "BSc in Chemical Engineering",
+      "BSc in Software Engineering",
+      "BSc in Information Technology",
+      "BSc in Biomedical Engineering"
+    ],
+    "ጤና ሳይንስ ኮሌጅ (College of Health Sciences)": [
+      "Doctor of Medicine (MD)",
+      "Doctor of Dental Medicine (DMD)",
+      "BSc in Pharmacy",
+      "BSc in Nursing",
+      "BSc in Midwifery",
+      "BSc in Medical Laboratory Sciences",
+      "BSc in Anesthesia",
+      "BSc in Public Health"
+    ],
+    "ተፈጥሮና ቀመር ሳይንስ ኮሌጅ (College of Natural and Computational Sciences)": [
+      "BSc in Computer Science",
+      "BSc in Information Systems",
+      "BSc in Biology",
+      "BSc in Chemistry",
+      "BSc in Physics",
+      "BSc in Mathematics",
+      "BSc in Statistics",
+      "BSc in Earth Sciences",
+      "BSc in Environmental Science"
+    ],
+    "ቢዝነስና ኢኮኖሚክስ ኮሌጅ (College of Business and Economics)": [
+      "BA in Accounting and Finance",
+      "BA in Economics",
+      "BA in Management",
+      "BA in Public Administration"
+    ],
+    "ማኅበራዊ ሳይንስ ኮሌጅ (College of Social Sciences)": [
+      "BA in Political Science and International Relations",
+      "BA in Social Anthropology",
+      "BA in Sociology",
+      "BA in Geography and Environmental Studies",
+      "BA in History",
+      "BA in Philosophy"
+    ],
+    "ሂዩማኒቲስ፣ የቋንቋ ጥናትና ጋዜጠኝነት (Humanities, Language Studies & Journalism)": [
+      "BA in Journalism and Communication",
+      "BA in English Language and Literature",
+      "BA in Amharic Language and Literature",
+      "BA in Afaan Oromoo",
+      "BA in Tigrinya",
+      "BA in Linguistics",
+      "BA in Theatrical Arts"
+    ],
+    "ህግና መልካም አስተዳደር (Law and Governance)": [
+      "Bachelor of Laws (LLB)"
+    ],
+    "ትምህርትና ባህሪ ጥናት ኮሌጅ (College of Education and Behavioral Studies)": [
+      "BA in Psychology",
+      "BA in Special Needs Education",
+      "BA in Educational Planning and Management"
+    ],
+    "እንስሳት ሕክምናና ግብርና ኮሌጅ (Veterinary Medicine and Agriculture)": [
+      "Doctor of Veterinary Medicine (DVM)",
+      "BSc in Veterinary Laboratory Technology"
+    ]
+  },
+
+  "ጅማ ዩኒቨርሲቲ (Jimma University - JU)": {
+    "ቴክኖሎጂ ኢንስቲትዩት (JiT)": [
+      "BSc in Civil Engineering",
+      "BSc in Electrical and Computer Engineering",
+      "BSc in Mechanical Engineering",
+      "BSc in Biomedical Engineering",
+      "BSc in Computing",
+      "BSc in Software Engineering",
+      "BSc in Information Technology"
+    ],
+    "ጤና ኢንስቲትዩት (Institute of Health)": [
+      "Doctor of Medicine (MD)",
+      "BSc in Pharmacy",
+      "BSc in Nursing",
+      "BSc in Environmental Health",
+      "BSc in Medical Laboratory Science",
+      "BSc in Public Health",
+      "Doctor of Dental Medicine (DMD)"
+    ],
+    "ግብርናና እንስሳት ሕክምና ኮሌጅ (JUCAVM)": [
+      "Doctor of Veterinary Medicine (DVM)",
+      "BSc in Agriculture (Plant Science)",
+      "BSc in Animal Science",
+      "BSc in Horticulture",
+      "BSc in Agribusiness and Value Chain Management"
+    ],
+    "ቢዝነስና ኢኮኖሚክስ ኮሌጅ (College of Business and Economics)": [
+      "BA in Accounting",
+      "BA in Management",
+      "BA in Economics",
+      "BA in Banking and Finance"
+    ],
+    "ተፈጥሮ ሳይንስ ኮሌጅ (College of Natural Sciences)": [
+      "BSc in Biology",
+      "BSc in Chemistry",
+      "BSc in Physics",
+      "BSc in Mathematics",
+      "BSc in Statistics",
+      "BSc in Sport Science"
+    ],
+    "ማኅበራዊ ሳይንስና ሂዩማኒቲስ ኮሌጅ (College of Social Sciences and Humanities)": [
+      "BA in Sociology",
+      "BA in Psychology",
+      "BA in History and Heritage Management",
+      "BA in English Language and Literature",
+      "BA in Geography"
+    ],
+    "ህግና መልካም አስተዳደር ኮሌጅ (College of Law and Governance)": [
+      "Bachelor of Laws (LLB)",
+      "BA in Governance and Development Studies"
+    ]
+  },
+
+  "ባሕር ዳር ዩኒቨርሲቲ (Bahir Dar University - BDU)": {
+    "ቴክኖሎጂ ኢንስቲትዩት (BiT)": [
+      "BSc in Civil Engineering",
+      "BSc in Electrical and Computer Engineering",
+      "BSc in Mechanical Engineering",
+      "BSc in Chemical Engineering",
+      "BSc in Computer Engineering",
+      "BSc in Information Technology",
+      "BSc in Software Engineering"
+    ],
+    "ሕክምናና ጤና ሳይንስ ኮሌጅ (College of Medicine and Health Sciences)": [
+      "Doctor of Medicine (MD)",
+      "BSc in Nursing",
+      "BSc in Midwifery",
+      "BSc in Pharmacy",
+      "BSc in Public Health"
+    ],
+    "ግብርናና አካባቢ ሳይንስ ኮሌጅ (College of Agriculture and Environmental Sciences)": [
+      "BSc in Plant Science",
+      "BSc in Animal Science",
+      "BSc in Natural Resource Management",
+      "BSc in Disaster Risk Management"
+    ],
+    "College of Business and Economics": [
+      "BA in Accounting and Finance",
+      "BA in Management",
+      "BA in Economics",
+      "BA in Marketing Management",
+      "BA in Tourism and Hotel Management"
+    ],
+    "ሳይንስ ኮሌጅ (College of Science)": [
+      "BSc in Biology",
+      "BSc in Chemistry",
+      "BSc in Physics",
+      "BSc in Mathematics",
+      "BSc in Statistics"
+    ],
+    "ሂዩማኒቲስ ፋኩልቲ (Faculty of Humanities)": [
+      "BA in Amharic",
+      "BA in English",
+      "BA in Journalism and Communications"
+    ],
+    "ማኅበራዊ ሳይንስ ፋኩልቲ (Faculty of Social Sciences)": [
+      "BA in Geography and Environmental Studies",
+      "BA in History and Heritage Management",
+      "BA in Political Science and International Studies"
+    ],
+    "የሕግ ትምህርት ቤት (School of Law)": [
+      "Bachelor of Laws (LLB)"
+    ],
+    "ትምህርትና ባህሪ ሳይንስ ኮሌጅ (College of Education and Behavioral Sciences)": [
+      "BA in Psychology",
+      "BA in Special Needs Education"
+    ]
+  },
+
+  "ሐዋሳ ዩኒቨርሲቲ (Hawassa University - HU)": {
+    "ቴክኖሎጂ ኢንስቲትዩት (IoT)": [
+      "BSc in Civil Engineering",
+      "BSc in Electrical and Computer Engineering",
+      "BSc in Mechanical Engineering",
+      "BSc in Water Resources Engineering",
+      "BSc in Computer Science",
+      "BSc in Information Technology",
+      "BSc in Software Engineering"
+    ],
+    "College of Medicine and Health Sciences": [
+      "Doctor of Medicine (MD)",
+      "BSc in Nursing",
+      "BSc in Midwifery",
+      "BSc in Public Health",
+      "BSc in Medical Laboratory Science",
+      "BSc in Environmental Health"
+    ],
+    "ግብርና ኮሌጅ (College of Agriculture)": [
+      "BSc in Plant Science",
+      "BSc in Animal Science",
+      "BSc in Rural Development and Agricultural Extension",
+      "BSc in Agribusiness"
+    ],
+    "ወንዶ ገነት የደንና ተፈጥሮ ሃብት ኮሌጅ (Wondo Genet College)": [
+      "BSc in Forestry",
+      "BSc in Natural Resource Management",
+      "BSc in Wildlife Management"
+    ],
+    "College of Business and Economics": [
+      "BA in Accounting and Finance",
+      "BA in Management",
+      "BA in Economics",
+      "BA in Cooperatives"
+    ],
+    "ተፈጥሮና ቀመር ሳይንስ ኮሌጅ (College of Natural and Computational Sciences)": [
+      "BSc in Biology",
+      "BSc in Chemistry",
+      "BSc in Physics",
+      "BSc in Mathematics",
+      "BSc in Statistics",
+      "BSc in Sport Science"
+    ],
+    "College of Social Sciences and Humanities": [
+      "BA in Sociology",
+      "BA in Anthropology",
+      "BA in English Language and Literature",
+      "BA in Journalism and Communication"
+    ],
+    "College of Law and Governance": [
+      "Bachelor of Laws (LLB)"
+    ]
+  },
+
+  "ጎንደር ዩኒቨርሲቲ (University of Gondar - UoG)": {
+    "College of Medicine and Health Sciences": [
+      "Doctor of Medicine (MD)",
+      "BSc in Pharmacy",
+      "BSc in Nursing",
+      "BSc in Midwifery",
+      "BSc in Medical Laboratory Sciences",
+      "BSc in Environmental and Occupational Health",
+      "BSc in Optometry",
+      "BSc in Physiotherapy",
+      "BSc in Psychiatry Nursing",
+      "BSc in Public Health"
+    ],
+    "ቴክኖሎጂ ኢንስቲትዩት (Institute of Technology)": [
+      "BSc in Civil Engineering",
+      "BSc in Electrical and Computer Engineering",
+      "BSc in Mechanical Engineering",
+      "BSc in Industrial Engineering",
+      "BSc in Computer Science",
+      "BSc in Information Technology",
+      "BSc in Information Systems"
+    ],
+    "College of Agriculture and Environmental Sciences": [
+      "BSc in Plant Science",
+      "BSc in Animal Science",
+      "BSc in Natural Resource Management",
+      "BSc in Agricultural Economics"
+    ],
+    "እንስሳት ሕክምናና ሳይንስ ኮሌጅ (Veterinary Medicine and Animal Sciences)": [
+      "Doctor of Veterinary Medicine (DVM)",
+      "BSc in Veterinary Pharmacy"
+    ],
+    "College of Business and Economics": [
+      "BA in Accounting and Finance",
+      "BA in Management",
+      "BA in Economics",
+      "BA in Tourism Management"
+    ],
+    "College of Natural and Computational Sciences": [
+      "BSc in Biology",
+      "BSc in Chemistry",
+      "BSc in Physics",
+      "BSc in Mathematics",
+      "BSc in Statistics",
+      "BSc in Biotechnology"
+    ],
+    "College of Social Sciences and Humanities": [
+      "BA in Sociology",
+      "BA in Psychology",
+      "BA in History and Heritage Management",
+      "BA in Geography and Environmental Studies",
+      "BA in English Language and Literature"
+    ],
+    "School of Law": [
+      "Bachelor of Laws (LLB)"
+    ]
+  },
   //Debre Berhan University
   "ደብረ ብርሃን ዩኒቨርሲቲ (Debre Berhan University - DBU)": {
     "ኢንጂነሪንግ ኮሌጅ (College of Engineering)": [
