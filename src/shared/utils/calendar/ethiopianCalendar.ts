@@ -231,3 +231,94 @@ export function formatEthiopianDateTime(isoOrDate: string | Date): string {
   const mm = String(clock.minute).padStart(2, "0");
   return `${formatEthiopianDate(eth)} — ${hh}:${mm} ${clock.period}`;
 }
+
+/* ─────────────────────────────────────────────────────────
+   COMPACT HELPERS FOR MESSAGING UI
+   ───────────────────────────────────────────────────────── */
+
+export const ETHIOPIAN_DAYS_OF_WEEK = [
+  "እሑድ",   // Sunday
+  "ሰኞ",     // Monday
+  "ማክሰኞ",  // Tuesday
+  "ረቡዕ",   // Wednesday
+  "ሐሙስ",   // Thursday
+  "ዓርብ",   // Friday
+  "ቅዳሜ",   // Saturday
+];
+
+/**
+ * Returns Ethiopian time in short format: "2:45 ጥዋት"
+ * Used for message bubble timestamps.
+ */
+export function formatEthiopianTimeShort(timestamp: number | Date): string {
+  const date = typeof timestamp === "number" ? new Date(timestamp) : timestamp;
+  if (Number.isNaN(date.getTime())) return "---";
+  const clock = westernToEthiopianClock(date);
+  const mm = String(clock.minute).padStart(2, "0");
+  return `${clock.hour}:${mm} ${clock.period}`;
+}
+
+/**
+ * Returns short Ethiopian date: "መስከረም 15"
+ * Used for conversation list last-message time.
+ */
+export function formatEthiopianDateShort(timestamp: number | Date): string {
+  const date = typeof timestamp === "number" ? new Date(timestamp) : timestamp;
+  if (Number.isNaN(date.getTime())) return "---";
+  const eth = gregorianToEthiopian(date);
+  return `${ETHIOPIAN_MONTHS[eth.month - 1]} ${eth.day}`;
+}
+
+/**
+ * Returns date label for message stream separators.
+ * - "ዛሬ" (Today)
+ * - "ትናንት" (Yesterday)
+ * - "ረቡዕ፣ መስከረም 15" (Day of week + date)
+ * - "መስከረም 15፣ 2018 ዓ.ም." (Full date if different year)
+ */
+export function formatEthiopianDateLabel(timestamp: number | Date): string {
+  const date = typeof timestamp === "number" ? new Date(timestamp) : timestamp;
+  if (Number.isNaN(date.getTime())) return "---";
+
+  const ethDate = gregorianToEthiopian(date);
+  const today = getTodayEthiopian();
+  const dayOfWeek = ETHIOPIAN_DAYS_OF_WEEK[date.getDay()];
+
+  // Same date = Today
+  if (
+    ethDate.year === today.year &&
+    ethDate.month === today.month &&
+    ethDate.day === today.day
+  ) {
+    return "ዛሬ";
+  }
+
+  // Yesterday check (approximate: subtract 1 day from today)
+  let yesterdayDay = today.day - 1;
+  let yesterdayMonth = today.month;
+  let yesterdayYear = today.year;
+  if (yesterdayDay < 1) {
+    yesterdayMonth--;
+    if (yesterdayMonth < 1) {
+      yesterdayMonth = 13;
+      yesterdayYear--;
+    }
+    yesterdayDay = getEthiopianMonthDays(yesterdayYear, yesterdayMonth);
+  }
+  if (
+    ethDate.year === yesterdayYear &&
+    ethDate.month === yesterdayMonth &&
+    ethDate.day === yesterdayDay
+  ) {
+    return "ትናንት";
+  }
+
+  // Different year
+  if (ethDate.year !== today.year) {
+    return `${ETHIOPIAN_MONTHS[ethDate.month - 1]} ${ethDate.day}፣ ${ethDate.year} ዓ.ም.`;
+  }
+
+  // Same year, different day
+  return `${dayOfWeek}፣ ${ETHIOPIAN_MONTHS[ethDate.month - 1]} ${ethDate.day}`;
+}
+
