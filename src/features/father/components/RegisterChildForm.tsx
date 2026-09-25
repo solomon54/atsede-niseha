@@ -71,7 +71,7 @@ export default function RegisterChildForm({
     formState: { errors, isSubmitting },
   } = useForm<RegisterChildFormData>({
     resolver: zodResolver(RegisterChildSchema) as any,
-    mode: "onTouched",
+    mode: "all", // 🔥 CHANGED: Enables true real-time feedback as the user types/selects
     defaultValues: {
       fullToken: "",
       secularName: "",
@@ -146,6 +146,16 @@ export default function RegisterChildForm({
   };
 
   // ─────────────────────────────────────────────
+  // TOAST AUTO-HIDE (Unseen Bug Fix)
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+    if (status) {
+      const timer = setTimeout(() => setStatus(null), status.type === "error" ? 6000 : 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [status]);
+
+  // ─────────────────────────────────────────────
   // SUBMIT
   // ─────────────────────────────────────────────
   const onSubmit: SubmitHandler<RegisterChildFormData> = async (data) => {
@@ -165,7 +175,7 @@ export default function RegisterChildForm({
           body: fd,
         });
 
-        if (!uploadRes.ok) throw new Error("የምስል ጭነት አልተሳካም");
+        if (!uploadRes.ok) throw new Error("የምስል ጭነት አልተሳካም (Image upload failed)");
 
         const uploadData = await uploadRes.json();
         photoUrl = uploadData.url;
@@ -202,11 +212,8 @@ export default function RegisterChildForm({
       generateFullToken();
 
       onSuccess?.();
-
-      setTimeout(() => setStatus(null), 4000);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "የኔትወርክ ችግር ተፈጥሯል";
-
+      const message = err instanceof Error ? err.message : "የኔትወርክ ችግር ተፈጥሯል (Network error)";
       setStatus({ type: "error", text: message });
     }
   };
