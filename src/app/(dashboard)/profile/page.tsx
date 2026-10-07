@@ -19,6 +19,7 @@ import { getSession } from "@/core/auth/session.service";
 import { adminDb } from "@/services/firebase/admin";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
+import { academicProgressFromEntry } from "@/shared/utils/calendar/ethiopianCalendar";
 
 /* ─────────────────────────────────────────────
    UNIFIED PROFILE TYPE
@@ -36,7 +37,10 @@ interface UnifiedProfile {
   parish?: string;              // Father only
   university?: string;          // Student only
   department?: string;          // Student only
-  academicYear?: number;        // Student only
+  entryYear?: number;           // Student — stored in DB
+  programDuration?: number;     // Student — stored in DB
+  academicLabel?: string;       // Student — computed display string
+  graduated?: boolean;          // Student — computed
   region?: string;
   city?: string;
   status: string;
@@ -58,6 +62,13 @@ async function fetchProfile(uid: string, role: string): Promise<UnifiedProfile |
         .get();
       if (snap.empty) return null;
       const d = snap.docs[0].data();
+      const entryYear = Number(d.entryYear) || 0;
+      const programDuration = Number(d.programDuration) || 4;
+      const gender: "MALE" | "FEMALE" = d.gender === "FEMALE" ? "FEMALE" : "MALE";
+      const progress = entryYear
+        ? academicProgressFromEntry(entryYear, programDuration, gender)
+        : null;
+
       return {
         eotcUid:        d.eotcUid || snap.docs[0].id,
         fullName:       d.fullName || d.secularName || "ያልታወቀ ስም",
@@ -69,7 +80,10 @@ async function fetchProfile(uid: string, role: string): Promise<UnifiedProfile |
         diocese:        d.diocese || "ያልተጠቀሰ",
         university:     d.university || "",
         department:     d.department || "",
-        academicYear:   Number(d.academicYear) || undefined,
+        entryYear:      entryYear || undefined,
+        programDuration: programDuration,
+        academicLabel:  progress?.label,
+        graduated:      progress?.graduated ?? false,
         region:         d.region || "",
         city:           d.city || "",
         status:         d.status || "ACTIVE",
@@ -261,7 +275,13 @@ export default async function ProfilePage() {
                 {role === "STUDENT" && profile.department && (
                   <ProfileItem icon={<BookOpen className="w-4 h-4" />}
                     label="ትምህርት ክፍል" sub="DEPARTMENT"
-                    value={`${profile.department}${profile.academicYear ? ` — ዓ ${profile.academicYear}` : ""}`} />
+                    value={profile.department} />
+                )}
+
+                {role === "STUDENT" && profile.academicLabel && (
+                  <ProfileItem icon={<BookOpen className="w-4 h-4" />}
+                    label="ወቅታዊ ደረጃ" sub="ACADEMIC STANDING"
+                    value={profile.academicLabel} />
                 )}
 
                 <ProfileItem icon={<Calendar className="w-4 h-4" />}

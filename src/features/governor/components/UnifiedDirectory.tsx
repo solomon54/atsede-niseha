@@ -6,6 +6,7 @@ import { FiExternalLink, FiSearch } from "react-icons/fi";
 
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
 import { DirectoryRecord, StudentRecord } from "@/shared/types";
+import { academicProgressFromEntry } from "@/shared/utils/calendar/ethiopianCalendar";
 
 type DirectoryTab = "FATHERS" | "CHILDREN" | "BIG_OTHERS";
 
@@ -166,8 +167,16 @@ export default function UnifiedDirectory({
                           {(record as StudentRecord).university || "N/A"}
                         </span>
                         <span className="text-[9px] text-slate-400">
-                          {(record as StudentRecord).department || "Unknown"} —
-                          Year {(record as StudentRecord).academicYear || "?"}
+                          {(record as StudentRecord).department || "Unknown"} —{" "}
+                          {(() => {
+                            const s = record as StudentRecord & { entryYear?: number; programDuration?: number; gender?: string };
+                            if (s.entryYear) {
+                              const gender: "MALE" | "FEMALE" = s.gender === "FEMALE" ? "FEMALE" : "MALE";
+                              const p = academicProgressFromEntry(s.entryYear, s.programDuration ?? 4, gender);
+                              return p.label;
+                            }
+                            return s.academicYear ? `${s.academicYear}ኛ ዓመት` : "?";
+                          })()}
                         </span>
                       </div>
                     ) : (

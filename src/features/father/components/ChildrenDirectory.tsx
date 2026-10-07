@@ -14,19 +14,33 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { StudentRecord } from "@/shared/types";
+import { academicProgressFromEntry } from "@/shared/utils/calendar/ethiopianCalendar";
 import { cn } from "@/shared/utils/utils";
 
-// Mapping for Amharic Academic Years (Remedial to 7th Year)
-const ACADEMIC_YEARS = [
-  { val: "0", label: "ጥንተ-ትምህርት (Remedial)" },
-  { val: "1", label: "1ኛ ዓመት" },
-  { val: "2", label: "2ኛ ዓመት" },
-  { val: "3", label: "3ኛ ዓመት" },
-  { val: "4", label: "4ኛ ዓመት" },
-  { val: "5", label: "5ኛ ዓመት" },
-  { val: "6", label: "6ኛ ዓመት" },
-  { val: "7", label: "7ኛ ዓመት" },
-];
+/** Compute a student's current year label for display. Legacy records without
+ *  entryYear fall back to the stored academicYear value if present. */
+function getAcademicProgress(child: StudentRecord & { entryYear?: number; programDuration?: number; gender?: string }) {
+  const entryYear = child.entryYear ?? (child as any).entryYear;
+  const programDuration = child.programDuration ?? (child as any).programDuration ?? 4;
+  const gender: "MALE" | "FEMALE" = child.gender === "FEMALE" ? "FEMALE" : "MALE";
+
+  if (entryYear) {
+    return academicProgressFromEntry(entryYear, programDuration, gender);
+  }
+
+  // Legacy fallback — no entryYear stored, use academicYear number
+  const yr: number = child.academicYear ?? 0;
+  const isGraduated = yr >= programDuration;
+  const gradLabel = gender === "FEMALE" ? "ትምህርቷን ጨርሳለች ✓" : "ትምህርቱን ጨርሷል ✓";
+
+  return {
+    graduated: isGraduated,
+    onBreak: false,
+    label: isGraduated ? gradLabel : yr ? `${yr}ኛ ዓመት` : "?",
+    academicYear: yr,
+    semester: 1 as const,
+  };
+}
 
 export function ChildrenDirectory({ data }: { data: StudentRecord[] }) {
   const [search, setSearch] = useState("");
@@ -35,7 +49,7 @@ export function ChildrenDirectory({ data }: { data: StudentRecord[] }) {
   const [filters, setFilters] = useState({
     gender: "ALL",
     status: "ALL",
-    batch: "ALL",
+    graduated: "ALL", // "ALL" | "ACTIVE" | "GRADUATED"
   });
 
   const filteredChildren = useMemo(() => {
@@ -55,16 +69,21 @@ export function ChildrenDirectory({ data }: { data: StudentRecord[] }) {
           (filters.status === "ACTIVE"
             ? child.accountClaimed
             : !child.accountClaimed);
-        const matchesBatch =
-          filters.batch === "ALL" ||
-          child.academicYear.toString() === filters.batch;
 
-        return matchesSearch && matchesGender && matchesStatus && matchesBatch;
+        // Graduation filter — computed on the fly
+        let matchesGraduated = true;
+        if (filters.graduated !== "ALL") {
+          const p = getAcademicProgress(child as any);
+          matchesGraduated =
+            filters.graduated === "GRADUATED" ? p.graduated : !p.graduated;
+        }
+
+        return matchesSearch && matchesGender && matchesStatus && matchesGraduated;
       })
       .sort((a, b) => {
         const nameA = (a.secularName || a.fullName).toLowerCase();
         const nameB = (b.secularName || b.fullName).toLowerCase();
-        return nameA.localeCompare(nameB, "am"); // Ethiopian-aware sorting
+        return nameA.localeCompare(nameB, "am");
       });
   }, [data, search, filters]);
 
@@ -110,16 +129,13 @@ export function ChildrenDirectory({ data }: { data: StudentRecord[] }) {
           </select>
 
           <select
-            title="filter by acadamic year"
+            title="filter by graduation status"
             className="flex-1 min-w-[100px] bg-slate-50 border-none rounded-lg text-[10px] font-black px-3 py-2.5 outline-none font-ethiopic"
-            value={filters.batch}
-            onChange={(e) => setFilters({ ...filters, batch: e.target.value })}>
-            <option value="ALL">የትምህርት ዘመን: ሁሉም</option>
-            {ACADEMIC_YEARS.map((y) => (
-              <option key={y.val} value={y.val}>
-                {y.label}
-              </option>
-            ))}
+            value={filters.graduated}
+            onChange={(e) => setFilters({ ...filters, graduated: e.target.value })}>
+            <option value="ALL">ደረጃ: ሁሉም</option>
+            <option value="ACTIVE">በትምህርት ላይ</option>
+            <option value="GRADUATED">ምሩቃን 🎓</option>
           </select>
 
           <select
@@ -187,10 +203,13 @@ export function ChildrenDirectory({ data }: { data: StudentRecord[] }) {
                   <span className="text-[9px] font-bold text-slate-500 flex items-center gap-1 truncate">
                     <GraduationCap size={10} /> {child.university}
                   </span>
-                  <span className="text-[9px] font-black text-amber-700 bg-amber-50 self-start px-2 py-0.5 rounded uppercase tracking-tighter">
-                    {ACADEMIC_YEARS.find(
-                      (y) => y.val === child.academicYear.toString()
-                    )?.label || `YEAR ${child.academicYear}`}
+                  <span className={cn(
+                    "text-[9px] font-black self-start px-2 py-0.5 rounded uppercase tracking-tighter",
+                    getAcademicProgress(child as any).graduated
+                      ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                      : "bg-amber-50 text-amber-700"
+                  )}>
+                    {getAcademicProgress(child as any).label}
                   </span>
                 </div>
               </div>

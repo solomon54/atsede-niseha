@@ -1,38 +1,31 @@
 import { notFound } from "next/navigation";
 
+import { getSession } from "@/core/auth/session.service";
 import StudentProfileDetail from "@/features/father/components/StudentProfileDetail";
 import { ExtendedStudentRecord } from "@/features/father/components/StudentProfileDetail";
 import { adminDb } from "@/services/firebase/admin";
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 
-// 2. Explicitly define the props for this specific dynamic route
 interface ChildPageProps {
   params: Promise<{ id: string }>;
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }
 
 export default async function ChildDetailPage({ params }: ChildPageProps) {
-  // 3. Await the params as required by Next.js 15+
   const { id } = await params;
-
   if (!id) return notFound();
 
-  // 4. Fetch from 'Students' collection (PascalCase as per your schema )
-  const snapshot = await adminDb
-    .collection("Students")
-    .where("eotcUid", "==", id)
-    .limit(1)
-    .get();
+  const [session, snapshot] = await Promise.all([
+    getSession(),
+    adminDb.collection("Students").where("eotcUid", "==", id).limit(1).get(),
+  ]);
 
   if (snapshot.empty) return notFound();
 
   const doc = snapshot.docs[0];
+  const student = { id: doc.id, ...doc.data() } as unknown as ExtendedStudentRecord;
 
-  // 5. Cast to the Extended type to satisfy the component's requirements
-  const student = {
-    id: doc.id,
-    ...doc.data(),
-  } as unknown as ExtendedStudentRecord;
+  const isFather = session?.role === "FATHER" || session?.role === "GOVERNOR";
 
   return (
     <ImmersiveTransition className="pt-24 pb-12 px-8 max-w-5xl mx-auto">
@@ -41,7 +34,7 @@ export default async function ChildDetailPage({ params }: ChildPageProps) {
           የተማሪው ዝርዝር መረጃ / Student Profile
         </h2>
       </div>
-      <StudentProfileDetail student={student} />
+      <StudentProfileDetail student={student} isFather={isFather} />
     </ImmersiveTransition>
   );
 }

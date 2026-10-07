@@ -83,7 +83,10 @@ async function getDashboardData() {
           diocese: data.diocese || "ያልተጠቀሰ",
           university: data.university || "ያልታወቀ",
           department: data.department || "ያልተገለጸ",
-          academicYear: Number(data.academicYear) || 1,
+          entryYear: Number(data.entryYear) || 0,
+          programDuration: Number(data.programDuration) || 4,
+          // academicYear kept for legacy display fallback in StudentRecord type
+          academicYear: Number(data.academicYear) || 0,
           spiritualFatherId: data.spiritualFatherId || "",
           fatherId: data.fatherId || "",
           language: data.language || "Amharic",
