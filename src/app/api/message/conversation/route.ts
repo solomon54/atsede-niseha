@@ -143,6 +143,11 @@ export async function GET(): Promise<Response> {
               .get();
               
             unreadCount = countQuery.data().count;
+            
+            // If the current user sent the last message, they have no unread messages
+            if (lastMessage.senderId === session.uid) {
+               unreadCount = 0;
+            }
           } catch (error) {
             console.error("Failed to fetch unread count:", error);
             // Fallback to 1 if there is a newer message but count fails

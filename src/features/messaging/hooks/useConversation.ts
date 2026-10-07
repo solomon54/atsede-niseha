@@ -22,19 +22,25 @@ export function useConversations() {
       setLoading(false);
     }
 
-    fetchConversations()
-      .then((res) => {
-        setData(res);
-        localStorage.setItem(CACHE_KEY, JSON.stringify(res));
-        setOffline(false);
-      })
-      .catch(() => {
-        setOffline(true);
-        if (!cached) {
-          setError("Unable to load conversations");
-        }
-      })
-      .finally(() => setLoading(false));
+    const fetchData = () => {
+      fetchConversations()
+        .then((res) => {
+          setData(res);
+          localStorage.setItem(CACHE_KEY, JSON.stringify(res));
+          setOffline(false);
+        })
+        .catch(() => {
+          setOffline(true);
+          if (!cached) {
+            setError("Unable to load conversations");
+          }
+        })
+        .finally(() => setLoading(false));
+    };
+
+    fetchData();
+    const interval = setInterval(fetchData, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   return { data, loading, offline, error };
