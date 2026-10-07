@@ -9,6 +9,7 @@ import {
   listFamilyChildren,
 } from "@/features/appointments/services/appointment.service";
 import { CreateAppointmentSchema } from "@/features/appointments/services/validators";
+import { adminDb } from "@/services/firebase/admin";
 
 export async function GET() {
   try {
@@ -29,7 +30,36 @@ export async function GET() {
         : Promise.resolve([]),
     ]);
 
-    return NextResponse.json({ success: true, appointments, children });
+    // For students: resolve the Father's display name so the UI can show
+    // "ከ [Father name]" on appointment cards.
+    let fatherName: string | undefined;
+    let fatherEotcUid: string | undefined;
+    if (session.role === "STUDENT" && session.familyId) {
+      const fSnap = await adminDb
+        .collection("Fathers")
+        .where("uid", "==", session.familyId)
+        .limit(1)
+        .get();
+      if (!fSnap.empty) {
+        const fd = fSnap.docs[0].data();
+        fatherName =
+          (fd.christianName as string) ||
+          (fd.fullName as string) ||
+          (fd.secularName as string) ||
+          "አባት";
+        if (fd.title) fatherName = `${fd.title} ${fatherName}`;
+        fatherEotcUid = (fd.eotcUid as string) || fSnap.docs[0].id;
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      appointments,
+      children,
+      // Enrichment for student view
+      fatherName,
+      fatherEotcUid,
+    });
   } catch (err) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

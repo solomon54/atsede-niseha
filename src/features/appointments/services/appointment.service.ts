@@ -96,6 +96,23 @@ export async function createAppointment(params: {
 
   const child = await loadStudentInFamily(childUid, familyId);
 
+  // Resolve Father's display name for denormalised reads
+  let fatherName = "አባት";
+  const fSnap = await adminDb
+    .collection("Fathers")
+    .where("uid", "==", fatherUid)
+    .limit(1)
+    .get();
+  if (!fSnap.empty) {
+    const fd = fSnap.docs[0].data();
+    const base =
+      (fd.christianName as string) ||
+      (fd.fullName as string) ||
+      (fd.secularName as string) ||
+      "አባት";
+    fatherName = fd.title ? `${fd.title} ${base}` : base;
+  }
+
   if (actorRole === "FATHER" && actorUid !== fatherUid) {
     throw new AppointmentError("የቤተሰብ ገደብ ተጥሷል", "FAMILY_ISOLATION", 403);
   }
@@ -111,6 +128,7 @@ export async function createAppointment(params: {
     id: ref.id,
     familyId,
     fatherUid,
+    fatherName,
     childUid: child.uid,
     childEotcUid: child.eotcUid,
     childName: child.name,

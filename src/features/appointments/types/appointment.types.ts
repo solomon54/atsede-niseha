@@ -14,6 +14,8 @@ export interface Appointment {
   id: string;
   familyId: string;
   fatherUid: string;
+  /** Display name of the Father — stored at creation for denormalized reads */
+  fatherName?: string;
   childUid: string;
   childEotcUid?: string;
   childName?: string;
