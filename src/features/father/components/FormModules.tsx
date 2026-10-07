@@ -29,7 +29,11 @@ import {
   UNIVERSITY_MASTER_MAP,
 } from "@/shared/constants/ethiopianData";
 import { useHierarchy } from "@/shared/hooks/useHierarchy";
-import { getTodayEthiopian } from "@/shared/utils/calendar/ethiopianCalendar";
+import {
+  academicProgressFromEntry,
+  getTodayEthiopian,
+} from "@/shared/utils/calendar/ethiopianCalendar";
+import { cn } from "@/shared/utils/utils";
 
 import { RegisterChildFormData } from "../services/validators";
 
@@ -217,6 +221,13 @@ export function AcademicSection({
       name: "college",
     }) ?? "";
 
+  const watchedEntryYear =
+    useWatch({ control, name: "entryYear" }) ?? 0;
+  const watchedDuration =
+    useWatch({ control, name: "programDuration" }) ?? 4;
+  const watchedGender =
+    (useWatch({ control, name: "gender" }) as "MALE" | "FEMALE" | undefined) ?? "MALE";
+
   // DYNAMIC YEAR LOGIC: Generates list up to current Ethiopian Year
   const years = useMemo(() => {
     const currentYear = getTodayEthiopian().year;
@@ -319,7 +330,6 @@ export function AcademicSection({
           <select
             {...register("entryYear", { valueAsNumber: true })}
             className="sanctuary-input">
-            {/* Placeholder — disabled   from selection */}
             <option value="" disabled>
               ዓመት ይምረጡ
             </option>
@@ -331,33 +341,28 @@ export function AcademicSection({
           </select>
         </Field>
 
-        <Field label="የትምህርት ዘመን" error={errors.academicYear?.message}>
+        <Field label="የፕሮግራሙ ዓመታት" error={errors.programDuration?.message}>
           <select
-            {...register("academicYear", { valueAsNumber: true })}
+            {...register("programDuration", { valueAsNumber: true })}
             className="sanctuary-input">
             <option value="" disabled>
-              ዓመት ይምረጡ
+              ዓመታት ይምረጡ
             </option>
-            {[1, 2, 3, 4, 5, 6, 7].map((y) => (
+            {[2, 3, 4, 5, 6, 7, 8].map((y) => (
               <option key={y} value={y}>
-                {y}ኛ ዓመት
+                {y} ዓመት
               </option>
             ))}
           </select>
         </Field>
       </div>
 
-      <Field label="ሴሚስተር" error={errors.semester?.message}>
-        <select
-          {...register("semester", { valueAsNumber: true })}
-          className="sanctuary-input">
-          <option value="" disabled>
-            ሴሚስተር ይምረጡ
-          </option>
-          <option value={1}>1ኛ ሴሚስተር</option>
-          <option value={2}>2ኛ ሴሚስተር</option>
-        </select>
-      </Field>
+      {/* Computed preview — read-only, no input needed */}
+      <AcademicPreview
+        entryYear={Number(watchedEntryYear) || 0}
+        programDuration={Number(watchedDuration) || 0}
+        gender={watchedGender}
+      />
     </div>
   );
 }
@@ -407,6 +412,57 @@ export function ConnectSection({
           )}
         />
       </Field>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* ACADEMIC PREVIEW (computed — no user input)                                */
+/* -------------------------------------------------------------------------- */
+
+function AcademicPreview({
+  entryYear,
+  programDuration,
+  gender = "MALE",
+}: {
+  entryYear: number;
+  programDuration: number;
+  gender?: "MALE" | "FEMALE";
+}) {
+  if (!entryYear || !programDuration) return null;
+
+  const progress = academicProgressFromEntry(entryYear, programDuration, gender);
+
+  return (
+    <div className={cn(
+      "rounded-xl border px-4 py-3 flex items-center gap-3",
+      progress.graduated
+        ? "border-emerald-200 bg-emerald-50"
+        : progress.onBreak
+        ? "border-sky-200 bg-sky-50"
+        : "border-amber-200 bg-amber-50"
+    )}>
+      <span className="text-xl shrink-0">
+        {progress.graduated ? "🎓" : progress.onBreak ? "☀️" : "📚"}
+      </span>
+      <div className="min-w-0">
+        <p className={cn(
+          "text-[11px] font-black uppercase tracking-widest",
+          progress.graduated ? "text-emerald-800" : "text-amber-900"
+        )}>
+          {progress.label}
+        </p>
+        <p className={cn(
+          "text-[9px] mt-0.5",
+          progress.graduated ? "text-emerald-600" : "text-amber-600/80"
+        )}>
+          {progress.graduated
+            ? "ፕሮግራሙ ተጠናቋል"
+            : progress.onBreak
+            ? "ሴሚስተሮች መካከል — ቀጣዩ ዓመት ሲጀምር ይዘምናል"
+            : "ከመዝገቡ ቀን ተነስቶ ራሱ በራሱ ይሰላል"}
+        </p>
+      </div>
     </div>
   );
 }

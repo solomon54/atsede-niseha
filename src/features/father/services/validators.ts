@@ -9,7 +9,6 @@ import {
 } from "@/shared/utils/calendar/ethiopianCalendar";
 import {
   christianNameField,
-  entryYearField,
   ethiopianFullNameField,
   ethiopianPhoneField,
   numberField,
@@ -121,16 +120,10 @@ export const RegisterChildSchema = z.object({
       }
     ),
 
-  academicYear: selectField("የትምህርት ዘመን ይምረጡ (Select academic year)")
+  programDuration: selectField("የፕሮግራሙ ዓመታት ይምረጡ (Select program duration)")
     .pipe(z.coerce.number())
     .refine((n) => !Number.isNaN(n) && n >= 1 && n <= 8, {
-      message: "ዓመት 1–8 መካከል መሆን አለበት (Academic year must be 1–8)",
-    }),
-
-  semester: selectField("ሴሚስተር ይምረጡ (Select semester)")
-    .pipe(z.coerce.number())
-    .refine((n) => !Number.isNaN(n) && (n === 1 || n === 2), {
-      message: "ሴሚስተር 1 ወይም 2 መሆን አለበት (Semester must be 1 or 2)",
+      message: "የፕሮግራሙ ዓመታት ከ1–8 መካከል መሆን አለበት (Program duration must be 1–8 years)",
     }),
 
   // Contact
