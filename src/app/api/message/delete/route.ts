@@ -8,7 +8,27 @@ import {
   DeleteMessageRequest,
   DeleteMessageResponse,
 } from "@/features/messaging/types/messaging.api.types";
-    // 🔥 FIX: Cast strings to Branded Types
+import {
+  ChannelID,
+  FamilyID,
+  MessageID,
+  UID,
+} from "@/features/messaging/types/messaging.types";
+import { pusherServer } from "@/services/pusher";
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const session = await requireSession();
+
+    const body = (await req.json()) as DeleteMessageRequest;
+
+    if (!body.channelId || !body.messageId) {
+      return NextResponse.json(
+        { success: false, error: "channelId and messageId are required" },
+        { status: 400 }
+      );
+    }
+
     await messageService.deleteMessage({
       familyId: session.familyId as FamilyID,
       channelId: body.channelId as ChannelID,
@@ -16,20 +36,20 @@ import {
       requesterId: session.uid as UID,
     });
 
-    // 🔥 Trigger realtime deletion event to all clients in the channel
-    await pusherServer.trigger(`private-chat-${body.channelId}`, "message-deleted", {
-      messageId: body.messageId,
-    });
+    await pusherServer.trigger(
+      `private-chat-${body.channelId}`,
+      "message-deleted",
+      { messageId: body.messageId }
+    );
 
-    const response: DeleteMessageResponse = {
-      success: true,
-    };
-
+    const response: DeleteMessageResponse = { success: true };
     return NextResponse.json(response);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Delete Message API Error]:", error);
+    const message =
+      error instanceof Error ? error.message : "Internal Server Error";
     return NextResponse.json(
-      { error: error.message || "Internal Server Error" },
+      { success: false, error: message } satisfies DeleteMessageResponse,
       { status: 500 }
     );
   }

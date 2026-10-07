@@ -100,7 +100,10 @@ export interface StudentRecord extends BaseDirectoryRecord {
   role: "STUDENT";
   university: string;
   department: string;
-  academicYear: number;
+  entryYear?: number;
+  programDuration?: number;
+  /** @computed — derived from entryYear + programDuration, not stored */
+  academicYear?: number;
   spiritualFatherId: string;
   fatherId: string;
   language: string;
