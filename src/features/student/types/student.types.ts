@@ -22,9 +22,19 @@ export interface StudentAcademicProfile {
   university: string;
   college: string;
   department: string;
+  /** Ethiopian year the student entered university (stored in DB) */
   entryYear: number;
+  /** Total years of the program — stored in DB, never manually updated */
+  programDuration: number;
+  /**
+   * COMPUTED — derived from entryYear + programDuration via
+   * academicProgressFromEntry(). Never written to Firestore.
+   */
   academicYear: number;
+  /** COMPUTED — see academicYear note above */
   semester: number;
+  /** COMPUTED — true once the student has finished all program years */
+  graduated: boolean;
 }
 
 // ─────────────────────────────────────────────
@@ -44,7 +54,8 @@ export interface StudentProfileDocument {
   photoUrl?: string;
   university: string;
   department: string;
-  academicYear: number;
+  entryYear: number;
+  programDuration: number;
   status: string;
 }
 
@@ -121,8 +132,12 @@ export interface StudentDocument {
   college: string;
   department: string;
   entryYear: number;
-  academicYear: number;
-  semester: number;
+  /**
+   * Total program length in years (e.g. 4 for Engineering, 3 for diploma).
+   * Stored in Firestore. academicYear + semester are COMPUTED, never stored.
+   * Legacy docs without this field default to 4 years.
+   */
+  programDuration: number;
 
   fatherId: string;
   spiritualFatherId: string;

@@ -333,3 +333,114 @@ export function formatEthiopianDateLabel(timestamp: number | Date): string {
   return `${dayOfWeek}፣ ${ETHIOPIAN_MONTHS[ethDate.month - 1]} ${ethDate.day}`;
 }
 
+
+
+/* ─────────────────────────────────────────────────────────
+   ACADEMIC PROGRESS ENGINE
+   ─────────────────────────────────────────────────────────
+   Ethiopian university academic calendar:
+   - Year starts:  Meskerem (month 1  ≈ Sep)
+   - Semester 1:   months 1 – 5   (Sep → Jan/early Feb)
+   - Semester 2:   months 6 – 10  (Feb → Jun/early Jul)
+   - Summer break: months 11 – 13 (Jul → Sep)
+   ───────────────────────────────────────────────────────── */
+
+export type EthiopianSemester = 1 | 2;
+
+export interface AcademicProgress {
+  /** 1-based current academic year (e.g. 3 = third year) */
+  academicYear: number;
+  /** Current semester within that year (1 or 2) */
+  semester: EthiopianSemester;
+  /** true when the student has finished all years */
+  graduated: boolean;
+  /** true during the inter-semester / summer break window */
+  onBreak: boolean;
+  /**
+   * Full Amharic display label — gender-aware.
+   * Examples:
+   *   "4ኛ ዓመት፣ 1ኛ ሴሚስተር"
+   *   "4ኛ ዓመት፣ የበጋ እረፍት"
+   *   "ትምህርቱን ጨርሷል ✓"  (male)
+   *   "ትምህርቷን ጨርሳለች ✓" (female)
+   */
+  label: string;
+}
+
+/**
+ * Derives a student's current academic standing purely from
+ * their entry year and total program length — no manual updates.
+ *
+ * @param entryYear       Ethiopian year the student entered (e.g. 2016)
+ * @param programDuration Total years in the program (e.g. 4)
+ * @param gender          "MALE" | "FEMALE" — affects graduation wording
+ * @param asOf            Optional reference date (defaults to today)
+ */
+export function academicProgressFromEntry(
+  entryYear: number,
+  programDuration: number,
+  gender: "MALE" | "FEMALE" = "MALE",
+  asOf?: EthiopianDate
+): AcademicProgress {
+  const today = asOf ?? getTodayEthiopian();
+
+  // How many full academic years have elapsed since entry?
+  // Each academic year starts in Meskerem (month 1).
+  const yearsElapsed = today.year - entryYear;
+
+  // Entry year not yet reached (shouldn't happen in production)
+  if (yearsElapsed < 0) {
+    return {
+      academicYear: 1,
+      semester: 1,
+      graduated: false,
+      onBreak: false,
+      label: "1ኛ ዓመት፣ 1ኛ ሴሚስተር",
+    };
+  }
+
+  // Semester from current Ethiopian month:
+  //   months  1 –  5  → Semester 1  (Meskerem–Tir)
+  //   months  6 – 10  → Semester 2  (Yekatit–Sene)
+  //   months 11 – 13  → Summer break (Hamle–Pagume)
+  const m = today.month;
+  const isBreak = m >= 11;
+  const currentSemester: EthiopianSemester = m <= 5 ? 1 : 2;
+
+  const academicYearRaw = yearsElapsed + 1; // 1-based
+
+  // Graduated: past the final year entirely, OR in final year's break/summer,
+  // OR final year sem 2 is done (month >= 11 of final year).
+  // Also: if yearsElapsed >= programDuration it means they've completed all years.
+  const graduated =
+    yearsElapsed >= programDuration ||
+    (academicYearRaw === programDuration && isBreak);
+
+  if (graduated) {
+    const label =
+      gender === "FEMALE"
+        ? "ትምህርቷን ጨርሳለች ✓"
+        : "ትምህርቱን ጨርሷል ✓";
+    return {
+      academicYear: programDuration,
+      semester: 2,
+      graduated: true,
+      onBreak: false,
+      label,
+    };
+  }
+
+  const academicYear = Math.min(academicYearRaw, programDuration);
+
+  const label = isBreak
+    ? `${academicYear}ኛ ዓመት፣ የበጋ እረፍት`
+    : `${academicYear}ኛ ዓመት፣ ${currentSemester}ኛ ሴሚስተር`;
+
+  return {
+    academicYear,
+    semester: isBreak ? 2 : currentSemester,
+    graduated: false,
+    onBreak: isBreak,
+    label,
+  };
+}

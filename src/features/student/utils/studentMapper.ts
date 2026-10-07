@@ -1,5 +1,7 @@
 //src/features/student/utils/studentMapper.ts
 
+import { academicProgressFromEntry } from "@/shared/utils/calendar/ethiopianCalendar";
+
 import {
   SpiritualRelationship,
   Student,
@@ -39,13 +41,19 @@ export function mapTimeline(
 // ─────────────────────────────────────────────
 
 export function mapStudentFromDoc(doc: StudentDocument): Student {
+  const programDuration = doc.programDuration ?? 4; // legacy docs default to 4 yrs
+  const progress = academicProgressFromEntry(doc.entryYear, programDuration, doc.gender ?? "MALE");
+
   const academics: StudentAcademicProfile = {
     university: doc.university,
     college: doc.college,
     department: doc.department,
     entryYear: doc.entryYear,
-    academicYear: doc.academicYear,
-    semester: doc.semester,
+    programDuration,
+    // computed — never stale
+    academicYear: progress.academicYear,
+    semester: progress.semester,
+    graduated: progress.graduated,
   };
 
   const relationship: SpiritualRelationship = {
@@ -119,8 +127,8 @@ export function mapStudentToDoc(student: Student): StudentDocument {
     college: student.academics.college,
     department: student.academics.department,
     entryYear: student.academics.entryYear,
-    academicYear: student.academics.academicYear,
-    semester: student.academics.semester,
+    programDuration: student.academics.programDuration,
+    // academicYear + semester are COMPUTED — not written to Firestore
 
     fatherId: student.relationship.fatherUid,
     spiritualFatherId: student.relationship.spiritualFatherId,
@@ -156,8 +164,8 @@ export function mapStudentUpdate(
     doc.college = updates.academics.college;
     doc.department = updates.academics.department;
     doc.entryYear = updates.academics.entryYear;
-    doc.academicYear = updates.academics.academicYear;
-    doc.semester = updates.academics.semester;
+    doc.programDuration = updates.academics.programDuration;
+    // academicYear + semester are COMPUTED — never written to Firestore
   }
 
   doc.updatedAt = new Date().toISOString();
