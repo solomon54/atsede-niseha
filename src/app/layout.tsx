@@ -10,6 +10,7 @@ import { SanctuaryNavigation } from "@/shared/components/layout/SanctuaryNavigat
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
 
+import { LegacySupport } from "./legacy-support";
 import { SWRegister } from "./sw-register";
 
 /* ---------- VIEWPORT ---------- */
@@ -47,6 +48,9 @@ export default function RootLayout({
           "font-sans antialiased text-slate-900",
           "font-features-['ss01','cv01','cv02']",
         ].join(" ")}>
+        {/* Polyfills for Safari 15 / iPad mini 4 — must load first */}
+        <LegacySupport />
+
         {/* Service Worker registration */}
         <SWRegister />
 
