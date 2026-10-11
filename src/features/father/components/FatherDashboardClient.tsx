@@ -77,19 +77,23 @@ export default function FatherDashboardClient({
         )}
 
         {/* HEADER (compressed) */}
-        <header className="mb-5 flex items-center gap-3">
-          <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white border border-amber-50 rounded-xl flex items-center justify-center shadow-sm">
-            <Church className="text-amber-600 w-5 h-5 sm:w-6 sm:h-6" />
+        <header className="mb-5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white border border-amber-50 rounded-xl flex items-center justify-center shadow-sm shrink-0">
+              <Church className="text-amber-600 w-5 h-5 sm:w-6 sm:h-6" />
+            </div>
+
+            <div className="min-w-0">
+              <h1 className="text-[clamp(1rem,5vw,1.3rem)] font-black text-slate-900 truncate leading-none">
+                ዐጸደ ንስሐ
+              </h1>
+              <p className="text-[8px] font-bold text-amber-700 uppercase tracking-[0.25em] truncate">
+                መንፈሳዊ መዝገብ
+              </p>
+            </div>
           </div>
 
-          <div className="min-w-0">
-            <h1 className="text-[clamp(1rem,5vw,1.3rem)] font-black text-slate-900 truncate leading-none">
-              ዐጸደ ንስሐ
-            </h1>
-            <p className="text-[8px] font-bold text-amber-700 uppercase tracking-[0.25em] truncate">
-              መንፈሳዊ መዝገብ
-            </p>
-          </div>
+          <SyncChannelsButton />
         </header>
 
         {/* TABS (ultra compact) */}
@@ -209,3 +213,47 @@ function OverviewContent({ count }: { count: number }) {
     </div>
   );
 }
+
+/**
+ * One-click button to provision/repair direct message channels for all claimed children
+ */
+function SyncChannelsButton() {
+  const [syncing, setSyncing] = useState(false);
+  const [synced, setSynced] = useState(false);
+
+  const handleSync = async () => {
+    try {
+      setSyncing(true);
+      const res = await fetch("/api/message/repair-channels", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSynced(true);
+        setTimeout(() => setSynced(false), 3000);
+      }
+    } catch (err) {
+      console.error("[SyncChannels]", err);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleSync}
+      disabled={syncing}
+      title="ያለፈቃድ የቀሩ ልጆችን የቀጥታ መልዕክት ማስተካከያ (Repair Direct Channels)"
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 text-[10px] font-bold transition-all active:scale-95 disabled:opacity-50">
+      {syncing ? (
+        <Loader2 size={12} className="animate-spin text-amber-600" />
+      ) : synced ? (
+        <span className="text-emerald-700 font-bold">ተስተካክሏል ✓</span>
+      ) : (
+        <span>የቀጥታ ውይይት አስተካክል (Sync Direct)</span>
+      )}
+    </button>
+  );
+}
+

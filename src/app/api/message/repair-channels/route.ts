@@ -12,14 +12,80 @@
 import { NextResponse } from "next/server";
 
 import { requireSession } from "@/core/auth/requireSession";
-import { joinStudentToFamilyChannels } from "@/features/messaging/services/channelProvision.service";
+import {
+  joinStudentToFamilyChannels,
+  provisionFamilyChannels,
+} from "@/features/messaging/services/channelProvision.service";
 import { adminDb } from "@/services/firebase/admin";
 
 export async function POST(): Promise<Response> {
   try {
     const session = await requireSession();
 
-    // Only students need repair — fathers provision on their own claim
+    // ─────────────────────────────────────────────
+    // FATHER FLOW: Repair/provision direct channels for all claimed children
+    // ─────────────────────────────────────────────
+    if (session.role === "FATHER") {
+      const fatherUid = session.uid;
+
+      // Find father's EOTC ID
+      const fatherDocSnap = await adminDb
+        .collection("Fathers")
+        .where("uid", "==", fatherUid)
+        .limit(1)
+        .get();
+
+      const fatherEotcUid = fatherDocSnap.docs[0]?.data()?.eotcUid || "";
+
+      // Find all students registered under this father who have claimed their accounts
+      const queries = [
+        adminDb.collection("Students").where("fatherId", "==", fatherUid).get(),
+      ];
+
+      if (fatherEotcUid) {
+        queries.push(
+          adminDb
+            .collection("Students")
+            .where("spiritualFatherId", "==", fatherEotcUid)
+            .get()
+        );
+      }
+
+      const results = await Promise.all(queries);
+      const combinedDocs = new Map<string, any>();
+      results.forEach((snap) => {
+        snap.docs.forEach((d) => combinedDocs.set(d.id, d.data()));
+      });
+
+      const claimedStudents: Array<{ uid: string; eotcUid: string }> = [];
+      combinedDocs.forEach((data, id) => {
+        if (data.accountClaimed && data.uid) {
+          claimedStudents.push({ uid: data.uid, eotcUid: data.eotcUid || id });
+        }
+      });
+
+      if (claimedStudents.length === 0) {
+        return NextResponse.json({ ok: true, repaired: false, count: 0 });
+      }
+
+      // Ensure family channels and direct channels exist for all claimed students
+      const studentUids = claimedStudents.map((s) => s.uid);
+      await provisionFamilyChannels(fatherUid as any, studentUids as any);
+
+      console.log(
+        `[repair-channels] ✅ Repaired channels for father ${fatherUid} across ${studentUids.length} students`
+      );
+
+      return NextResponse.json({
+        ok: true,
+        repaired: true,
+        count: studentUids.length,
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // STUDENT FLOW: Repair direct & common house channels for the student
+    // ─────────────────────────────────────────────
     if (session.role !== "STUDENT") {
       return NextResponse.json({ ok: true, skipped: true });
     }
@@ -42,15 +108,6 @@ export async function POST(): Promise<Response> {
     const eotcUid = (studentData.eotcUid as string) || studentSnap.docs[0].id;
 
     // Check if a DIRECT channel already exists for this student
-    // familyId = fatherId for students
-    const familyId = session.familyId;
-    if (!familyId) {
-      return NextResponse.json(
-        { error: "No familyId in session" },
-        { status: 400 }
-      );
-    }
-
     const existingDirectSnap = await adminDb
       .collection("ChannelMembers")
       .where("userId", "==", session.uid)
