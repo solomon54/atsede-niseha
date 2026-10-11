@@ -32,6 +32,16 @@ const ethiopic = Noto_Sans_Ethiopic({
 export const metadata: Metadata = {
   title: "ዐጸደ ንስሐ | Atsede Niseha",
   description: "Digital Logistics for the Ethiopian Orthodox Tewahedo Church",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "ዐፀደ ንስሐ",
+  },
+  icons: {
+    icon: "/assets/icons/favicon-for-app/icon1.png",
+    apple: "/assets/icons/favicon-for-app/apple-icon.png",
+  },
 };
 
 export default function RootLayout({

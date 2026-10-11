@@ -219,10 +219,10 @@ const MessagingClient: FC<MessagingClientProps> = ({
   // FULL LAYOUT
   // ─────────────────────────────────────────────
   return (
-    <div className="flex h-screen w-full bg-white overflow-hidden fixed inset-0 md:pl-20 lg:pl-64 pb-16 md:pb-0">
+    <div className="flex h-screen w-full bg-white overflow-hidden fixed inset-0 xl:pl-64 pb-16 md:pb-0">
 
-      {/* ── DESKTOP: Conversations Sidebar ─────────────────── */}
-      <aside className="hidden md:flex w-72 border-r border-slate-100 flex-col bg-[#fdfcf6] flex-none">
+      {/* ── Conversations Sidebar (visible on xl screens to give ample space to chat) ─────────────────── */}
+      <aside className="hidden xl:flex w-72 border-r border-slate-100 flex-col bg-[#fdfcf6] flex-none">
         <header className="px-5 py-4 border-b border-slate-100 bg-white flex-none">
           <h2 className="text-xs font-black text-slate-900 uppercase tracking-widest">
             ምስጢር ማኅደር
@@ -241,8 +241,8 @@ const MessagingClient: FC<MessagingClientProps> = ({
         </div>
       </aside>
 
-      {/* ── DESKTOP: Members Sidebar ───────────────────────── */}
-      <aside className="hidden lg:flex w-64 border-r border-slate-100 flex-col bg-[#fdfcf6] flex-none order-last">
+      {/* ── Members Sidebar (only on 2xl ultra wide screens) ───────────────────────── */}
+      <aside className="hidden 2xl:flex w-64 border-l border-slate-100 flex-col bg-[#fdfcf6] flex-none order-last">
         <header className="p-5 border-b bg-white flex-none">
           <h2 className="text-xs font-black text-slate-900 uppercase tracking-widest">
             {activeConversation?.channel.type === "COMMON_HOUSE"
@@ -262,12 +262,12 @@ const MessagingClient: FC<MessagingClientProps> = ({
         <header className="flex-none border-b bg-white px-4 md:px-5 pt-4 z-10">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2 min-w-0">
-              {/* Mobile back button when in chat */}
+              {/* Back button on non-xl screens when inside chat */}
               {mobilePane === "chat" && (
                 <button
                   onClick={() => setMobilePane("convos")}
-                  className="md:hidden mr-1 text-slate-400 hover:text-slate-700 text-xs font-bold">
-                  ← Back
+                  className="xl:hidden mr-1 text-slate-500 hover:text-slate-800 text-xs font-bold px-2 py-1 bg-slate-100 rounded-lg transition-colors">
+                  ← ውይይቶች
                 </button>
               )}
               <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
@@ -287,17 +287,17 @@ const MessagingClient: FC<MessagingClientProps> = ({
             <ShieldCheck size={16} className="text-amber-600/50 shrink-0" />
           </div>
 
-          {/* MOBILE TABS */}
-          <div className="flex md:hidden bg-slate-100 p-1 rounded-xl mb-3 gap-1">
+          {/* TABLET & MOBILE NAVIGATION TABS (visible below xl breakpoint) */}
+          <div className="flex xl:hidden bg-slate-100 p-1 rounded-xl mb-3 gap-1">
             <button
               onClick={() => setMobilePane("convos")}
               className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${
                 mobilePane === "convos"
                   ? "bg-white shadow text-amber-700"
-                  : "text-slate-500"
+                  : "text-slate-500 hover:text-slate-700"
               }`}>
               <MessageSquare size={13} className="inline mr-1" />
-              ውይይቶች
+              ውይይቶች (Chats)
             </button>
             <button
               onClick={() => setMobilePane("chat")}
@@ -305,20 +305,20 @@ const MessagingClient: FC<MessagingClientProps> = ({
               className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors disabled:opacity-40 ${
                 mobilePane === "chat"
                   ? "bg-white shadow text-amber-700"
-                  : "text-slate-500"
+                  : "text-slate-500 hover:text-slate-700"
               }`}>
               <MessageSquare size={13} className="inline mr-1" />
-              ምስጢር
+              ምስጢር (Ledger)
             </button>
             <button
               onClick={() => setMobilePane("members")}
               className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${
                 mobilePane === "members"
                   ? "bg-white shadow text-amber-700"
-                  : "text-slate-500"
+                  : "text-slate-500 hover:text-slate-700"
               }`}>
               <Users size={13} className="inline mr-1" />
-              አባላት
+              አባላት (Members)
             </button>
           </div>
         </header>
@@ -326,8 +326,8 @@ const MessagingClient: FC<MessagingClientProps> = ({
         {/* ── BODY ────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-h-0">
 
-          {/* MOBILE: Conversation List Pane */}
-          <section className={`md:hidden flex-1 overflow-y-auto bg-[#fdfcf6] ${mobilePane === "convos" ? "flex flex-col" : "hidden"}`}>
+          {/* Conversation List Pane (for mobile & tablet when tab is active) */}
+          <section className={`xl:hidden flex-1 overflow-y-auto bg-[#fdfcf6] ${mobilePane === "convos" ? "flex flex-col" : "hidden"}`}>
             <ConversationList
               conversations={conversations}
               activeChannelId={activeChannelId}
@@ -336,16 +336,16 @@ const MessagingClient: FC<MessagingClientProps> = ({
             />
           </section>
 
-          {/* MOBILE: Members Pane */}
-          <section className={`md:hidden flex-1 overflow-y-auto bg-white ${mobilePane === "members" ? "block" : "hidden"}`}>
+          {/* Members Pane (for mobile & tablet when tab is active) */}
+          <section className={`xl:hidden flex-1 overflow-y-auto bg-white ${mobilePane === "members" ? "block" : "hidden"}`}>
             <MembersList members={currentMembers} currentUserId={session?.uid} />
           </section>
 
-          {/* CHAT PANE — visible on desktop always, on mobile only when mobilePane=chat */}
+          {/* CHAT PANE — visible on desktop (xl+) always, on tablet/mobile when mobilePane=chat */}
           <section
             className={`flex-1 flex flex-col min-h-0 ${
               mobilePane === "chat" ? "flex" : "hidden"
-            } md:flex`}>
+            } xl:flex`}>
             {activeChannelId && session ? (
               <>
                 <MessageStream
