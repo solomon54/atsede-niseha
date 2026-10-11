@@ -110,12 +110,25 @@ const MessagingClient: FC<MessagingClientProps> = ({
   }, [bootSanctuary]);
 
   // ─────────────────────────────────────────────
-  // FETCH CONVERSATIONS
+  // FETCH CONVERSATIONS (Cache-First + Background Sync)
   // ─────────────────────────────────────────────
   const fetchConversations = useCallback(
     async (currentSession: Session | null) => {
       if (!currentSession) return;
       try {
+        // 1. Instantly load from localStorage cache if available
+        const cached = localStorage.getItem(`sacred_convos_${currentSession.uid}`);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setConversations(parsed);
+              setActiveChannelId((prev) => prev ?? parsed[0]?.channel?.id);
+            }
+          } catch {}
+        }
+
+        // 2. Fetch fresh from server
         const res = await fetch("/api/message/conversation", {
           credentials: "include",
         });
@@ -123,6 +136,10 @@ const MessagingClient: FC<MessagingClientProps> = ({
 
         const data: ConversationSummary[] = await res.json();
         setConversations(data);
+        localStorage.setItem(
+          `sacred_convos_${currentSession.uid}`,
+          JSON.stringify(data)
+        );
 
         // Default to first channel
         if (data.length > 0) {
