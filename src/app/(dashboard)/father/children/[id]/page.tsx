@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 
 import { getSession } from "@/core/auth/session.service";
@@ -28,10 +30,16 @@ export default async function ChildDetailPage({ params }: ChildPageProps) {
   const isFather = session?.role === "FATHER" || session?.role === "GOVERNOR";
 
   return (
-    <ImmersiveTransition className="pt-24 pb-12 px-8 max-w-5xl mx-auto">
+    <ImmersiveTransition className="pt-8 sm:pt-14 pb-12 px-4 sm:px-8 max-w-5xl mx-auto">
       <div className="mb-6 flex items-center justify-between">
-        <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">
-          የተማሪው ዝርዝር መረጃ / Student Profile
+        <Link
+          href="/father"
+          className="inline-flex items-center gap-2 text-xs font-bold text-slate-500 hover:text-slate-900 bg-white/80 border border-slate-200/80 px-3.5 py-2 rounded-xl transition-all shadow-sm active:scale-95">
+          <ArrowLeft size={14} />
+          <span>ተመለስ (ወደ ማውጫው)</span>
+        </Link>
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+          የተማሪው ዝርዝር መረጃ
         </h2>
       </div>
       <StudentProfileDetail student={student} isFather={isFather} />

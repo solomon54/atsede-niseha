@@ -219,7 +219,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
   // FULL LAYOUT
   // ─────────────────────────────────────────────
   return (
-    <div className="flex h-screen w-full bg-white overflow-hidden fixed inset-0 xl:pl-64 pb-16 md:pb-0">
+    <div className="flex h-screen w-full bg-white overflow-hidden fixed inset-0 md:pl-20 lg:pl-64 pb-16 md:pb-0">
 
       {/* ── Conversations Sidebar (visible on xl screens to give ample space to chat) ─────────────────── */}
       <aside className="hidden xl:flex w-72 border-r border-slate-100 flex-col bg-[#fdfcf6] flex-none">
@@ -262,12 +262,13 @@ const MessagingClient: FC<MessagingClientProps> = ({
         <header className="flex-none border-b bg-white px-4 md:px-5 pt-4 z-10">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2 min-w-0">
-              {/* Back button on non-xl screens when inside chat */}
-              {mobilePane === "chat" && (
+              {/* Back button on non-xl screens when not on convos tab */}
+              {mobilePane !== "convos" && (
                 <button
                   onClick={() => setMobilePane("convos")}
-                  className="xl:hidden mr-1 text-slate-500 hover:text-slate-800 text-xs font-bold px-2 py-1 bg-slate-100 rounded-lg transition-colors">
-                  ← ውይይቶች
+                  className="xl:hidden mr-1 text-slate-600 hover:text-slate-900 text-xs font-bold px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors flex items-center gap-1 shrink-0">
+                  <span>←</span>
+                  <span className="hidden sm:inline">ውይይቶች</span>
                 </button>
               )}
               <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
