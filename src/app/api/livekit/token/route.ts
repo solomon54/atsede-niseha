@@ -1,11 +1,11 @@
 // src/app/api/livekit/token/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { AccessToken } from "livekit-server-sdk";
+import * as jose from "jose";
 import { requireSession } from "@/core/auth/requireSession";
 import { adminDb } from "@/services/firebase/admin";
 
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY!;
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET!;
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "devkey";
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "devsecretnoseha";
 const LIVEKIT_URL =
   process.env.LIVEKIT_URL ||
   process.env.NEXT_PUBLIC_LIVEKIT_URL ||
@@ -67,24 +67,34 @@ export async function POST(req: NextRequest) {
       profileData.secularName ||
       (session.role === "FATHER" ? "የንስሐ አባት" : "የንስሐ ልጅ");
 
-    // 4. Generate token using the official LiveKit SDK
-    //    (jose-signed tokens include typ:"JWT" which LiveKit Cloud rejects)
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-      identity: session.uid,
+    // 4. Generate LiveKit-compatible JWT using jose
+    //    KEY FIX: header must be { alg: "HS256" } ONLY — no "typ" field.
+    //    LiveKit Cloud strictly validates and rejects tokens with typ:"JWT".
+    const secret = new TextEncoder().encode(LIVEKIT_API_SECRET);
+    const now = Math.floor(Date.now() / 1000);
+
+    const token = await new jose.SignJWT({
+      video: {
+        room: channelId,
+        roomJoin: true,
+        canPublish: true,
+        canSubscribe: true,
+        canPublishData: true,
+      },
       name: displayName,
-      ttl: "2h",
-      metadata: JSON.stringify({ role: session.role, maxParticipants }),
-    });
-
-    at.addGrant({
-      room: channelId,
-      roomJoin: true,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true,
-    });
-
-    const token = await at.toJwt();
+      metadata: JSON.stringify({
+        role: session.role,
+        uid: session.uid,
+        maxParticipants,
+      }),
+    })
+      .setProtectedHeader({ alg: "HS256" })   // ← NO "typ" — this was the bug
+      .setIssuer(LIVEKIT_API_KEY)
+      .setSubject(session.uid)
+      .setIssuedAt(now)
+      .setNotBefore(now)
+      .setExpirationTime(now + 2 * 60 * 60)   // 2h TTL
+      .sign(secret);
 
     return NextResponse.json({
       success: true,
@@ -102,4 +112,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }
-
