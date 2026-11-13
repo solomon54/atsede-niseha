@@ -1,6 +1,6 @@
 // src/core/auth/session.service.ts
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import { adminAuth } from "@/services/firebase/admin";
 
@@ -34,7 +34,18 @@ export async function createSessionFromUid(uid: string) {
 
 export async function getSession() {
   const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get(SESSION_NAME)?.value;
+  let sessionCookie = cookieStore.get(SESSION_NAME)?.value;
+
+  if (!sessionCookie) {
+    const headerStore = await headers();
+    const authHeader = headerStore.get("authorization");
+    if (authHeader?.startsWith("Bearer ")) {
+      sessionCookie = authHeader.slice(7).trim();
+    } else {
+      sessionCookie = headerStore.get("x-session-token") || undefined;
+    }
+  }
+
   if (!sessionCookie) return null;
   try {
     const decodedToken = await adminAuth.verifySessionCookie(
@@ -59,6 +70,7 @@ export async function createSession(idToken: string) {
     sameSite: "lax",
     path: "/",
   });
+  return sessionCookie;
 }
 
 export async function destroySession() {

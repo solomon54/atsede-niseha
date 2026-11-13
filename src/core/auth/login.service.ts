@@ -81,12 +81,13 @@ export async function loginUser(raw: unknown) {
     father: record.fatherId || null,
   });
 
-  // 5. Establish Session (Passes idToken for cookie generation)
-  await createSession(idToken);
+  // 5. Establish Session (Passes idToken for cookie generation and mobile bearer token)
+  const sessionToken = await createSession(idToken);
 
   return {
     success: true,
     role,
+    token: sessionToken,
     redirect: `/${role.toLowerCase()}`,
   };
 }

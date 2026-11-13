@@ -148,7 +148,7 @@ export async function claimAccount(raw: unknown) {
      * We use createSessionFromUid here because we are in a server-side flow.
      * This handles the Custom Token -> ID Token exchange internally.
      */
-    await createSessionFromUid(uidCreated);
+    const sessionToken = await createSessionFromUid(uidCreated);
 
     // ────────────────────────────────────────────────
     // Post-claim side effects – channel provisioning / joining
@@ -226,6 +226,7 @@ export async function claimAccount(raw: unknown) {
 
     return {
       success: true,
+      token: sessionToken,
       redirect: `/${body.role.toLowerCase()}`,
     };
   } catch (error: unknown) {

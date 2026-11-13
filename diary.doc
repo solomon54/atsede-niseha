@@ -1,0 +1,417 @@
+┌─────────────────────────────────────────┐
+│ Conversation List │ Active Conversation │
+│                   │                     │
+│  Father A         │  Header             │
+│  Father B         │─────────────────────│
+│  Father C         │                     │
+│                   │   Messages          │
+│                   │                     │
+│                   │                     │
+│                   │─────────────────────│
+│                   │  Composer           │
+└─────────────────────────────────────────┘
+
+
+
+
+
+Alright — **pause coding brain for a minute**. You’re at the *right* moment to design, because messaging systems become impossible to fix later if the foundations are wrong. Let’s talk **product + architecture + experience** first, short and practical.
+
+You’re not building “chat.”
+You’re building **Sacred Communication** — so decisions should feel intentional, calm, and trustworthy.
+
+---
+
+# 1️⃣ First Principle — What Messaging *Is* in Atsede Niseha
+
+Your messaging module should feel:
+
+* **Private**
+* **Quiet**
+* **Focused**
+* **Reverent**
+* **Low-noise**
+* **Reliable even on weak networks**
+
+So avoid social-media aesthetics.
+
+Think:
+👉 *Signal + monastic calm*
+NOT WhatsApp clone.
+NOT Telegram chaos.
+
+---
+
+# 2️⃣ Messaging Layout (High-Level)
+
+Industry-standard layout exists for a reason — users already understand it subconsciously.
+
+### ✅ Recommended Structure
+
+```
+┌─────────────────────────────────────────┐
+│ Conversation List │ Active Conversation │
+│                   │                     │
+│  Father A         │  Header             │
+│  Father B         │─────────────────────│
+│  Father C         │                     │
+│                   │   Messages          │
+│                   │                     │
+│                   │                     │
+│                   │─────────────────────│
+│                   │  Composer           │
+└─────────────────────────────────────────┘
+```
+
+### Sections
+
+#### LEFT — Conversation Directory
+
+* Avatar
+* Name
+* last message preview
+* unread indicator
+* search
+
+#### RIGHT — Conversation Area
+
+1. Header (person + status)
+2. Message stream
+3. Composer (input + attachments)
+
+---
+
+# 3️⃣ Background Design (Very Important)
+
+You’re correct:
+
+> ❌ Standard app background color does NOT work for messaging.
+
+Why?
+
+Messaging requires **depth separation**:
+
+* messages must float
+* eye must scan fast
+* long reading comfort
+
+---
+
+## ✅ Best Choice: “Material Messaging Surface”
+
+Use **layered neutral surfaces**, not flat color.
+
+### Sacred Messaging Background Concept
+
+Instead of:
+
+```
+bg-neutral-900
+```
+
+Use:
+
+### Option A (Recommended)
+
+**Soft textured gradient**
+
+```
+dark slate → warm charcoal
+very subtle noise texture
+```
+
+Visual feel:
+
+* calm
+* timeless
+* reduces eye fatigue
+* hides compression artifacts from images
+
+Example idea:
+
+```
+radial-gradient(
+  circle at top,
+  #1c1f26,
+  #13151a
+)
+```
+
+Add:
+
+* 2–3% grain/noise overlay
+
+👉 Signal, iMessage, Discord all do this subtly.
+
+---
+
+### Option B (Sacred Tone — Fits Your Project)
+
+Ultra-subtle parchment feel:
+
+* desaturated warm gray
+* barely visible texture
+* NOT decorative
+
+Think:
+
+> monastery wall, not wallpaper.
+
+---
+
+# 4️⃣ Message Bubble Philosophy
+
+Avoid bright chat bubbles.
+
+### Recommended:
+
+| Sender | Style                    |
+| ------ | ------------------------ |
+| Self   | soft accent tint         |
+| Other  | neutral elevated surface |
+
+#### Self message:
+
+* slightly brighter
+* right aligned
+* soft glow (1–2%)
+
+#### Other message:
+
+* muted surface
+* left aligned
+
+No hard borders.
+
+Use elevation instead.
+
+---
+
+# 5️⃣ Media Support Strategy (Before Code)
+
+You said:
+
+> support all media, limit video
+
+Correct approach.
+
+### Media Policy (Smart Free-Tier Strategy)
+
+| Type        | Strategy             |
+| ----------- | -------------------- |
+| Text        | unlimited            |
+| Image       | compress client-side |
+| Audio       | allowed              |
+| PDF/docs    | allowed              |
+| Video       | STRICT limit         |
+| Large files | reject early         |
+
+---
+
+### Video Rules (Important)
+
+Do NOT upload then validate.
+
+✅ Validate **before upload**.
+
+Example policy:
+
+```
+Video:
+- max 15–25 MB
+- max 60 seconds
+- auto compression client-side
+```
+
+Why?
+
+Firebase free storage dies quickly otherwise.
+
+---
+
+# 6️⃣ Encryption Model (Reality Check)
+
+You said:
+
+> AES-256 top-tier
+
+Good — but architecture matters more than algorithm.
+
+### Recommended Model
+
+#### Step 1 — Client Encryption (MANDATORY)
+
+```
+message
+   ↓
+AES-256 encrypt (client)
+   ↓
+upload ciphertext
+```
+
+Server NEVER sees plaintext.
+
+---
+
+### Step 2 — Keys
+
+Per conversation:
+
+```
+Conversation Key (AES-256)
+```
+
+Encrypted using users’ public keys.
+
+```
+AES key
+   ↓ encrypt with RSA/ECC public key
+stored per participant
+```
+
+This gives:
+
+✅ zero-knowledge server
+✅ future E2EE capability
+
+---
+
+# 7️⃣ Messaging Feature Scope (V1 — DO NOT OVERBUILD)
+
+Your V1 should ONLY include:
+
+✅ 1-to-1 messaging
+✅ text
+✅ attachments
+✅ encryption
+✅ read status
+✅ offline queue
+
+NOT yet:
+
+❌ reactions
+❌ typing animation
+❌ stories
+❌ voice calls
+❌ groups
+
+Messaging systems fail when scope explodes early.
+
+---
+
+# 8️⃣ Folder Architecture (Where Messaging Fits)
+
+You already follow feature architecture 👍
+
+Add:
+
+```
+src/features/messaging
+│
+├── components
+│   ├── ConversationList.tsx
+│   ├── MessageStream.tsx
+│   ├── MessageBubble.tsx
+│   ├── Composer.tsx
+│   └── MediaPreview.tsx
+│
+├── hooks
+│   ├── useConversation.ts
+│   ├── useMessages.ts
+│   └── useSendMessage.ts
+│
+├── services
+│   ├── message.service.ts
+│   ├── encryption.service.ts
+│   ├── upload.service.ts
+│   └── mediaPolicy.ts
+│
+├── types
+│   └── messaging.types.ts
+│
+└── crypto
+    ├── aes.ts
+    ├── keyManager.ts
+    └── serializer.ts
+```
+
+Separate **crypto** early — future you will thank you.
+
+---
+
+# 9️⃣ UX Rules (Sacred Platform Rules)
+
+Your messaging should feel:
+
+* slow but intentional
+* no dopamine loops
+* no aggressive notifications
+* calm transitions
+* readable for long spiritual discussion
+
+Small details:
+
+✅ slightly larger line height
+✅ slower animation (200–250ms)
+✅ soft easing curves
+✅ no bouncing UI
+
+---
+
+# 🔟 The Most Important Decision (Most devs miss this)
+
+Decide now:
+
+### Is messaging synchronous or reflective?
+
+Meaning:
+
+* WhatsApp → instant chatter
+* Sacred platform → thoughtful exchange
+
+If reflective:
+
+👉 add **message spacing**
+👉 discourage rapid spam
+👉 optional send delay (1–2s)
+
+This changes culture of the platform.
+
+---
+
+# ✅ Summary — What You Should Lock Before Coding
+
+Finalize these first:
+
+1. Messaging layout (2-panel standard)
+2. Textured neutral background
+3. Bubble elevation style
+4. Media policy limits
+5. Client-side AES encryption model
+6. Feature scope V1
+7. Dedicated messaging feature module
+
+---
+
+If you want, next we can design **the real backbone** — the thing that decides whether messaging scales or collapses:
+
+👉 **Message data model + Firestore structure (CRITICAL decision)**
+
+That’s where 80% of messaging systems succeed or fail.
+
+
+
+🏗️ Where We ACTUALLY Start (Order Matters)
+
+We do NOT start with MessageBubble or Composer.
+
+Telegram works because navigation architecture is correct first.
+
+So we build in this order:
+
+1. Navigation Depth Model ✅ (NOW)
+2. Conversation List (Chat Index)
+3. Channel Model
+4. Message Stream
+5. Composer
+6. Presence + unread
