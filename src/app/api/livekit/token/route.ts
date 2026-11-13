@@ -1,15 +1,15 @@
 // src/app/api/livekit/token/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import * as jose from "jose";
+import { AccessToken } from "livekit-server-sdk";
 import { requireSession } from "@/core/auth/requireSession";
 import { adminDb } from "@/services/firebase/admin";
 
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "devkey";
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "secret_atsede_livekit_key_32chars_min";
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY!;
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET!;
 const LIVEKIT_URL =
   process.env.LIVEKIT_URL ||
   process.env.NEXT_PUBLIC_LIVEKIT_URL ||
-  "wss://atsede-niseha.livekit.cloud";
+  "wss://atsede-niseha-qj6cj10z.livekit.cloud";
 
 export async function POST(req: NextRequest) {
   try {
@@ -67,33 +67,24 @@ export async function POST(req: NextRequest) {
       profileData.secularName ||
       (session.role === "FATHER" ? "የንስሐ አባት" : "የንስሐ ልጅ");
 
-    // 4. Generate LiveKit Access Token (HS256 signed JWT)
-    const secret = new TextEncoder().encode(LIVEKIT_API_SECRET);
-    const now = Math.floor(Date.now() / 1000);
-    const exp = now + 2 * 60 * 60; // 2 hours TTL (matches PLAN.md)
-
-    const token = await new jose.SignJWT({
-      video: {
-        room: channelId,
-        roomJoin: true,
-        canPublish: true,
-        canSubscribe: true,
-        canPublishData: true,
-      },
+    // 4. Generate token using the official LiveKit SDK
+    //    (jose-signed tokens include typ:"JWT" which LiveKit Cloud rejects)
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity: session.uid,
       name: displayName,
-      metadata: JSON.stringify({
-        role: session.role,
-        uid: session.uid,
-        maxParticipants,
-      }),
-    })
-      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-      .setIssuer(LIVEKIT_API_KEY)
-      .setSubject(session.uid)
-      .setIssuedAt(now)
-      .setNotBefore(now)
-      .setExpirationTime(exp)
-      .sign(secret);
+      ttl: "2h",
+      metadata: JSON.stringify({ role: session.role, maxParticipants }),
+    });
+
+    at.addGrant({
+      room: channelId,
+      roomJoin: true,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+
+    const token = await at.toJwt();
 
     return NextResponse.json({
       success: true,
