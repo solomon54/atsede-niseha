@@ -1,3 +1,22 @@
+// Polyfill WeakRef and FinalizationRegistry for Hermes engine
+if (typeof (global as any).WeakRef === "undefined") {
+  (global as any).WeakRef = class WeakRef {
+    private val: any;
+    constructor(val: any) {
+      this.val = val;
+    }
+    deref() {
+      return this.val;
+    }
+  };
+}
+if (typeof (global as any).FinalizationRegistry === "undefined") {
+  (global as any).FinalizationRegistry = class FinalizationRegistry {
+    register() {}
+    unregister() {}
+  };
+}
+
 import React, { useEffect, useState } from "react";
 import {
   View,

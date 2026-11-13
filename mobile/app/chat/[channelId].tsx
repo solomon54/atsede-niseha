@@ -16,6 +16,7 @@ import { Send, Video, Clock, Check, Shield } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
+import { THEME } from "../../src/constants/theme";
 
 interface MessageItem {
   id: string;
@@ -35,10 +36,13 @@ export default function ChannelChatScreen() {
   const queryClient = useQueryClient();
 
   const [inputText, setInputText] = useState("");
-  const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
+  const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>(
+    []
+  );
   const flatListRef = useRef<FlatList>(null);
+  const router = useRouter();
 
-  // 1. Fetch channel messages (SQLite cache first, then API)
+  // 1. Fetch channel messages
   const { data: serverMessages, isLoading } = useQuery<MessageItem[]>({
     queryKey: ["messages", channelId],
     queryFn: async () => {
@@ -51,7 +55,7 @@ export default function ChannelChatScreen() {
       return res || [];
     },
     enabled: Boolean(channelId),
-    refetchInterval: 4000, // Background poll every 4s for catch-up
+    refetchInterval: 4000,
   });
 
   useEffect(() => {
@@ -65,8 +69,6 @@ export default function ChannelChatScreen() {
     hydrateMessages();
   }, [channelId, queryClient, serverMessages]);
 
-  const router = useRouter();
-
   // Setup video button in header
   useEffect(() => {
     navigation.setOptions({
@@ -78,8 +80,11 @@ export default function ChannelChatScreen() {
               router.push(`/call/${channelId}` as any);
             }
           }}
+          activeOpacity={0.7}
         >
-          <Video color="#D97706" size={20} />
+          <View style={styles.callIconBox}>
+            <Video color="#FFFFFF" size={16} />
+          </View>
         </TouchableOpacity>
       ),
     });
@@ -115,14 +120,15 @@ export default function ChannelChatScreen() {
       );
     },
     onSuccess: (res, vars) => {
-      // Mark optimistic message as SENT
       setOptimisticMessages((prev) =>
-        prev.map((m) => (m.id === vars.clientMessageId ? { ...m, status: "SENT" } : m))
+        prev.map((m) =>
+          m.id === vars.clientMessageId ? { ...m, status: "SENT" } : m
+        )
       );
       queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
-    onError: (err, vars) => {
+    onError: (err: any, vars) => {
       setOptimisticMessages((prev) =>
         prev.filter((m) => m.id !== vars.clientMessageId)
       );
@@ -134,7 +140,9 @@ export default function ChannelChatScreen() {
     const trimmed = inputText.trim();
     if (!trimmed || sendMutation.isPending) return;
 
-    const clientId = `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const clientId = `local_${Date.now()}_${Math.random()
+      .toString(36)
+      .substring(2, 7)}`;
     const newMsg: MessageItem = {
       id: clientId,
       channelId: channelId!,
@@ -176,23 +184,21 @@ export default function ChannelChatScreen() {
       keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
       style={styles.container}
     >
-      {isLoading ? (
+      {isLoading && allMessages.length === 0 ? (
         <View style={styles.center}>
-          <ActivityIndicator color="#D97706" size="large" />
+          <ActivityIndicator color={THEME.colors.sacredAmber} />
         </View>
       ) : (
         <FlatList
           ref={flatListRef}
           data={allMessages}
-          keyExtractor={(item: MessageItem) => item.id}
+          keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
           onContentSizeChange={() =>
             flatListRef.current?.scrollToEnd({ animated: false })
           }
-          renderItem={({ item }: { item: MessageItem }) => {
-            const isMe =
-              item.senderId === eotcUid ||
-              (item.status === "PENDING" && item.senderId === (eotcUid || "me"));
+          renderItem={({ item }) => {
+            const isMe = item.senderId === eotcUid || item.senderId === "me";
             const isFather = item.senderRole === "FATHER";
 
             return (
@@ -212,19 +218,18 @@ export default function ChannelChatScreen() {
                       : styles.otherBubble,
                   ]}
                 >
-                  {/* Father Role Badge for Common House distinction */}
                   {!isMe && isFather && (
                     <View style={styles.fatherBadgeRow}>
-                      <Shield color="#D97706" size={13} />
+                      <Shield color={THEME.colors.sacredAmber} size={13} />
                       <Text style={styles.fatherBadgeText}>
                         {item.senderName || "የንስሐ አባት"}
                       </Text>
                     </View>
                   )}
 
-                  {!isMe && !isFather && item.senderName && (
+                  {!isMe && !isFather && item.senderName ? (
                     <Text style={styles.senderName}>{item.senderName}</Text>
-                  )}
+                  ) : null}
 
                   <Text
                     style={[
@@ -236,15 +241,20 @@ export default function ChannelChatScreen() {
                   </Text>
 
                   <View style={styles.footerRow}>
-                    <Text style={styles.timeText}>
+                    <Text
+                      style={[
+                        styles.timeText,
+                        isMe && { color: "rgba(255, 255, 255, 0.6)" },
+                      ]}
+                    >
                       {formatTime(item.createdAt)}
                     </Text>
                     {isMe && (
                       <View style={styles.statusIcon}>
                         {item.status === "PENDING" ? (
-                          <Clock color="#94A3B8" size={11} />
+                          <Clock color="rgba(255, 255, 255, 0.5)" size={11} />
                         ) : (
-                          <Check color="#D97706" size={12} />
+                          <Check color={THEME.colors.sacredAmber} size={12} />
                         )}
                       </View>
                     )}
@@ -261,9 +271,9 @@ export default function ChannelChatScreen() {
         <TextInput
           style={styles.textInput}
           placeholder="መልእክት ይጻፉ... (ምክርና መመሪያ)"
-          placeholderTextColor="#64748B"
+          placeholderTextColor={THEME.colors.inkSubtle}
           value={inputText}
-          onChangeText={(txt: string) => setInputText(txt)}
+          onChangeText={setInputText}
           multiline
           maxLength={1000}
         />
@@ -275,11 +285,12 @@ export default function ChannelChatScreen() {
           ]}
           onPress={handleSend}
           disabled={!inputText.trim() || sendMutation.isPending}
+          activeOpacity={0.8}
         >
           {sendMutation.isPending ? (
             <ActivityIndicator color="#FFFFFF" size="small" />
           ) : (
-            <Send color="#FFFFFF" size={18} />
+            <Send color="#FFFFFF" size={17} />
           )}
         </TouchableOpacity>
       </View>
@@ -290,7 +301,7 @@ export default function ChannelChatScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0B1120",
+    backgroundColor: THEME.colors.sanctuaryBg,
   },
   center: {
     flex: 1,
@@ -298,12 +309,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headerCallBtn: {
-    padding: 8,
+    padding: 6,
     marginRight: 4,
+  },
+  callIconBox: {
+    backgroundColor: THEME.colors.sacredCrimson,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    ...THEME.shadows.button,
   },
   listContent: {
     padding: 16,
-    paddingBottom: 24,
+    paddingBottom: 20,
   },
   msgRow: {
     flexDirection: "row",
@@ -317,31 +337,30 @@ const styles = StyleSheet.create({
   },
   bubble: {
     maxWidth: "80%",
-    borderRadius: 14,
+    borderRadius: THEME.radii.lg,
     paddingHorizontal: 14,
     paddingVertical: 10,
+    ...THEME.shadows.card,
   },
   myBubble: {
-    backgroundColor: "#1E293B",
-    borderBottomRightRadius: 2,
-    borderWidth: 1,
-    borderColor: "#334155",
+    backgroundColor: THEME.colors.inkPrimary,
+    borderBottomRightRadius: 3,
   },
   otherBubble: {
-    backgroundColor: "#1E293B",
-    borderBottomLeftRadius: 2,
+    backgroundColor: THEME.colors.surface,
+    borderBottomLeftRadius: 3,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: THEME.colors.border,
   },
   fatherBubble: {
-    backgroundColor: "#1F1D17",
-    borderLeftWidth: 3,
-    borderLeftColor: "#D97706",
-    borderBottomLeftRadius: 2,
+    backgroundColor: THEME.colors.surface,
+    borderLeftWidth: 3.5,
+    borderLeftColor: THEME.colors.sacredAmber,
+    borderBottomLeftRadius: 3,
     borderTopWidth: 1,
     borderRightWidth: 1,
     borderBottomWidth: 1,
-    borderColor: "#78350F",
+    borderColor: THEME.colors.amberBorder,
   },
   fatherBadgeRow: {
     flexDirection: "row",
@@ -350,25 +369,25 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   fatherBadgeText: {
-    color: "#D97706",
+    color: THEME.colors.sacredAmber,
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   senderName: {
-    color: "#94A3B8",
+    color: THEME.colors.inkSubtle,
     fontSize: 11,
-    fontWeight: "600",
+    fontWeight: "700",
     marginBottom: 4,
   },
   msgText: {
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 14.5,
+    lineHeight: 20,
   },
   myMsgText: {
-    color: "#F8FAFC",
+    color: "#FFFFFF",
   },
   otherMsgText: {
-    color: "#E2E8F0",
+    color: THEME.colors.inkPrimary,
   },
   footerRow: {
     flexDirection: "row",
@@ -378,8 +397,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   timeText: {
-    color: "#64748B",
+    color: THEME.colors.inkSubtle,
     fontSize: 10,
+    fontWeight: "600",
   },
   statusIcon: {
     marginLeft: 2,
@@ -387,34 +407,35 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0F172A",
+    backgroundColor: THEME.colors.navigationBg,
     borderTopWidth: 1,
-    borderTopColor: "#1E293B",
+    borderTopColor: THEME.colors.sacredCrimsonBorder,
     paddingHorizontal: 12,
     paddingVertical: 8,
     gap: 8,
   },
   textInput: {
     flex: 1,
-    backgroundColor: "#1E293B",
-    color: "#F8FAFC",
-    borderRadius: 20,
+    backgroundColor: THEME.colors.surface,
+    color: THEME.colors.inkPrimary,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 9,
     maxHeight: 100,
     fontSize: 14,
   },
   sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#D97706",
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: THEME.colors.buttonDark,
     alignItems: "center",
     justifyContent: "center",
+    ...THEME.shadows.button,
   },
   sendBtnDisabled: {
-    backgroundColor: "#334155",
-    opacity: 0.5,
+    opacity: 0.4,
   },
 });
-

@@ -1,54 +1,126 @@
+// mobile/app/(tabs)/_layout.tsx
 import React from "react";
 import { Tabs } from "expo-router";
+import { View, Text, StyleSheet } from "react-native";
 import { Calendar, MessageSquare, User } from "lucide-react-native";
+import { THEME } from "../../src/constants/theme";
 
 export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        headerStyle: { backgroundColor: "#0F172A" },
-        headerTintColor: "#F8FAFC",
-        tabBarStyle: {
-          backgroundColor: "#0F172A",
-          borderTopColor: "#1E293B",
-          paddingBottom: 6,
-          paddingTop: 6,
-          height: 60,
+        headerStyle: {
+          backgroundColor: THEME.colors.navigationBg,
+          borderBottomWidth: 1,
+          borderBottomColor: THEME.colors.sacredCrimsonBorder,
+          elevation: 0,
+          shadowOpacity: 0,
         },
-        tabBarActiveTintColor: "#D97706",
-        tabBarInactiveTintColor: "#64748B",
+        headerTitleAlign: "center",
+        headerTitle: () => (
+          <View style={styles.headerTitleBox}>
+            <Text style={styles.brandTitleText}>ዐጸደ ንስሐ</Text>
+            <Text style={styles.brandSubText}>SANCTUARY</Text>
+          </View>
+        ),
+        tabBarStyle: {
+          backgroundColor: THEME.colors.navigationBg,
+          borderTopWidth: 1,
+          borderTopColor: THEME.colors.sacredCrimsonBorder,
+          paddingBottom: 8,
+          paddingTop: 8,
+          height: 64,
+          elevation: 4,
+          shadowColor: THEME.colors.sacredCrimson,
+          shadowOffset: { width: 0, height: -2 },
+          shadowOpacity: 0.05,
+          shadowRadius: 8,
+        },
+        tabBarActiveTintColor: THEME.colors.sacredCrimson,
+        tabBarInactiveTintColor: THEME.colors.inkSubtle,
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: "800",
+          letterSpacing: 0.5,
+          marginTop: 2,
+        },
       }}
     >
       <Tabs.Screen
-        name="appointments"
+        name="chat"
         options={{
-          title: "ቀጠሮዎች",
-          headerTitle: "የንስሐ ቀጠሮዎች",
-          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <Calendar color={color} size={size} />
+          title: "ምስጢር",
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <MessageSquare color={color} size={20} />
+            </View>
           ),
         }}
       />
       <Tabs.Screen
-        name="chat"
+        name="appointments"
         options={{
-          title: "ውይይት",
-          headerTitle: "መልእክቶች",
-          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <MessageSquare color={color} size={size} />
+          title: "ቀጠሮ",
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <Calendar color={color} size={20} />
+            </View>
           ),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
-          title: "መለያ",
-          headerTitle: "መለያዬ",
-          tabBarIcon: ({ color, size }: { color: string; size: number }) => (
-            <User color={color} size={size} />
+          title: "መገለጫ",
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <User color={color} size={20} />
+            </View>
           ),
         }}
       />
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  headerTitleBox: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brandTitleText: {
+    fontSize: 17,
+    fontWeight: "900",
+    color: THEME.colors.sacredCrimson,
+    letterSpacing: -0.3,
+  },
+  brandSubText: {
+    fontSize: 8,
+    fontWeight: "800",
+    color: THEME.colors.sacredAmber,
+    letterSpacing: 2,
+  },
+  iconWrapper: {
+    paddingHorizontal: 12,
+    paddingVertical: 3,
+    borderRadius: THEME.radii.md,
+  },
+  iconWrapperActive: {
+    backgroundColor: THEME.colors.sacredCrimsonLight,
+  },
+});

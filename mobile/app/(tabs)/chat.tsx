@@ -10,9 +10,10 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { MessageCircle, Users, ChevronRight } from "lucide-react-native";
+import { MessageCircle, Users, ChevronRight, Lock } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
+import { THEME } from "../../src/constants/theme";
 
 interface Conversation {
   id: string;
@@ -37,7 +38,7 @@ export default function ChatScreen() {
       const res = await apiRequest<Conversation[]>("/api/message/conversation");
       return res || [];
     },
-    refetchInterval: 10000, // 10s background refresh
+    refetchInterval: 8000,
   });
 
   const conversations = data || [];
@@ -59,46 +60,55 @@ export default function ChatScreen() {
     <View style={styles.container}>
       <FlatList
         data={conversations}
-        keyExtractor={(item: Conversation) => item.id}
+        keyExtractor={(item) => item.id}
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}
             onRefresh={refetch}
-            tintColor="#D97706"
+            tintColor={THEME.colors.sacredAmber}
           />
         }
         contentContainerStyle={styles.listContainer}
         ListEmptyComponent={
           !isLoading ? (
             <View style={styles.emptyContainer}>
-              <MessageCircle color="#64748B" size={48} />
+              <View style={styles.emptyIconCircle}>
+                <MessageCircle color={THEME.colors.sacredAmber} size={36} />
+              </View>
               <Text style={styles.emptyTitle}>ምንም የውይይት ክፍል የለም</Text>
               <Text style={styles.emptySubtitle}>
-                የተመደቡበት የውይይት ክፍል ሲኖር እዚህ ይታያል።
+                የተመደቡበት የውይይት ክፍል ወይም የንስሐ ግንኙነት ሲኖር እዚህ በምስጢር
+                ይቀመጣል።
               </Text>
             </View>
           ) : (
-            <ActivityIndicator color="#D97706" style={{ marginTop: 40 }} />
+            <ActivityIndicator
+              color={THEME.colors.sacredAmber}
+              style={{ marginTop: 40 }}
+            />
           )
         }
-        renderItem={({ item }: { item: Conversation }) => {
+        renderItem={({ item }) => {
           const isCommonHouse = item.role === "COMMON_HOUSE";
 
           return (
             <TouchableOpacity
               style={styles.roomCard}
               onPress={() => router.push(`/chat/${item.id}` as any)}
+              activeOpacity={0.8}
             >
               <View
                 style={[
                   styles.iconCircle,
-                  isCommonHouse && { backgroundColor: "#1E3A8A" },
+                  isCommonHouse
+                    ? styles.iconCircleCommon
+                    : styles.iconCircleDirect,
                 ]}
               >
                 {isCommonHouse ? (
-                  <Users color="#60A5FA" size={24} />
+                  <Users color={THEME.colors.surface} size={22} />
                 ) : (
-                  <MessageCircle color="#D97706" size={24} />
+                  <MessageCircle color={THEME.colors.surface} size={22} />
                 )}
               </View>
 
@@ -127,7 +137,7 @@ export default function ChatScreen() {
                       <Text style={styles.unreadText}>{item.unreadCount}</Text>
                     </View>
                   ) : (
-                    <ChevronRight color="#475569" size={16} />
+                    <ChevronRight color={THEME.colors.inkSubtle} size={16} />
                   )}
                 </View>
               </View>
@@ -142,30 +152,37 @@ export default function ChatScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0B1120",
+    backgroundColor: THEME.colors.sanctuaryBg,
   },
   listContainer: {
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     flexGrow: 1,
   },
   roomCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#1E293B",
-    borderRadius: 12,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: THEME.radii.lg,
     padding: 14,
-    marginBottom: 12,
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: THEME.colors.border,
+    ...THEME.shadows.card,
   },
   iconCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#78350F",
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 14,
+  },
+  iconCircleDirect: {
+    backgroundColor: THEME.colors.sacredCrimson,
+  },
+  iconCircleCommon: {
+    backgroundColor: THEME.colors.sacredAmber,
   },
   roomInfo: {
     flex: 1,
@@ -177,15 +194,16 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   roomTitle: {
-    color: "#F8FAFC",
+    color: THEME.colors.inkPrimary,
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
     flex: 1,
     marginRight: 8,
   },
   timeText: {
-    color: "#64748B",
-    fontSize: 12,
+    color: THEME.colors.inkSubtle,
+    fontSize: 11,
+    fontWeight: "600",
   },
   subRow: {
     flexDirection: "row",
@@ -193,38 +211,48 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   previewText: {
-    color: "#94A3B8",
+    color: THEME.colors.inkMuted,
     fontSize: 13,
     flex: 1,
     marginRight: 8,
   },
   unreadBadge: {
-    backgroundColor: "#D97706",
+    backgroundColor: THEME.colors.sacredCrimson,
     borderRadius: 10,
     paddingHorizontal: 7,
     paddingVertical: 2,
   },
   unreadText: {
     color: "#FFFFFF",
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 10,
+    fontWeight: "800",
   },
   emptyContainer: {
     alignItems: "center",
     justifyContent: "center",
     paddingTop: 80,
+    paddingHorizontal: 32,
+  },
+  emptyIconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: THEME.colors.amberLight,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
   },
   emptyTitle: {
-    color: "#E2E8F0",
+    color: THEME.colors.inkPrimary,
     fontSize: 16,
-    fontWeight: "600",
-    marginTop: 12,
+    fontWeight: "800",
     marginBottom: 6,
+    textAlign: "center",
   },
   emptySubtitle: {
-    color: "#64748B",
+    color: THEME.colors.inkSubtle,
     fontSize: 13,
     textAlign: "center",
-    paddingHorizontal: 32,
+    lineHeight: 19,
   },
 });

@@ -1,3 +1,22 @@
+// Polyfill WeakRef and FinalizationRegistry for Hermes engine
+if (typeof (global as any).WeakRef === "undefined") {
+  (global as any).WeakRef = class WeakRef {
+    private val: any;
+    constructor(val: any) {
+      this.val = val;
+    }
+    deref() {
+      return this.val;
+    }
+  };
+}
+if (typeof (global as any).FinalizationRegistry === "undefined") {
+  (global as any).FinalizationRegistry = class FinalizationRegistry {
+    register() {}
+    unregister() {}
+  };
+}
+
 import React, { useEffect } from "react";
 import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -7,6 +26,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { registerGlobals } from "@livekit/react-native";
 import { AuthProvider } from "../src/lib/auth-context";
 import { notificationService } from "../src/lib/notifications";
+import { THEME } from "../src/constants/theme";
 
 // Register LiveKit WebRTC and Audio Globals
 try {
@@ -40,9 +60,11 @@ export default function RootLayout() {
 
     // 2. Register for Push Notifications & Setup Deep-link navigation
     notificationService.registerForPushNotifications();
-    const cleanupListeners = notificationService.setupListeners((targetRoute) => {
-      router.push(targetRoute as any);
-    });
+    const cleanupListeners = notificationService.setupListeners(
+      (targetRoute) => {
+        router.push(targetRoute as any);
+      }
+    );
 
     return () => {
       cleanupListeners();
@@ -53,13 +75,16 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <StatusBar style="light" />
+          <StatusBar style="dark" backgroundColor={THEME.colors.navigationBg} />
           <Stack
             screenOptions={{
-              headerStyle: { backgroundColor: "#0F172A" },
-              headerTintColor: "#F8FAFC",
-              headerTitleStyle: { fontWeight: "600" },
-              contentStyle: { backgroundColor: "#0B1120" },
+              headerStyle: { backgroundColor: THEME.colors.navigationBg },
+              headerTintColor: THEME.colors.sacredCrimson,
+              headerTitleStyle: {
+                fontWeight: "800",
+                color: THEME.colors.sacredCrimson,
+              },
+              contentStyle: { backgroundColor: THEME.colors.sanctuaryBg },
             }}
           >
             <Stack.Screen name="index" options={{ headerShown: false }} />
@@ -71,4 +96,3 @@ export default function RootLayout() {
     </SafeAreaProvider>
   );
 }
-

@@ -1,10 +1,24 @@
 import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+} from "react-native";
 import { useRouter } from "expo-router";
-import { LogOut, ShieldCheck, User, Calendar, CheckCircle2 } from "lucide-react-native";
+import {
+  LogOut,
+  ShieldCheck,
+  User,
+  Calendar,
+  CheckCircle2,
+  Award,
+} from "lucide-react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../../src/lib/auth-context";
 import { apiRequest } from "../../src/lib/api";
+import { THEME } from "../../src/constants/theme";
 
 interface Appointment {
   id: string;
@@ -23,9 +37,10 @@ export default function ProfileScreen() {
   }>({
     queryKey: ["appointments"],
     queryFn: async () => {
-      return await apiRequest<{ success: boolean; appointments: Appointment[] }>(
-        "/api/appointments"
-      );
+      return await apiRequest<{
+        success: boolean;
+        appointments: Appointment[];
+      }>("/api/appointments");
     },
   });
 
@@ -54,7 +69,7 @@ export default function ProfileScreen() {
   const getRoleLabel = (r: string | null) => {
     switch (r) {
       case "FATHER":
-        return "የንስሐ አባት (Spiritual Father)";
+        return "መምህረ ንስሐ (Spiritual Father)";
       case "STUDENT":
         return "የንስሐ ልጅ (Child of Confession)";
       case "GOVERNOR":
@@ -80,23 +95,33 @@ export default function ProfileScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Identity Card */}
       <View style={styles.profileHeader}>
-        <View style={styles.avatarCircle}>
-          <User color="#D97706" size={36} />
+        <View style={styles.avatarHaloContainer}>
+          <View style={styles.avatarGlow} />
+          <View style={styles.avatarCircle}>
+            <User color={THEME.colors.sacredAmber} size={36} />
+          </View>
         </View>
+
         <Text style={styles.uidText}>{eotcUid || "EOTC User"}</Text>
-        <Text style={styles.roleText}>{getRoleLabel(role)}</Text>
+
+        <View style={styles.rolePill}>
+          <Award color={THEME.colors.sacredAmber} size={14} />
+          <Text style={styles.roleText}>{getRoleLabel(role)}</Text>
+        </View>
       </View>
 
-      {/* Spiritual Timeline — Driven directly by appointments */}
+      {/* Spiritual Timeline */}
       {role === "STUDENT" && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>መንፈሳዊ ጊዜ ሰሌዳ (Spiritual Timeline)</Text>
 
           <View style={styles.timelineItem}>
-            <CheckCircle2 color="#059669" size={20} />
+            <View style={styles.timelineIconBox}>
+              <CheckCircle2 color={THEME.colors.success} size={20} />
+            </View>
             <View style={styles.timelineContent}>
               <Text style={styles.timelineLabel}>የመጨረሻ ንስሐ</Text>
               <Text style={styles.timelineValue}>
@@ -105,8 +130,15 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          <View style={[styles.timelineItem, { borderBottomWidth: 0, paddingBottom: 0 }]}>
-            <Calendar color="#D97706" size={20} />
+          <View
+            style={[
+              styles.timelineItem,
+              { borderBottomWidth: 0, paddingBottom: 0, marginBottom: 0 },
+            ]}
+          >
+            <View style={styles.timelineIconBox}>
+              <Calendar color={THEME.colors.sacredAmber} size={20} />
+            </View>
             <View style={styles.timelineContent}>
               <Text style={styles.timelineLabel}>ቀጣይ የተረጋገጠ ቀጠሮ</Text>
               <Text style={styles.timelineValue}>
@@ -120,74 +152,113 @@ export default function ProfileScreen() {
       {/* Security Status */}
       <View style={styles.section}>
         <View style={styles.securityRow}>
-          <ShieldCheck color="#10B981" size={20} />
-          <Text style={styles.securityText}>
-            የስክሪን ደህንነት (FLAG_SECURE) ነቅቷል
-          </Text>
+          <ShieldCheck color={THEME.colors.success} size={22} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.securityTitle}>የስክሪን ደህንነት (FLAG_SECURE)</Text>
+            <Text style={styles.securitySub}>
+              ምስጢራዊነትን ለመጠበቅ የስክሪን ቅጂ (Screenshot) ተከልክሏል።
+            </Text>
+          </View>
         </View>
       </View>
 
       {/* Logout */}
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-        <LogOut color="#EF4444" size={20} />
-        <Text style={styles.logoutText}>ከመለያ ውጣ</Text>
+      <TouchableOpacity
+        style={styles.logoutButton}
+        onPress={handleLogout}
+        activeOpacity={0.85}
+      >
+        <LogOut color={THEME.colors.error} size={18} />
+        <Text style={styles.logoutText}>ከመለያ ውጣ (Sign Out)</Text>
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0B1120",
-    padding: 20,
+    backgroundColor: THEME.colors.sanctuaryBg,
+  },
+  content: {
+    padding: 18,
+    paddingBottom: 40,
   },
   profileHeader: {
     alignItems: "center",
-    backgroundColor: "#1E293B",
-    borderRadius: 12,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: THEME.radii.xxl,
     padding: 24,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: THEME.colors.border,
+    ...THEME.shadows.card,
   },
-  avatarCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#78350F",
+  avatarHaloContainer: {
+    position: "relative",
+    width: 80,
+    height: 80,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 12,
   },
+  avatarGlow: {
+    position: "absolute",
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: THEME.colors.amberLight,
+  },
+  avatarCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: THEME.colors.surfaceAlt,
+    borderWidth: 2,
+    borderColor: THEME.colors.amberBorder,
+    alignItems: "center",
+    justifyContent: "center",
+    ...THEME.shadows.card,
+  },
   uidText: {
-    color: "#F8FAFC",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 4,
+    color: THEME.colors.inkPrimary,
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  rolePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: THEME.colors.buttonDark,
+    borderRadius: THEME.radii.pill,
+    paddingVertical: 5,
+    paddingHorizontal: 14,
   },
   roleText: {
-    color: "#D97706",
-    fontSize: 14,
-    fontWeight: "600",
+    color: THEME.colors.sacredAmber,
+    fontSize: 12,
+    fontWeight: "800",
   },
   section: {
-    backgroundColor: "#1E293B",
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: THEME.radii.lg,
+    padding: 18,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: THEME.colors.border,
+    ...THEME.shadows.card,
   },
   sectionTitle: {
-    color: "#CBD5E1",
-    fontSize: 13,
-    fontWeight: "700",
+    color: THEME.colors.inkMuted,
+    fontSize: 11,
+    fontWeight: "800",
     textTransform: "uppercase",
-    letterSpacing: 0.5,
+    letterSpacing: 1,
     marginBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "#334155",
+    borderBottomColor: THEME.colors.borderLight,
     paddingBottom: 8,
   },
   timelineItem: {
@@ -197,45 +268,61 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     marginBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#334155",
+    borderBottomColor: THEME.colors.borderLight,
+  },
+  timelineIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: THEME.colors.surfaceAlt,
+    alignItems: "center",
+    justifyContent: "center",
   },
   timelineContent: {
     flex: 1,
   },
   timelineLabel: {
-    color: "#94A3B8",
-    fontSize: 12,
+    color: THEME.colors.inkSubtle,
+    fontSize: 11,
+    fontWeight: "600",
   },
   timelineValue: {
-    color: "#F8FAFC",
+    color: THEME.colors.inkPrimary,
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "800",
     marginTop: 2,
   },
   securityRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
   },
-  securityText: {
-    color: "#CBD5E1",
-    fontSize: 14,
+  securityTitle: {
+    color: THEME.colors.inkPrimary,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  securitySub: {
+    color: THEME.colors.inkSubtle,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
   },
   logoutButton: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    backgroundColor: "#450A0A",
-    borderColor: "#7F1D1D",
+    backgroundColor: THEME.colors.errorBg,
+    borderColor: THEME.colors.errorBorder,
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: THEME.radii.lg,
     paddingVertical: 14,
-    marginTop: "auto",
+    marginTop: 8,
   },
   logoutText: {
-    color: "#FCA5A5",
-    fontSize: 15,
-    fontWeight: "600",
+    color: THEME.colors.error,
+    fontSize: 14,
+    fontWeight: "800",
   },
 });

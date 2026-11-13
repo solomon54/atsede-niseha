@@ -13,10 +13,20 @@ import {
   Alert,
 } from "react-native";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Calendar, Plus, X, Clock, MapPin, CheckCircle, XCircle } from "lucide-react-native";
+import {
+  Calendar,
+  Plus,
+  X,
+  Clock,
+  MapPin,
+  CheckCircle,
+  XCircle,
+  User,
+} from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
+import { THEME } from "../../src/constants/theme";
 
 type AppointmentType = "NISEHA" | "COUNSELING";
 type AppointmentStatus = "REQUESTED" | "CONFIRMED" | "COMPLETED" | "CANCELLED";
@@ -53,17 +63,18 @@ export default function AppointmentsScreen() {
   const [note, setNote] = useState("");
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
-  // 1. Query Appointments (Read cache, then sync with API)
-  const { data, isLoading, refetch, isRefetching } = useQuery<AppointmentsResponse>({
-    queryKey: ["appointments"],
-    queryFn: async () => {
-      const res = await apiRequest<AppointmentsResponse>("/api/appointments");
-      if (res?.appointments) {
-        offlineCache.saveAppointments(res.appointments);
-      }
-      return res;
-    },
-  });
+  // 1. Query Appointments
+  const { data, isLoading, refetch, isRefetching } =
+    useQuery<AppointmentsResponse>({
+      queryKey: ["appointments"],
+      queryFn: async () => {
+        const res = await apiRequest<AppointmentsResponse>("/api/appointments");
+        if (res?.appointments) {
+          offlineCache.saveAppointments(res.appointments);
+        }
+        return res;
+      },
+    });
 
   React.useEffect(() => {
     async function hydrateFromSqlite() {
@@ -101,7 +112,7 @@ export default function AppointmentsScreen() {
     },
   });
 
-  // 3. Update Status Mutation (Confirm / Cancel / Complete)
+  // 3. Update Status Mutation
   const updateStatus = async (id: string, status: AppointmentStatus) => {
     setActionLoadingId(id);
     try {
@@ -145,87 +156,104 @@ export default function AppointmentsScreen() {
   const getStatusBadge = (status: AppointmentStatus) => {
     switch (status) {
       case "CONFIRMED":
-        return { label: "የተረጋገጠ", bg: "#065F46", text: "#6EE7B7" };
+        return {
+          label: "የተረጋገጠ",
+          bg: THEME.colors.successBg,
+          text: THEME.colors.success,
+        };
       case "COMPLETED":
-        return { label: "የተጠናቀቀ", bg: "#1E293B", text: "#94A3B8" };
+        return { label: "የተጠናቀቀ", bg: "#F1F5F9", text: "#64748B" };
+      case "REQUESTED":
+        return {
+          label: "በመጠባበቅ ላይ",
+          bg: THEME.colors.amberLight,
+          text: THEME.colors.sacredAmber,
+        };
       case "CANCELLED":
-        return { label: "የተሰረዘ", bg: "#7F1D1D", text: "#FCA5A5" };
+        return {
+          label: "የተሰረዘ",
+          bg: THEME.colors.errorBg,
+          text: THEME.colors.error,
+        };
       default:
-        return { label: "በመጠባበቅ ላይ", bg: "#78350F", text: "#FCD34D" };
+        return { label: status, bg: "#F1F5F9", text: "#64748B" };
     }
   };
 
-  const getTypeLabel = (t: AppointmentType) => {
-    return t === "NISEHA" ? "የንስሐ ቀጠሮ" : "የመንፈሳዊ ምክር ቀጠሮ";
-  };
-
-  const formatSchedule = (iso: string) => {
+  const formatDateTime = (iso: string) => {
     try {
       const d = new Date(iso);
       if (isNaN(d.getTime())) return iso;
-      return d.toLocaleDateString("am-ET", {
-        weekday: "short",
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      return (
+        d.toLocaleDateString("am-ET", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        }) +
+        " " +
+        d.toLocaleTimeString("am-ET", { hour: "2-digit", minute: "2-digit" })
+      );
     } catch {
       return iso;
     }
   };
 
-  const appointmentsList = data?.appointments || [];
+  const appointments = data?.appointments || [];
 
   return (
     <View style={styles.container}>
-      {/* Header Info for Student */}
-      {role === "STUDENT" && data?.fatherName && (
+      {/* Father Banner for Students */}
+      {data?.fatherName && role === "STUDENT" && (
         <View style={styles.fatherBanner}>
           <Text style={styles.fatherBannerText}>
-            የንስሐ አባት፡ <Text style={styles.bold}>{data.fatherName}</Text>
+            የንስሐ አባትዎ፡{" "}
+            <Text style={styles.bold}>{data.fatherName}</Text>
           </Text>
         </View>
       )}
 
-      {/* Appointment List */}
       <FlatList
-        data={appointmentsList}
-        keyExtractor={(item: Appointment) => item.id}
+        data={appointments}
+        keyExtractor={(item) => item.id}
         refreshControl={
           <RefreshControl
             refreshing={isRefetching}
             onRefresh={refetch}
-            tintColor="#D97706"
+            tintColor={THEME.colors.sacredAmber}
           />
         }
         contentContainerStyle={styles.listContainer}
         ListEmptyComponent={
           !isLoading ? (
             <View style={styles.emptyContainer}>
-              <Calendar color="#64748B" size={48} />
-              <Text style={styles.emptyTitle}>ምንም ቀጠሮ አልተገኘም</Text>
+              <View style={styles.emptyIconCircle}>
+                <Calendar color={THEME.colors.sacredAmber} size={36} />
+              </View>
+              <Text style={styles.emptyTitle}>ምንም የተቀጠረ ቀጠሮ የለም</Text>
               <Text style={styles.emptySubtitle}>
-                {role === "STUDENT"
-                  ? "ከታች ያለውን ቁልፍ በመንካት አዲስ ቀጠሮ መጠየቅ ይችላሉ።"
-                  : "በአሁኑ ወቅት የቀረበ የቀጠሮ ጥያቄ የለም።"}
+                ለቃል ንስሐ ወይም ለመንፈሳዊ ምክክር አዲስ ቀጠሮ እዚህ መመዝገብ ይችላሉ።
               </Text>
             </View>
           ) : (
-            <ActivityIndicator color="#D97706" style={{ marginTop: 40 }} />
+            <ActivityIndicator
+              color={THEME.colors.sacredAmber}
+              style={{ marginTop: 40 }}
+            />
           )
         }
-        renderItem={({ item }: { item: Appointment }) => {
+        renderItem={({ item }) => {
           const badge = getStatusBadge(item.status);
           const isPending = item.status === "REQUESTED";
           const isConfirmed = item.status === "CONFIRMED";
-          const isActing = actionLoadingId === item.id;
+          const isFather = role === "FATHER";
+          const isLoadingAction = actionLoadingId === item.id;
 
           return (
             <View style={styles.card}>
               <View style={styles.cardTop}>
-                <Text style={styles.typeTag}>{getTypeLabel(item.type)}</Text>
+                <Text style={styles.typeTag}>
+                  {item.type === "NISEHA" ? "የንስሐ ቀጠሮ" : "የምክክር ቀጠሮ"}
+                </Text>
                 <View style={[styles.badge, { backgroundColor: badge.bg }]}>
                   <Text style={[styles.badgeText, { color: badge.text }]}>
                     {badge.label}
@@ -233,78 +261,66 @@ export default function AppointmentsScreen() {
                 </View>
               </View>
 
-              {role === "FATHER" && item.childName && (
-                <Text style={styles.personName}>
-                  የንስሐ ልጅ፡ {item.childName}{" "}
-                  {item.childEotcUid ? `(${item.childEotcUid})` : ""}
-                </Text>
-              )}
-
-              <View style={styles.detailRow}>
-                <Clock color="#94A3B8" size={15} />
-                <Text style={styles.detailText}>
-                  {formatSchedule(item.scheduledAt)}
-                </Text>
-              </View>
-
-              {item.location && (
+              {item.childName && isFather && (
                 <View style={styles.detailRow}>
-                  <MapPin color="#94A3B8" size={15} />
-                  <Text style={styles.detailText}>{item.location}</Text>
+                  <User color={THEME.colors.inkSubtle} size={15} />
+                  <Text style={styles.personName}>
+                    {item.childName}{" "}
+                    {item.childEotcUid ? `(${item.childEotcUid})` : ""}
+                  </Text>
                 </View>
               )}
 
-              {item.message && (
-                <Text style={styles.messageText}>« {item.message} »</Text>
-              )}
+              <View style={styles.detailRow}>
+                <Clock color={THEME.colors.sacredAmber} size={15} />
+                <Text style={styles.detailText}>
+                  {formatDateTime(item.scheduledAt)}
+                </Text>
+              </View>
+
+              {item.location ? (
+                <View style={styles.detailRow}>
+                  <MapPin color={THEME.colors.inkSubtle} size={15} />
+                  <Text style={styles.detailText}>{item.location}</Text>
+                </View>
+              ) : null}
+
+              {item.message ? (
+                <Text style={styles.messageText}>"{item.message}"</Text>
+              ) : null}
 
               {/* Action Buttons */}
               <View style={styles.actionRow}>
-                {role === "FATHER" && isPending && (
-                  <>
-                    <TouchableOpacity
-                      style={[styles.btn, styles.confirmBtn]}
-                      onPress={() => updateStatus(item.id, "CONFIRMED")}
-                      disabled={isActing}
-                    >
-                      <CheckCircle color="#FFFFFF" size={15} />
-                      <Text style={styles.btnText}>አረጋግጥ</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.btn, styles.cancelBtn]}
-                      onPress={() => updateStatus(item.id, "CANCELLED")}
-                      disabled={isActing}
-                    >
-                      <XCircle color="#FCA5A5" size={15} />
-                      <Text style={[styles.btnText, { color: "#FCA5A5" }]}>
-                        ሰርዝ
-                      </Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-
-                {role === "FATHER" && isConfirmed && (
+                {isFather && isPending && (
                   <TouchableOpacity
-                    style={[styles.btn, styles.completeBtn]}
-                    onPress={() => updateStatus(item.id, "COMPLETED")}
-                    disabled={isActing}
+                    style={[styles.btn, styles.confirmBtn]}
+                    onPress={() => updateStatus(item.id, "CONFIRMED")}
+                    disabled={isLoadingAction}
                   >
                     <CheckCircle color="#FFFFFF" size={15} />
-                    <Text style={styles.btnText}>እንደተጠናቀቀ ምልክት አድርግ</Text>
+                    <Text style={styles.btnText}>አረጋግጥ</Text>
                   </TouchableOpacity>
                 )}
 
-                {role === "STUDENT" && isPending && (
+                {isFather && isConfirmed && (
+                  <TouchableOpacity
+                    style={[styles.btn, styles.completeBtn]}
+                    onPress={() => updateStatus(item.id, "COMPLETED")}
+                    disabled={isLoadingAction}
+                  >
+                    <CheckCircle color="#FFFFFF" size={15} />
+                    <Text style={styles.btnText}>ተፈጽሟል</Text>
+                  </TouchableOpacity>
+                )}
+
+                {(isPending || isConfirmed) && (
                   <TouchableOpacity
                     style={[styles.btn, styles.cancelBtn]}
                     onPress={() => updateStatus(item.id, "CANCELLED")}
-                    disabled={isActing}
+                    disabled={isLoadingAction}
                   >
-                    <XCircle color="#FCA5A5" size={15} />
-                    <Text style={[styles.btnText, { color: "#FCA5A5" }]}>
-                      ጥያቄውን ሰርዝ
-                    </Text>
+                    <XCircle color={THEME.colors.error} size={15} />
+                    <Text style={styles.cancelBtnText}>ሰርዝ</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -313,35 +329,36 @@ export default function AppointmentsScreen() {
         }}
       />
 
-      {/* Student Request FAB */}
-      {role === "STUDENT" && (
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => setModalVisible(true)}
-        >
-          <Plus color="#FFFFFF" size={24} />
-          <Text style={styles.fabText}>ቀጠሮ ጠይቅ</Text>
-        </TouchableOpacity>
-      )}
+      {/* Floating Action Button */}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => setModalVisible(true)}
+        activeOpacity={0.85}
+      >
+        <Plus color="#FFFFFF" size={18} />
+        <Text style={styles.fabText}>አዲስ ቀጠሮ</Text>
+      </TouchableOpacity>
 
-      {/* Request Appointment Modal */}
+      {/* Modal: New Appointment */}
       <Modal
         visible={modalVisible}
+        transparent
         animationType="slide"
-        transparent={true}
         onRequestClose={() => setModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>አዲስ ቀጠሮ መጠየቂያ</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}>
-                <X color="#94A3B8" size={22} />
+              <Text style={styles.modalTitle}>አዲስ ቀጠሮ መመዝገቢያ</Text>
+              <TouchableOpacity
+                onPress={() => setModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <X color={THEME.colors.inkMuted} size={22} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView>
-              {/* Type Selection */}
+            <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.formLabel}>የቀጠሮ ዓይነት</Text>
               <View style={styles.typeSelector}>
                 <TouchableOpacity
@@ -379,44 +396,38 @@ export default function AppointmentsScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* Date Input */}
-              <Text style={styles.formLabel}>የቀጠሮ ቀን (ዓ.ም / እ.ኤ.አ)</Text>
+              <Text style={styles.formLabel}>ቀን (ዓ.ም / ምሳሌ፡ 2026-11-20)</Text>
               <TextInput
                 style={styles.formInput}
-                placeholder="ምሳሌ፡ 2026-11-25"
-                placeholderTextColor="#64748B"
+                placeholder="2026-11-20"
+                placeholderTextColor={THEME.colors.inkSubtle}
                 value={scheduledDate}
                 onChangeText={setScheduledDate}
               />
 
-              {/* Time Input */}
-              <Text style={styles.formLabel}>ሰዓት (አማራጭ)</Text>
+              <Text style={styles.formLabel}>ሰዓት (ምሳሌ፡ 10:00)</Text>
               <TextInput
                 style={styles.formInput}
-                placeholder="ምሳሌ፡ 14:30"
-                placeholderTextColor="#64748B"
+                placeholder="10:00"
+                placeholderTextColor={THEME.colors.inkSubtle}
                 value={scheduledTime}
                 onChangeText={setScheduledTime}
               />
 
-              {/* Location Input */}
               <Text style={styles.formLabel}>ቦታ</Text>
               <TextInput
                 style={styles.formInput}
-                placeholder="በአካል (በቤተክርስቲያን) ወይም በቪዲዮ ጥሪ"
-                placeholderTextColor="#64748B"
+                placeholder="በአካል (በቤተክርስቲያን)"
+                placeholderTextColor={THEME.colors.inkSubtle}
                 value={location}
                 onChangeText={setLocation}
               />
 
-              {/* Logistics Note */}
-              <Text style={styles.formLabel}>
-                ማስታወሻ (የሰዓት ወይም የቦታ ማብራሪያ ብቻ)
-              </Text>
+              <Text style={styles.formLabel}>ማስታወሻ / መልእክት</Text>
               <TextInput
                 style={[styles.formInput, styles.textArea]}
-                placeholder="አጭር መልእክት ያስገቡ..."
-                placeholderTextColor="#64748B"
+                placeholder="ለአባትዎ ማስታወሻ ያስቀምጡ..."
+                placeholderTextColor={THEME.colors.inkSubtle}
                 value={note}
                 onChangeText={setNote}
                 multiline
@@ -427,6 +438,7 @@ export default function AppointmentsScreen() {
                 style={styles.submitBtn}
                 onPress={handleCreate}
                 disabled={createMutation.isPending}
+                activeOpacity={0.85}
               >
                 {createMutation.isPending ? (
                   <ActivityIndicator color="#FFFFFF" />
@@ -445,51 +457,52 @@ export default function AppointmentsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0B1120",
+    backgroundColor: THEME.colors.sanctuaryBg,
   },
   fatherBanner: {
-    backgroundColor: "#1E293B",
+    backgroundColor: THEME.colors.navigationBg,
     paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     borderBottomWidth: 1,
-    borderBottomColor: "#334155",
+    borderBottomColor: THEME.colors.sacredCrimsonBorder,
   },
   fatherBannerText: {
-    color: "#CBD5E1",
+    color: THEME.colors.inkSecondary,
     fontSize: 13,
   },
   bold: {
-    fontWeight: "700",
-    color: "#D97706",
+    fontWeight: "800",
+    color: THEME.colors.sacredCrimson,
   },
   listContainer: {
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     paddingBottom: 90,
   },
   card: {
-    backgroundColor: "#1E293B",
-    borderRadius: 12,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: THEME.radii.lg,
     padding: 16,
-    marginBottom: 14,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: THEME.colors.border,
+    ...THEME.shadows.card,
   },
   cardTop: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: 10,
   },
   typeTag: {
-    color: "#D97706",
+    color: THEME.colors.sacredCrimson,
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "800",
   },
   personName: {
-    color: "#F8FAFC",
+    color: THEME.colors.inkPrimary,
     fontSize: 14,
-    fontWeight: "600",
-    marginBottom: 6,
+    fontWeight: "700",
   },
   detailRow: {
     flexDirection: "row",
@@ -498,16 +511,17 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   detailText: {
-    color: "#CBD5E1",
+    color: THEME.colors.inkSecondary,
     fontSize: 13,
+    fontWeight: "600",
   },
   messageText: {
-    color: "#94A3B8",
+    color: THEME.colors.inkMuted,
     fontSize: 13,
     fontStyle: "italic",
     marginTop: 8,
     borderLeftWidth: 2,
-    borderLeftColor: "#475569",
+    borderLeftColor: THEME.colors.amberBorder,
     paddingLeft: 8,
   },
   badge: {
@@ -516,161 +530,177 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   badgeText: {
-    fontSize: 12,
-    fontWeight: "600",
+    fontSize: 11,
+    fontWeight: "700",
   },
   actionRow: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 14,
+    marginTop: 12,
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: "#334155",
+    borderTopColor: THEME.colors.borderLight,
   },
   btn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 6,
+    paddingHorizontal: 14,
+    borderRadius: THEME.radii.md,
   },
   confirmBtn: {
-    backgroundColor: "#059669",
+    backgroundColor: THEME.colors.success,
   },
   completeBtn: {
-    backgroundColor: "#2563EB",
+    backgroundColor: THEME.colors.buttonDark,
   },
   cancelBtn: {
-    backgroundColor: "#450A0A",
+    backgroundColor: THEME.colors.errorBg,
+    borderWidth: 1,
+    borderColor: THEME.colors.errorBorder,
   },
   btnText: {
     color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  cancelBtnText: {
+    color: THEME.colors.error,
+    fontSize: 12,
+    fontWeight: "700",
   },
   emptyContainer: {
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 60,
+    paddingTop: 80,
+    paddingHorizontal: 32,
+  },
+  emptyIconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: THEME.colors.amberLight,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
   },
   emptyTitle: {
-    color: "#E2E8F0",
+    color: THEME.colors.inkPrimary,
     fontSize: 16,
-    fontWeight: "600",
-    marginTop: 12,
+    fontWeight: "800",
     marginBottom: 6,
+    textAlign: "center",
   },
   emptySubtitle: {
-    color: "#64748B",
+    color: THEME.colors.inkSubtle,
     fontSize: 13,
     textAlign: "center",
-    paddingHorizontal: 32,
-    lineHeight: 18,
+    lineHeight: 19,
   },
   fab: {
     position: "absolute",
-    bottom: 20,
+    bottom: 24,
     right: 20,
-    backgroundColor: "#D97706",
+    backgroundColor: THEME.colors.sacredCrimson,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
     borderRadius: 30,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
-    elevation: 6,
+    ...THEME.shadows.button,
   },
   fabText: {
     color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.5,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.75)",
+    backgroundColor: "rgba(15, 23, 42, 0.4)",
     justifyContent: "flex-end",
   },
   modalContent: {
-    backgroundColor: "#1E293B",
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    padding: 20,
+    backgroundColor: THEME.colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 22,
     maxHeight: "85%",
+    ...THEME.shadows.card,
   },
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 18,
   },
   modalTitle: {
-    color: "#F8FAFC",
+    color: THEME.colors.inkPrimary,
     fontSize: 17,
-    fontWeight: "700",
+    fontWeight: "900",
   },
   formLabel: {
-    color: "#CBD5E1",
-    fontSize: 13,
-    fontWeight: "600",
+    color: THEME.colors.inkSecondary,
+    fontSize: 12,
+    fontWeight: "700",
     marginTop: 12,
     marginBottom: 6,
   },
   typeSelector: {
     flexDirection: "row",
     gap: 10,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   typeBtn: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: "#0F172A",
+    paddingVertical: 12,
+    borderRadius: THEME.radii.md,
+    backgroundColor: THEME.colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: THEME.colors.border,
     alignItems: "center",
   },
   typeBtnActive: {
-    borderColor: "#D97706",
-    backgroundColor: "#78350F",
+    borderColor: THEME.colors.sacredAmber,
+    backgroundColor: THEME.colors.amberLight,
   },
   typeBtnText: {
-    color: "#94A3B8",
+    color: THEME.colors.inkMuted,
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   typeBtnTextActive: {
-    color: "#FFFFFF",
+    color: THEME.colors.sacredAmber,
   },
   formInput: {
-    backgroundColor: "#0F172A",
-    borderRadius: 8,
+    backgroundColor: THEME.colors.surfaceAlt,
+    borderRadius: THEME.radii.md,
     borderWidth: 1,
-    borderColor: "#334155",
-    color: "#F8FAFC",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderColor: THEME.colors.border,
+    color: THEME.colors.inkPrimary,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     fontSize: 14,
   },
   textArea: {
-    height: 70,
+    height: 76,
     textAlignVertical: "top",
   },
   submitBtn: {
-    backgroundColor: "#D97706",
-    borderRadius: 8,
-    paddingVertical: 14,
+    backgroundColor: THEME.colors.buttonDark,
+    borderRadius: THEME.radii.lg,
+    paddingVertical: 16,
     alignItems: "center",
-    marginTop: 22,
-    marginBottom: 30,
+    marginTop: 24,
+    marginBottom: 32,
+    ...THEME.shadows.button,
   },
   submitBtnText: {
     color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "600",
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: 1,
   },
 });
