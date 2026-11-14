@@ -14,6 +14,7 @@ export interface SessionUser {
   uid: string;
   familyId: string;
   role?: string;
+  eotcUid?: string;
 }
 
 export async function requireSession(): Promise<SessionUser> {
@@ -23,6 +24,8 @@ export async function requireSession(): Promise<SessionUser> {
     throw new Error("UNAUTHORIZED");
   }
 
+  const claimEotcUid = (session as any).eotcUid as string | undefined;
+
   /**
    * 1. Fast Path: Trust existing claims if fully populated
    */
@@ -31,6 +34,7 @@ export async function requireSession(): Promise<SessionUser> {
       uid: session.uid,
       familyId: session.familyId,
       role: session.role,
+      eotcUid: claimEotcUid,
     };
   }
 
@@ -40,6 +44,7 @@ export async function requireSession(): Promise<SessionUser> {
    */
   let familyId = "";
   let role: string | undefined = session.role;
+  let docEotcUid: string | undefined = claimEotcUid;
 
   // Try Fathers Collection
   const fatherSnap = await adminDb
@@ -53,6 +58,7 @@ export async function requireSession(): Promise<SessionUser> {
     role = "FATHER";
     // In your system, the Father's UID is the familyId used in Channels
     familyId = data.familyId || data.fatherId || data.uid;
+    docEotcUid = data.eotcUid || claimEotcUid;
   }
 
   // Try Students Collection
@@ -70,6 +76,7 @@ export async function requireSession(): Promise<SessionUser> {
        * to store the family's root UID.
        */
       familyId = data.familyId || data.fatherId || data.uid;
+      docEotcUid = data.eotcUid || claimEotcUid;
     }
   }
 
@@ -84,6 +91,7 @@ export async function requireSession(): Promise<SessionUser> {
     if (!governorSnap.empty) {
       role = "GOVERNOR";
       familyId = ""; // Governors are outside the family isolation boundary
+      docEotcUid = governorSnap.docs[0].data()?.eotcUid || claimEotcUid;
     }
   }
 
@@ -103,5 +111,6 @@ export async function requireSession(): Promise<SessionUser> {
     uid: session.uid,
     familyId,
     role,
+    eotcUid: docEotcUid,
   };
 }

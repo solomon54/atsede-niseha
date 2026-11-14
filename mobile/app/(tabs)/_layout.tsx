@@ -2,10 +2,14 @@
 import React from "react";
 import { Tabs } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
-import { Calendar, MessageSquare, User } from "lucide-react-native";
+import { Calendar, MessageSquare, User, Users } from "lucide-react-native";
+import { useAuth } from "../../src/lib/auth-context";
 import { THEME } from "../../src/constants/theme";
 
 export default function TabsLayout() {
+  const { role } = useAuth();
+  const isFather = role === "FATHER";
+
   return (
     <Tabs
       screenOptions={{
@@ -47,9 +51,10 @@ export default function TabsLayout() {
       }}
     >
       <Tabs.Screen
-        name="chat"
+        name="children"
         options={{
-          title: "ምስጢር",
+          title: "መንጋዬ",
+          href: isFather ? "/(tabs)/children" : null,
           tabBarIcon: ({ color, focused }) => (
             <View
               style={[
@@ -57,7 +62,7 @@ export default function TabsLayout() {
                 focused && styles.iconWrapperActive,
               ]}
             >
-              <MessageSquare color={color} size={20} />
+              <Users color={color} size={20} />
             </View>
           ),
         }}
@@ -74,6 +79,22 @@ export default function TabsLayout() {
               ]}
             >
               <Calendar color={color} size={20} />
+            </View>
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="chat"
+        options={{
+          title: "ምስጢር",
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <MessageSquare color={color} size={20} />
             </View>
           ),
         }}

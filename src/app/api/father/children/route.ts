@@ -1,13 +1,23 @@
 // src/app/api/father/children/route.ts
 import { NextResponse } from "next/server";
 
+import { requireSession } from "@/core/auth/requireSession";
 import { adminDb } from "@/services/firebase/admin";
 import { BaseDirectoryRecord } from "@/shared/types";
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const fatherEotcUid = searchParams.get("fatherEotcUid");
+    let fatherEotcUid = searchParams.get("fatherEotcUid");
+
+    if (!fatherEotcUid) {
+      try {
+        const session = await requireSession();
+        fatherEotcUid = session.eotcUid || null;
+      } catch {
+        // Unauthenticated or no session
+      }
+    }
 
     if (!fatherEotcUid) {
       return NextResponse.json({ error: "Missing ID" }, { status: 400 });

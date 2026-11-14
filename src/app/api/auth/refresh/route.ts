@@ -21,6 +21,7 @@ export async function GET() {
       uid: session.uid,
       role: session.role,
       familyId: session.familyId,
+      eotcUid: session.eotcUid,
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "";
@@ -59,6 +60,7 @@ export async function POST() {
       uid: session.uid,
       role: session.role,
       familyId: session.familyId,
+      eotcUid: session.eotcUid,
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "";

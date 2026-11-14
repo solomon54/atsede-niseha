@@ -11,11 +11,13 @@ export default function IndexScreen() {
   useEffect(() => {
     if (!isLoading) {
       if (isAuthenticated) {
-        // Governors have no family-scoped appointments feed; send them to
-        // their profile instead of a screen that returns 403.
-        router.replace(
-          role === "GOVERNOR" ? "/(tabs)/profile" : "/(tabs)/appointments"
-        );
+        if (role === "FATHER") {
+          router.replace("/(tabs)/children");
+        } else if (role === "GOVERNOR") {
+          router.replace("/(tabs)/profile");
+        } else {
+          router.replace("/(tabs)/appointments");
+        }
       } else {
         router.replace("/(auth)/login");
       }

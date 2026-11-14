@@ -16,6 +16,7 @@ interface SessionIdentity {
   uid: string;
   role: string;
   familyId?: string;
+  eotcUid?: string;
 }
 
 interface AuthState {
@@ -158,11 +159,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUid(session.uid);
       setRole(session.role);
       setFamilyId(session.familyId ?? null);
+      if (session.eotcUid) {
+        setEotcUid(session.eotcUid);
+      }
 
       const meta = await authStorage.getUserMeta();
+      const resolvedEotcUid = session.eotcUid || meta.eotcUid || undefined;
       await authStorage.saveUserMeta(
         session.role,
-        meta.eotcUid ?? undefined,
+        resolvedEotcUid,
         session.uid,
         session.familyId
       );

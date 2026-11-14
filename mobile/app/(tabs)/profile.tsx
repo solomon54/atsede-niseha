@@ -8,12 +8,15 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import {
-  LogOut,
-  ShieldCheck,
-  User,
+  Award,
   Calendar,
   CheckCircle2,
-  Award,
+  ChevronRight,
+  LogOut,
+  Settings,
+  ShieldCheck,
+  User,
+  Users,
 } from "lucide-react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "../../src/lib/auth-context";
@@ -113,6 +116,26 @@ export default function ProfileScreen() {
         </View>
       </View>
 
+      {/* Father Flock Banner */}
+      {role === "FATHER" && (
+        <TouchableOpacity
+          style={styles.flockBanner}
+          onPress={() => router.push("/(tabs)/children" as any)}
+          activeOpacity={0.85}
+        >
+          <View style={styles.flockBannerIcon}>
+            <Users color={THEME.colors.sacredCrimson} size={22} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.flockBannerTitle}>የንስሐ ልጆች (መንጋዬ)</Text>
+            <Text style={styles.flockBannerSub}>
+              የልጆችዎን ዝርዝር ለማየት እና አዲስ ለመመዝገብ እዚህ ይጫኑ
+            </Text>
+          </View>
+          <ChevronRight color={THEME.colors.sacredCrimson} size={18} />
+        </TouchableOpacity>
+      )}
+
       {/* Spiritual Timeline */}
       {role === "STUDENT" && (
         <View style={styles.section}>
@@ -161,6 +184,16 @@ export default function ProfileScreen() {
           </View>
         </View>
       </View>
+
+      {/* Settings Action */}
+      <TouchableOpacity
+        style={styles.settingsButton}
+        onPress={() => router.push("/settings" as any)}
+        activeOpacity={0.85}
+      >
+        <Settings color={THEME.colors.inkPrimary} size={18} />
+        <Text style={styles.settingsText}>ቅንብሮች (Settings)</Text>
+      </TouchableOpacity>
 
       {/* Logout */}
       <TouchableOpacity
@@ -307,6 +340,52 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     marginTop: 2,
+  },
+  flockBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: THEME.colors.surface,
+    padding: 16,
+    borderRadius: THEME.radii.xl,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    marginBottom: 16,
+    gap: 12,
+  },
+  flockBannerIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: THEME.colors.sacredCrimsonLight,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  flockBannerTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: THEME.colors.inkPrimary,
+  },
+  flockBannerSub: {
+    fontSize: 11,
+    color: THEME.colors.inkMuted,
+    marginTop: 2,
+  },
+  settingsButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: THEME.colors.surface,
+    paddingVertical: 14,
+    borderRadius: THEME.radii.pill,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    marginBottom: 12,
+  },
+  settingsText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: THEME.colors.inkPrimary,
   },
   logoutButton: {
     flexDirection: "row",
