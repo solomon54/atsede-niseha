@@ -20,7 +20,7 @@ export default function ChatStackLayout() {
         },
       }}
     >
-      <Stack.Screen name="[channelId]" options={{ title: "ምስጢር ውይይት" }} />
+      <Stack.Screen name="[channelId]" options={{ title: "መልዕክት" }} />
     </Stack>
   );
 }

@@ -190,7 +190,7 @@ export default function SettingsScreen() {
 
           <View style={[styles.toggleRow, styles.borderTop]}>
             <View style={styles.toggleTextBlock}>
-              <Text style={styles.toggleTitle}>የምስጢር መልዕክት ማሳወቂያዎች</Text>
+              <Text style={styles.toggleTitle}>የመልዕክት ማሳወቂያዎች</Text>
               <Text style={styles.toggleSubtitle}>
                 አዲስ መንፈሳዊ መልዕክት ሲደርስዎት ፈጣን ማሳወቂያ ይደርሳል
               </Text>

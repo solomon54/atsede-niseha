@@ -13,7 +13,7 @@ export const NAVIGATION_ITEMS = [
   // ── Messaging (all roles) ──
   {
     label: "Messages",
-    ethLabel: "ምስጢር",
+    ethLabel: "መልዕክት",
     href: "/messages",
     icon: MessageSquare,
     roles: ["FATHER", "STUDENT", "GOVERNOR"],

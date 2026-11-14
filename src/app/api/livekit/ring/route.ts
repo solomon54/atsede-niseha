@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireSession } from "@/core/auth/requireSession";
 import { adminDb } from "@/services/firebase/admin";
+import { pusherServer } from "@/services/pusher";
 import {
   getChannelRecipientUids,
   getDisplayName,
@@ -64,6 +65,17 @@ export async function POST(req: NextRequest) {
         callerName,
       },
     });
+
+    // Also trigger instant in-app web socket alert via Pusher
+    try {
+      await pusherServer.trigger(`private-chat-${channelId}`, "incoming-call", {
+        channelId,
+        callerName,
+        callerUid: session.uid,
+      });
+    } catch (pusherErr) {
+      console.warn("[LiveKit Ring] Pusher alert error:", pusherErr);
+    }
 
     return NextResponse.json({
       success: true,

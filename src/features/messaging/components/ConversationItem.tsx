@@ -24,7 +24,7 @@ export function ConversationItem({ convo, active, onSelect, currentUserId }: Pro
     : null;
 
   const displayName = isDirect
-    ? (otherMember?.fullName || convo.fullName || "ምስጢር ምክክር")
+    ? (otherMember?.fullName || convo.fullName || "የግል መልዕክት")
     : "የጋራ ቤት";
 
   const displayPhoto = isDirect

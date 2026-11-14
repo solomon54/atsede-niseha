@@ -382,7 +382,7 @@ export default function ChildrenDirectoryScreen() {
             }}
           >
             <MessageSquare color={THEME.colors.sacredCrimson} size={14} />
-            <Text style={styles.cardActionText}>ምስጢር</Text>
+            <Text style={styles.cardActionText}>መልዕክት</Text>
           </TouchableOpacity>
 
           <TouchableOpacity

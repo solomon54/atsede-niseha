@@ -134,6 +134,12 @@ export default function ChannelCallScreen() {
   };
 
   const handleEndCall = async () => {
+    if (channelId) {
+      apiRequest("/api/livekit/decline", {
+        method: "POST",
+        body: JSON.stringify({ channelId }),
+      }).catch(() => {});
+    }
     try {
       await AudioSession.stopAudioSession();
     } catch {}
@@ -250,13 +256,7 @@ function ActiveCallView({
 
       {/* Main Remote Video Area */}
       <View style={styles.videoGrid}>
-        {remoteTracks.length > 0 && remoteTracks[0].publication?.track ? (
-          <VideoTrack
-            trackRef={remoteTracks[0]}
-            style={styles.remoteVideo}
-            objectFit="cover"
-          />
-        ) : (
+        {remoteTracks.length === 0 ? (
           <View style={styles.waitingContainer}>
             <View style={styles.avatarPlaceholder}>
               <Text style={styles.avatarCross}>✞</Text>
@@ -265,19 +265,63 @@ function ActiveCallView({
             <Text style={styles.waitingSubtitle}>
               {maxParticipants === 2
                 ? "የንስሐ አባትዎ ወይም ልጅዎ እስኪገቡ ድረስ ይጠብቁ"
-                : "የጋራ አዳራሽ ተሳታፊዎች እስኪገቡ ድረስ ይጠብቁ"}
+                : "የጋራ ቤት ተሳታፊዎች እስኪገቡ ድረስ ይጠብቁ"}
             </Text>
+          </View>
+        ) : (
+          <View style={remoteTracks.length === 1 ? styles.singleRemoteContainer : styles.multiRemoteContainer}>
+            {remoteTracks.map((trackRef, idx) => {
+              const isVideoActive =
+                trackRef.publication?.track && !trackRef.publication?.isMuted;
+              const pName = trackRef.participant.name || trackRef.participant.identity || "ተሳታፊ";
+              const pInitial = pName.replace(/^(ቀሲስ|ዲያቆን|መምህር|ሊቀ)\s+/i, "").charAt(0) || "✞";
+
+              return (
+                <View
+                  key={trackRef.participant.identity || idx}
+                  style={remoteTracks.length === 1 ? styles.singleRemoteTile : styles.multiRemoteTile}
+                >
+                  {isVideoActive ? (
+                    <VideoTrack
+                      trackRef={trackRef}
+                      style={styles.remoteVideo}
+                      objectFit="cover"
+                    />
+                  ) : (
+                    <View style={styles.avatarTileFallback}>
+                      <View style={styles.avatarInitialCircle}>
+                        <Text style={styles.avatarInitialText}>{pInitial}</Text>
+                      </View>
+                      <Text style={styles.avatarNameText}>{pName}</Text>
+                      <Text style={styles.avatarCameraOffSub}>ካሜራ ጠፍቷል</Text>
+                    </View>
+                  )}
+
+                  <View style={styles.tileNameBadge}>
+                    <Text style={styles.tileNameText} numberOfLines={1}>
+                      {pName}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
           </View>
         )}
 
         {/* Floating Local Camera Preview */}
-        {isCameraEnabled && localTrack?.publication?.track && (
+        {localTrack?.publication?.track && (
           <View style={styles.localPreviewBox}>
-            <VideoTrack
-              trackRef={localTrack}
-              style={styles.localVideo}
-              objectFit="cover"
-            />
+            {isCameraEnabled && !localTrack.publication.isMuted ? (
+              <VideoTrack
+                trackRef={localTrack}
+                style={styles.localVideo}
+                objectFit="cover"
+              />
+            ) : (
+              <View style={styles.localCameraOffBox}>
+                <Text style={styles.localInitialText}>እርስዎ</Text>
+              </View>
+            )}
           </View>
         )}
       </View>
@@ -434,6 +478,94 @@ const styles = StyleSheet.create({
   remoteVideo: {
     width: "100%",
     height: "100%",
+  },
+  singleRemoteContainer: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+  },
+  singleRemoteTile: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    position: "relative",
+  },
+  multiRemoteContainer: {
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 4,
+    padding: 4,
+  },
+  multiRemoteTile: {
+    width: "48.5%",
+    height: "48.5%",
+    borderRadius: 12,
+    overflow: "hidden",
+    position: "relative",
+    backgroundColor: "#1E293B",
+  },
+  avatarTileFallback: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#0B1120",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  avatarInitialCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: "#78350F",
+    borderWidth: 2,
+    borderColor: "#D97706",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  avatarInitialText: {
+    color: "#FEF3C7",
+    fontSize: 26,
+    fontWeight: "900",
+  },
+  avatarNameText: {
+    color: "#F8FAFC",
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  avatarCameraOffSub: {
+    color: "#94A3B8",
+    fontSize: 10,
+    marginTop: 2,
+  },
+  tileNameBadge: {
+    position: "absolute",
+    bottom: 8,
+    left: 8,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    maxWidth: "80%",
+  },
+  tileNameText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  localCameraOffBox: {
+    flex: 1,
+    backgroundColor: "#0F172A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  localInitialText: {
+    color: "#D97706",
+    fontSize: 12,
+    fontWeight: "800",
   },
   waitingContainer: {
     flex: 1,

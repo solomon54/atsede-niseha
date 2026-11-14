@@ -99,7 +99,7 @@ export default function ChatScreen() {
               </View>
               <Text style={styles.emptyTitle}>ምንም የውይይት ክፍል የለም</Text>
               <Text style={styles.emptySubtitle}>
-                የተመደቡበት የውይይት ክፍል ወይም የንስሐ ግንኙነት ሲኖር እዚህ በምስጢር
+                የተመደቡበት የውይይት ክፍል ወይም የንስሐ ግንኙነት ሲኖር እዚህ በመልዕክት
                 ይቀመጣል።
               </Text>
             </View>
@@ -138,7 +138,7 @@ export default function ChatScreen() {
                 <View style={styles.roomTitleRow}>
                   <Text style={styles.roomTitle} numberOfLines={1}>
                     {item.fullName ||
-                      (isCommonHouse ? "የጋራ አዳራሽ" : "የግል ክፍል")}
+                      (isCommonHouse ? "የጋራ ቤት" : "የግል መልዕክት")}
                   </Text>
                   {item.lastMessage?.createdAt ? (
                     <Text style={styles.timeText}>
@@ -157,8 +157,8 @@ export default function ChatScreen() {
                         ? "የተቆለፈ መልእክት"
                         : item.lastMessage?.content ||
                           (isCommonHouse
-                            ? "የጋራ ትምህርት እና መመሪያዎች"
-                            : "የግል መንፈሳዊ ውይይት")}
+                            ? "የጋራ ቤት ትምህርት እና መመሪያዎች"
+                            : "የግል መልዕክት ውይይት")}
                     </Text>
                   </View>
                   {item.unreadCount && item.unreadCount > 0 ? (

@@ -207,7 +207,7 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
                 rounded-full animate-spin mb-3" />
               <p className="text-[10px] font-black uppercase tracking-widest
                 text-amber-900/30">
-                ምስጢር ማኅደርን በመክፈት ላይ…
+                መልዕክቶችን በመክፈት ላይ…
               </p>
             </div>
           ) : messages.length === 0 ? (

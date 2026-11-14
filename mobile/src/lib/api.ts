@@ -56,3 +56,42 @@ export async function apiRequest<T = any>(
   return data as T;
 }
 
+export async function apiUpload<T = any>(
+  endpoint: string,
+  formData: FormData
+): Promise<T> {
+  const token = await authStorage.getToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const normalizedEndpoint = endpoint.startsWith("/")
+    ? endpoint
+    : `/${endpoint}`;
+
+  const response = await fetch(`${API_BASE_URL}${normalizedEndpoint}`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      await authStorage.clear().catch(() => {});
+      authEvents.emitUnauthorized();
+    }
+
+    const errorMessage =
+      data?.error || data?.message || `Upload failed with status ${response.status}`;
+    const error: any = new Error(errorMessage);
+    error.status = response.status;
+    error.code = data?.code;
+    throw error;
+  }
+
+  return data as T;
+}
+

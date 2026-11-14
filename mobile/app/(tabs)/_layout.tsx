@@ -107,7 +107,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="chat"
         options={{
-          title: "ምስጢር",
+          title: "መልዕክት",
           href: isGovernor ? null : "/(tabs)/chat",
           tabBarIcon: ({ color, focused }) => (
             <View

@@ -267,7 +267,7 @@ export default function ChildProfileDetailScreen() {
             <View style={[styles.actionIconBox, { backgroundColor: "#FEF2F2" }]}>
               <MessageSquare color={THEME.colors.sacredCrimson} size={20} />
             </View>
-            <Text style={styles.actionLabel}>ምስጢር</Text>
+            <Text style={styles.actionLabel}>መልዕክት</Text>
           </TouchableOpacity>
 
           <TouchableOpacity

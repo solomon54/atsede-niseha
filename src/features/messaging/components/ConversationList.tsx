@@ -61,7 +61,7 @@ export const ConversationList: FC<Props> = ({
       {direct.length > 0 && (
         <div>
           <p className="px-2 py-2 text-[9px] font-black uppercase tracking-[0.25em] text-slate-400">
-            ምስጢር ምክክር · Private
+            የግል መልዕክት · Direct
           </p>
           {direct.map((c) => (
             <ConversationItem
