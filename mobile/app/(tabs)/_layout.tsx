@@ -2,13 +2,14 @@
 import React from "react";
 import { Tabs } from "expo-router";
 import { View, Text, StyleSheet } from "react-native";
-import { Calendar, MessageSquare, User, Users } from "lucide-react-native";
+import { Calendar, MessageSquare, Shield, User, Users } from "lucide-react-native";
 import { useAuth } from "../../src/lib/auth-context";
 import { THEME } from "../../src/constants/theme";
 
 export default function TabsLayout() {
   const { role } = useAuth();
   const isFather = role === "FATHER";
+  const isGovernor = role === "GOVERNOR";
 
   return (
     <Tabs
@@ -50,6 +51,25 @@ export default function TabsLayout() {
         },
       }}
     >
+      {/* Governor Command Center Tab */}
+      <Tabs.Screen
+        name="governor"
+        options={{
+          title: "መቆጣጠሪያ",
+          href: isGovernor ? "/(tabs)/governor" : null,
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <Shield color={color} size={20} />
+            </View>
+          ),
+        }}
+      />
+      {/* Father Flock Tab */}
       <Tabs.Screen
         name="children"
         options={{
@@ -71,6 +91,7 @@ export default function TabsLayout() {
         name="appointments"
         options={{
           title: "ቀጠሮ",
+          href: isGovernor ? null : "/(tabs)/appointments",
           tabBarIcon: ({ color, focused }) => (
             <View
               style={[
@@ -87,6 +108,7 @@ export default function TabsLayout() {
         name="chat"
         options={{
           title: "ምስጢር",
+          href: isGovernor ? null : "/(tabs)/chat",
           tabBarIcon: ({ color, focused }) => (
             <View
               style={[

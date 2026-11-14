@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import { getSession } from "@/core/auth/session.service";
 import {
   governanceService,
   SpiritualFatherSchema,
@@ -18,8 +19,11 @@ const AuthorizationRequestSchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     // 1. RBAC Check (Role-Based Access Control)
-    // Ensures only a user with the GOVERNOR role can hit this endpoint
-    const requesterRole = req.headers.get("x-ats-role");
+    let requesterRole = req.headers.get("x-ats-role");
+    if (!requesterRole) {
+      const session = await getSession();
+      requesterRole = session?.role || null;
+    }
     if (requesterRole !== "GOVERNOR") {
       return NextResponse.json(
         { code: "FORBIDDEN", message: "የበላይ ተቆጣጣሪ ፈቃድ ያስፈልጋል" },

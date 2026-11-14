@@ -14,7 +14,7 @@ export default function IndexScreen() {
         if (role === "FATHER") {
           router.replace("/(tabs)/children");
         } else if (role === "GOVERNOR") {
-          router.replace("/(tabs)/profile");
+          router.replace("/(tabs)/governor");
         } else {
           router.replace("/(tabs)/appointments");
         }

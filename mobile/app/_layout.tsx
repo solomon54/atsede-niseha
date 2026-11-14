@@ -114,6 +114,9 @@ export default function RootLayout() {
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
             <Stack.Screen name="children/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="children/register" options={{ headerShown: false }} />
+            <Stack.Screen name="governor/authorize" options={{ headerShown: false }} />
+            <Stack.Screen name="governor/fathers" options={{ headerShown: false }} />
+            <Stack.Screen name="governor/students" options={{ headerShown: false }} />
             <Stack.Screen name="settings" options={{ headerShown: false }} />
           </Stack>
         </AuthProvider>

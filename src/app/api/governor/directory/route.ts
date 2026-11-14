@@ -2,12 +2,17 @@
 
 import { NextRequest, NextResponse } from "next/server";
 
+import { getSession } from "@/core/auth/session.service";
 import { governanceService } from "@/features/governor/services/governance.service";
 
 export async function GET(req: NextRequest) {
   try {
     // 1. RBAC Check (Ensuring the requester is a Governor)
-    const requesterRole = req.headers.get("x-ats-role");
+    let requesterRole = req.headers.get("x-ats-role");
+    if (!requesterRole) {
+      const session = await getSession();
+      requesterRole = session?.role || null;
+    }
     if (requesterRole !== "GOVERNOR") {
       return NextResponse.json(
         { code: "FORBIDDEN", message: "ያልተፈቀደ ሙከራ" },
