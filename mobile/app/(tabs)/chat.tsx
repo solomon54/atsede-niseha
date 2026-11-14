@@ -12,6 +12,8 @@ import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { MessageCircle, Users, ChevronRight, Lock, XCircle } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
+import { offlineCache } from "../../src/lib/cache";
+import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { THEME } from "../../src/constants/theme";
 
 interface Conversation {
@@ -37,10 +39,17 @@ export default function ChatScreen() {
     queryKey: ["conversations"],
     queryFn: async () => {
       const res = await apiRequest<Conversation[]>("/api/message/conversation");
-      return res || [];
+      const conversations = res || [];
+      // Cache the list so the rooms render before the network answers.
+      offlineCache.setQuery("conversations", conversations);
+      return conversations;
     },
     refetchInterval: 8000,
   });
+
+  const cacheChecked = useCacheFirst<Conversation[]>(["conversations"], () =>
+    offlineCache.getQuery<Conversation[]>("conversations")
+  );
 
   const conversations = data || [];
 
@@ -83,7 +92,7 @@ export default function ChatScreen() {
         }
         contentContainerStyle={styles.listContainer}
         ListEmptyComponent={
-          !isLoading && !isError ? (
+          isError ? null : cacheChecked && !isLoading ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
                 <MessageCircle color={THEME.colors.sacredAmber} size={36} />

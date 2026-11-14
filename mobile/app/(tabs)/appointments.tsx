@@ -26,6 +26,7 @@ import {
 import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
+import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { THEME } from "../../src/constants/theme";
 
 type AppointmentType = "NISEHA" | "COUNSELING";
@@ -82,31 +83,25 @@ export default function AppointmentsScreen() {
   const [note, setNote] = useState("");
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
-  // 1. Query Appointments
+  // 1. Query Appointments — cached snapshot renders first, network refreshes it.
   const { data, isLoading, isError, error, refetch, isRefetching } =
     useQuery<AppointmentsResponse>({
       queryKey: ["appointments"],
       queryFn: async () => {
         const res = await apiRequest<AppointmentsResponse>("/api/appointments");
         if (res?.appointments) {
-          offlineCache.saveAppointments(res.appointments);
+          // Cache the whole response so the father's child list survives a
+          // cold start too, not just the appointment cards.
+          offlineCache.setQuery("appointments", res);
         }
         return res;
       },
     });
 
-  React.useEffect(() => {
-    async function hydrateFromSqlite() {
-      const cached = await offlineCache.getAppointments<Appointment>();
-      if (cached.length > 0 && !data) {
-        queryClient.setQueryData(["appointments"], {
-          success: true,
-          appointments: cached,
-        });
-      }
-    }
-    hydrateFromSqlite();
-  }, [queryClient, data]);
+  const cacheChecked = useCacheFirst<AppointmentsResponse>(
+    ["appointments"],
+    () => offlineCache.getQuery<AppointmentsResponse>("appointments")
+  );
 
   // 2. Create Appointment Mutation
   const createMutation = useMutation({
@@ -278,7 +273,7 @@ export default function AppointmentsScreen() {
         }
         contentContainerStyle={styles.listContainer}
         ListEmptyComponent={
-          !isLoading && !isError ? (
+          isError ? null : cacheChecked && !isLoading ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
                 <Calendar color={THEME.colors.sacredAmber} size={36} />

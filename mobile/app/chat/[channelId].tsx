@@ -16,6 +16,7 @@ import { Check, Clock, Lock, Send, Shield, Video, XCircle } from "lucide-react-n
 import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
+import { useCacheFirst } from "../../src/lib/use-cache-first";
 import {
   decryptMessage,
   encryptMessage,
@@ -79,16 +80,10 @@ export default function ChannelChatScreen() {
     refetchInterval: 4000,
   });
 
-  useEffect(() => {
-    async function hydrateMessages() {
-      if (!channelId) return;
-      const cached = await offlineCache.getMessages<MessageItem>(channelId);
-      if (cached.length > 0 && !serverMessages) {
-        queryClient.setQueryData(["messages", channelId], cached);
-      }
-    }
-    hydrateMessages();
-  }, [channelId, queryClient, serverMessages]);
+  const cacheChecked = useCacheFirst<MessageItem[]>(
+    ["messages", channelId],
+    () => offlineCache.getMessages<MessageItem>(channelId)
+  );
 
   // 2. Decrypt incoming ciphertext once per message id.
   useEffect(() => {
@@ -302,7 +297,7 @@ export default function ChannelChatScreen() {
         </View>
       )}
 
-      {isLoading && allMessages.length === 0 ? (
+      {(!cacheChecked || isLoading) && allMessages.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator color={THEME.colors.sacredAmber} />
         </View>
@@ -316,7 +311,7 @@ export default function ChannelChatScreen() {
             flatListRef.current?.scrollToEnd({ animated: false })
           }
           ListEmptyComponent={
-            !isLoading && !isError ? (
+            cacheChecked && !isLoading && !isError ? (
               <View style={styles.emptyBox}>
                 <Lock color={THEME.colors.inkSubtle} size={28} />
                 <Text style={styles.emptyText}>

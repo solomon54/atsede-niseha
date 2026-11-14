@@ -7,11 +7,13 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
     dbInstance = await SQLite.openDatabaseAsync("atsede_offline.db");
     await dbInstance.execAsync(`
       PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS appointments_cache (
-        id TEXT PRIMARY KEY,
+      -- Generic snapshot store for list responses (appointments, conversations).
+      CREATE TABLE IF NOT EXISTS query_cache (
+        key TEXT PRIMARY KEY,
         data TEXT NOT NULL,
         updatedAt INTEGER NOT NULL
       );
+      -- Per-message rows keep ordering cheap and let us trim to the last 50.
       CREATE TABLE IF NOT EXISTS messages_cache (
         id TEXT PRIMARY KEY,
         channelId TEXT NOT NULL,
@@ -19,42 +21,39 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
         createdAt INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages_cache(channelId, createdAt);
+      -- Superseded by query_cache; dropped so upgraded installs don't keep a
+      -- second copy of pastoral appointment data around.
+      DROP TABLE IF EXISTS appointments_cache;
     `);
   }
   return dbInstance;
 }
 
 export const offlineCache = {
-  // ─── APPOINTMENTS ──────────────────────────────────────────
-  async getAppointments<T = any>(): Promise<T[]> {
+  // ─── GENERIC SNAPSHOTS ─────────────────────────────────────
+  async getQuery<T>(key: string): Promise<T | null> {
     try {
       const db = await getDb();
-      const rows = await db.getAllAsync<{ data: string }>(
-        "SELECT data FROM appointments_cache ORDER BY updatedAt DESC"
+      const row = await db.getFirstAsync<{ data: string }>(
+        "SELECT data FROM query_cache WHERE key = ?",
+        [key]
       );
-      return rows.map((r) => JSON.parse(r.data));
+      return row ? (JSON.parse(row.data) as T) : null;
     } catch (e) {
-      console.warn("Failed reading cached appointments:", e);
-      return [];
+      console.warn(`Failed reading cached "${key}":`, e);
+      return null;
     }
   },
 
-  async saveAppointments(appointments: Array<{ id: string; [key: string]: any }>): Promise<void> {
+  async setQuery<T>(key: string, data: T): Promise<void> {
     try {
       const db = await getDb();
-      const now = Date.now();
-      await db.withTransactionAsync(async () => {
-        // Clear old cache and replace with fresh snapshot
-        await db.runAsync("DELETE FROM appointments_cache");
-        for (const item of appointments) {
-          await db.runAsync(
-            "INSERT OR REPLACE INTO appointments_cache (id, data, updatedAt) VALUES (?, ?, ?)",
-            [item.id, JSON.stringify(item), now]
-          );
-        }
-      });
+      await db.runAsync(
+        "INSERT OR REPLACE INTO query_cache (key, data, updatedAt) VALUES (?, ?, ?)",
+        [key, JSON.stringify(data), Date.now()]
+      );
     } catch (e) {
-      console.warn("Failed saving appointments to offline cache:", e);
+      console.warn(`Failed saving cached "${key}":`, e);
     }
   },
 
@@ -97,5 +96,21 @@ export const offlineCache = {
       console.warn("Failed saving messages to offline cache:", e);
     }
   },
-};
 
+  // ─── PRIVACY ───────────────────────────────────────────────
+  /**
+   * Wipe every cached snapshot. Called on logout and when a session is
+   * rejected, so a shared device cannot show one family's pastoral data to
+   * the next person who signs in.
+   */
+  async clearAll(): Promise<void> {
+    try {
+      const db = await getDb();
+      await db.execAsync(
+        "DELETE FROM query_cache; DELETE FROM messages_cache;"
+      );
+    } catch (e) {
+      console.warn("Failed clearing offline cache:", e);
+    }
+  },
+};

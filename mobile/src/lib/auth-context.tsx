@@ -9,6 +9,7 @@ import { AppState } from "react-native";
 import { useRouter } from "expo-router";
 import { apiRequest } from "./api";
 import { authEvents } from "./auth-events";
+import { offlineCache } from "./cache";
 import { authStorage } from "./storage";
 
 interface SessionIdentity {
@@ -97,6 +98,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setEotcUid(null);
       setUid(null);
       setFamilyId(null);
+      // A rejected session means this device must not keep pastoral data.
+      offlineCache.clearAll().catch(() => {});
       router.replace("/(auth)/login");
     });
   }, [router]);
@@ -295,6 +298,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }).catch(() => {});
     } finally {
       await authStorage.clear();
+      // Shared devices must not retain the previous user's cached snapshots.
+      await offlineCache.clearAll().catch(() => {});
       setIsAuthenticated(false);
       setRole(null);
       setEotcUid(null);
