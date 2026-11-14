@@ -2,7 +2,8 @@
 
 "use client";
 
-import { MessageSquare, ShieldCheck, Users } from "lucide-react";
+import { MessageSquare, ShieldCheck, Users, Video } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { loadKey } from "../crypto/keyManager";
@@ -30,6 +31,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
   conversations: initialConversations,
   currentUserId,
 }) => {
+  const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
   const [conversations, setConversations] =
     useState<ConversationSummary[]>(initialConversations);
@@ -302,7 +304,19 @@ const MessagingClient: FC<MessagingClientProps> = ({
                 )}
               </div>
             </div>
-            <ShieldCheck size={16} className="text-amber-600/50 shrink-0" />
+            <div className="flex items-center gap-2.5 shrink-0">
+              {activeConversation && (
+                <button
+                  onClick={() => router.push(`/call/${activeConversation.id}`)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-800 border border-amber-500/30 rounded-full text-xs font-bold transition-all hover:scale-105 active:scale-95 shadow-sm"
+                  title="የቪዲዮ ጥሪ ጀምር"
+                >
+                  <Video size={14} className="text-amber-700" />
+                  <span className="hidden sm:inline">የቪዲዮ ጥሪ</span>
+                </button>
+              )}
+              <ShieldCheck size={16} className="text-amber-600/50" />
+            </div>
           </div>
 
           {/* TABLET & MOBILE NAVIGATION TABS (visible below xl breakpoint) */}
