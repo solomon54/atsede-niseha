@@ -1,21 +1,27 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
+  ActivityIndicator,
   FlatList,
-  TextInput,
-  TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
-  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Send, Video, Clock, Check, Shield } from "lucide-react-native";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Clock, Lock, Send, Shield, Video, XCircle } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
+import {
+  decryptMessage,
+  encryptMessage,
+  EncryptionEnvelope,
+  LOCKED_MESSAGE_PLACEHOLDER,
+} from "../../src/lib/crypto";
 import { THEME } from "../../src/constants/theme";
 
 interface MessageItem {
@@ -23,33 +29,48 @@ interface MessageItem {
   channelId: string;
   senderId: string;
   senderName?: string;
-  senderRole?: "FATHER" | "STUDENT" | "GOVERNOR";
+  senderRole?: "FATHER" | "STUDENT" | "GOVERNOR" | "CHILD";
   content: string;
   createdAt: number;
   status?: "PENDING" | "SENT";
+  isEncrypted?: boolean;
+  encryption?: EncryptionEnvelope | null;
 }
 
 export default function ChannelChatScreen() {
   const { channelId } = useLocalSearchParams<{ channelId: string }>();
   const navigation = useNavigation();
-  const { role, eotcUid } = useAuth();
+  const router = useRouter();
+  const { role, uid } = useAuth();
   const queryClient = useQueryClient();
 
   const [inputText, setInputText] = useState("");
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>(
     []
   );
+  const [decryptedContent, setDecryptedContent] = useState<
+    Record<string, string>
+  >({});
   const flatListRef = useRef<FlatList>(null);
-  const router = useRouter();
+  const attemptedDecrypt = useRef<Set<string>>(new Set());
+  const lastMarkedRead = useRef<string | null>(null);
 
-  // 1. Fetch channel messages
-  const { data: serverMessages, isLoading } = useQuery<MessageItem[]>({
+  // 1. Fetch channel messages (ciphertext is what the server stores)
+  const {
+    data: serverMessages,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery<MessageItem[]>({
     queryKey: ["messages", channelId],
     queryFn: async () => {
       const res = await apiRequest<MessageItem[]>(
         `/api/message/list?channelId=${channelId}`
       );
       if (res && channelId) {
+        // Cache ciphertext, never plaintext — offline storage must not
+        // weaken the end-to-end guarantee.
         offlineCache.saveMessages(channelId, res);
       }
       return res || [];
@@ -68,6 +89,75 @@ export default function ChannelChatScreen() {
     }
     hydrateMessages();
   }, [channelId, queryClient, serverMessages]);
+
+  // 2. Decrypt incoming ciphertext once per message id.
+  useEffect(() => {
+    const messages = serverMessages || [];
+    const pending = messages.filter(
+      (m) =>
+        m.isEncrypted &&
+        m.encryption?.keyId &&
+        m.encryption?.iv &&
+        m.content &&
+        !attemptedDecrypt.current.has(m.id)
+    );
+
+    if (pending.length === 0) return;
+
+    pending.forEach((m) => attemptedDecrypt.current.add(m.id));
+
+    let cancelled = false;
+
+    (async () => {
+      const updates: Record<string, string> = {};
+
+      for (const message of pending) {
+        try {
+          updates[message.id] = await decryptMessage(
+            message.content,
+            message.encryption as EncryptionEnvelope
+          );
+        } catch (e) {
+          console.warn("Message decryption failed:", message.id, e);
+          updates[message.id] = LOCKED_MESSAGE_PLACEHOLDER;
+        }
+      }
+
+      if (!cancelled) {
+        setDecryptedContent((prev) => ({ ...prev, ...updates }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [serverMessages]);
+
+  // 3. Mark the newest message as read so unread badges clear (web parity).
+  useEffect(() => {
+    const messages = serverMessages || [];
+    if (!channelId || !uid || messages.length === 0) return;
+
+    const last = messages[messages.length - 1];
+    if (
+      !last ||
+      last.senderId === uid ||
+      last.id === lastMarkedRead.current ||
+      last.status === "PENDING"
+    ) {
+      return;
+    }
+
+    lastMarkedRead.current = last.id;
+    apiRequest("/api/message/read", {
+      method: "POST",
+      body: JSON.stringify({ channelId, lastMessageId: last.id }),
+    })
+      .then(() => {
+        queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      })
+      .catch((e) => console.warn("Failed to mark channel read:", e));
+  }, [serverMessages, channelId, uid, queryClient]);
 
   // Setup video button in header
   useEffect(() => {
@@ -100,12 +190,17 @@ export default function ChannelChatScreen() {
     (a, b) => a.createdAt - b.createdAt
   );
 
-  // 2. Send Message Mutation
+  // 4. Send Message Mutation — encrypt with the channelId key, like the web.
   const sendMutation = useMutation({
     mutationFn: async (payload: {
       content: string;
       clientMessageId: string;
     }) => {
+      const { ciphertext, encryption } = await encryptMessage(
+        payload.content,
+        channelId!
+      );
+
       return await apiRequest<{ success: boolean; messageId: string }>(
         "/api/message/send",
         {
@@ -113,7 +208,9 @@ export default function ChannelChatScreen() {
           body: JSON.stringify({
             channelId,
             type: "TEXT",
-            content: payload.content,
+            content: ciphertext,
+            isEncrypted: true,
+            encryption,
             clientMessageId: payload.clientMessageId,
           }),
         }
@@ -146,8 +243,10 @@ export default function ChannelChatScreen() {
     const newMsg: MessageItem = {
       id: clientId,
       channelId: channelId!,
-      senderId: eotcUid || "me",
-      senderRole: role as any,
+      // Firestore stores Firebase uids; matching on eotcUid made every
+      // message look like it came from someone else.
+      senderId: uid || "me",
+      senderRole: role as MessageItem["senderRole"],
       content: trimmed,
       createdAt: Date.now(),
       status: "PENDING",
@@ -164,6 +263,13 @@ export default function ChannelChatScreen() {
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
     }, 100);
+  };
+
+  const displayContent = (item: MessageItem) => {
+    if (!item.isEncrypted) return item.content;
+    const plain = decryptedContent[item.id];
+    if (plain !== undefined) return plain;
+    return item.status === "PENDING" ? item.content : "…";
   };
 
   const formatTime = (ts: number) => {
@@ -184,6 +290,18 @@ export default function ChannelChatScreen() {
       keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
       style={styles.container}
     >
+      {isError && (
+        <View style={styles.errorBanner}>
+          <XCircle color={THEME.colors.error} size={16} />
+          <Text style={styles.errorBannerText}>
+            {(error as Error)?.message || "መልእክቶችን ማምጣት አልተሳካም"}
+          </Text>
+          <TouchableOpacity onPress={() => refetch()} hitSlop={8}>
+            <Text style={styles.retryText}>እንደገና ሞክር</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {isLoading && allMessages.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator color={THEME.colors.sacredAmber} />
@@ -197,9 +315,22 @@ export default function ChannelChatScreen() {
           onContentSizeChange={() =>
             flatListRef.current?.scrollToEnd({ animated: false })
           }
+          ListEmptyComponent={
+            !isLoading && !isError ? (
+              <View style={styles.emptyBox}>
+                <Lock color={THEME.colors.inkSubtle} size={28} />
+                <Text style={styles.emptyText}>
+                  እስካሁን መልእክት የለም። የመጀመሪያውን መልእክት ይጻፉ።
+                </Text>
+              </View>
+            ) : null
+          }
           renderItem={({ item }) => {
-            const isMe = item.senderId === eotcUid || item.senderId === "me";
+            const isMe = item.senderId === uid || item.senderId === "me";
             const isFather = item.senderRole === "FATHER";
+            const locked =
+              item.isEncrypted &&
+              displayContent(item) === LOCKED_MESSAGE_PLACEHOLDER;
 
             return (
               <View
@@ -231,14 +362,25 @@ export default function ChannelChatScreen() {
                     <Text style={styles.senderName}>{item.senderName}</Text>
                   ) : null}
 
-                  <Text
-                    style={[
-                      styles.msgText,
-                      isMe ? styles.myMsgText : styles.otherMsgText,
-                    ]}
-                  >
-                    {item.content}
-                  </Text>
+                  <View style={styles.contentRow}>
+                    {locked && (
+                      <Lock
+                        color={
+                          isMe ? "rgba(255,255,255,0.7)" : THEME.colors.inkSubtle
+                        }
+                        size={12}
+                      />
+                    )}
+                    <Text
+                      style={[
+                        styles.msgText,
+                        isMe ? styles.myMsgText : styles.otherMsgText,
+                        locked && styles.lockedText,
+                      ]}
+                    >
+                      {displayContent(item)}
+                    </Text>
+                  </View>
 
                   <View style={styles.footerRow}>
                     <Text
@@ -307,6 +449,39 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: THEME.colors.errorBg,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.errorBorder,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  errorBannerText: {
+    flex: 1,
+    color: THEME.colors.error,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  retryText: {
+    color: THEME.colors.sacredCrimson,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  emptyBox: {
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 40,
+    paddingHorizontal: 24,
+  },
+  emptyText: {
+    color: THEME.colors.inkMuted,
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 19,
   },
   headerCallBtn: {
     padding: 6,
@@ -379,15 +554,24 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 4,
   },
+  contentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
   msgText: {
     fontSize: 14.5,
     lineHeight: 20,
+    flexShrink: 1,
   },
   myMsgText: {
     color: "#FFFFFF",
   },
   otherMsgText: {
     color: THEME.colors.inkPrimary,
+  },
+  lockedText: {
+    fontStyle: "italic",
   },
   footerRow: {
     flexDirection: "row",

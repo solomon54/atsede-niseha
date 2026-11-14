@@ -185,15 +185,30 @@ export async function GET(): Promise<Response> {
         }
       }
 
+      // DIRECT channels have no title of their own — name them after the
+      // other participant so native clients (which render `fullName` directly)
+      // don't show every private chat as "Sacred Channel".
+      const isDirect = channelData.type === "DIRECT";
+      const otherMember = isDirect
+        ? members.find((m) => m.userId !== session.uid)
+        : undefined;
+
+      const displayName = isDirect
+        ? channelData.metadata?.description ??
+          channelData.title ??
+          otherMember?.fullName ??
+          "Sacred Channel"
+        : channelData.metadata?.description ??
+          channelData.title ??
+          "Sacred Channel";
+
       summaries.push({
         id: channelId as ChannelID,
         photoUrl:
           channelData.metadata?.avatarUrl ??
+          (isDirect ? otherMember?.photoUrl : undefined) ??
           "/assets/images/qdst-bite-krstiyan.jpg",
-        fullName:
-          channelData.metadata?.description ??
-          channelData.title ??
-          "Sacred Channel",
+        fullName: displayName,
         role: channelData.type,
         channel: { ...channelData, id: channelId as ChannelID },
         members,

@@ -87,6 +87,7 @@ export async function loginUser(raw: unknown) {
   return {
     success: true,
     role,
+    uid,
     token: sessionToken,
     redirect: `/${role.toLowerCase()}`,
   };

@@ -10,9 +10,8 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { MessageCircle, Users, ChevronRight, Lock } from "lucide-react-native";
+import { MessageCircle, Users, ChevronRight, Lock, XCircle } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
-import { useAuth } from "../../src/lib/auth-context";
 import { THEME } from "../../src/constants/theme";
 
 interface Conversation {
@@ -24,15 +23,17 @@ interface Conversation {
     content: string;
     createdAt: number;
     senderId: string;
+    isEncrypted?: boolean;
   } | null;
   unreadCount?: number;
 }
 
 export default function ChatScreen() {
   const router = useRouter();
-  const { role } = useAuth();
 
-  const { data, isLoading, refetch, isRefetching } = useQuery<Conversation[]>({
+  const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
+    Conversation[]
+  >({
     queryKey: ["conversations"],
     queryFn: async () => {
       const res = await apiRequest<Conversation[]>("/api/message/conversation");
@@ -58,6 +59,18 @@ export default function ChatScreen() {
 
   return (
     <View style={styles.container}>
+      {isError && (
+        <View style={styles.errorBanner}>
+          <XCircle color={THEME.colors.error} size={16} />
+          <Text style={styles.errorBannerText}>
+            {(error as Error)?.message || "ውይይቶችን ማምጣት አልተሳካም"}
+          </Text>
+          <TouchableOpacity onPress={() => refetch()} hitSlop={8}>
+            <Text style={styles.retryText}>እንደገና ሞክር</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <FlatList
         data={conversations}
         keyExtractor={(item) => item.id}
@@ -70,7 +83,7 @@ export default function ChatScreen() {
         }
         contentContainerStyle={styles.listContainer}
         ListEmptyComponent={
-          !isLoading ? (
+          !isLoading && !isError ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
                 <MessageCircle color={THEME.colors.sacredAmber} size={36} />
@@ -126,12 +139,19 @@ export default function ChatScreen() {
                 </View>
 
                 <View style={styles.subRow}>
-                  <Text style={styles.previewText} numberOfLines={1}>
-                    {item.lastMessage?.content ||
-                      (isCommonHouse
-                        ? "የጋራ ትምህርት እና መመሪያዎች"
-                        : "የግል መንፈሳዊ ውይይት")}
-                  </Text>
+                  <View style={styles.previewRow}>
+                    {item.lastMessage?.isEncrypted && (
+                      <Lock color={THEME.colors.inkSubtle} size={11} />
+                    )}
+                    <Text style={styles.previewText} numberOfLines={1}>
+                      {item.lastMessage?.isEncrypted
+                        ? "የተቆለፈ መልእክት"
+                        : item.lastMessage?.content ||
+                          (isCommonHouse
+                            ? "የጋራ ትምህርት እና መመሪያዎች"
+                            : "የግል መንፈሳዊ ውይይት")}
+                    </Text>
+                  </View>
                   {item.unreadCount && item.unreadCount > 0 ? (
                     <View style={styles.unreadBadge}>
                       <Text style={styles.unreadText}>{item.unreadCount}</Text>
@@ -210,11 +230,38 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
+  previewRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginRight: 8,
+  },
   previewText: {
     color: THEME.colors.inkMuted,
     fontSize: 13,
     flex: 1,
-    marginRight: 8,
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: THEME.colors.errorBg,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.errorBorder,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  errorBannerText: {
+    flex: 1,
+    color: THEME.colors.error,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  retryText: {
+    color: THEME.colors.sacredCrimson,
+    fontSize: 12,
+    fontWeight: "800",
   },
   unreadBadge: {
     backgroundColor: THEME.colors.sacredCrimson,

@@ -254,6 +254,7 @@ export async function claimAccount(raw: unknown) {
     return {
       success: true,
       role,
+      uid: uidCreated,
       token: sessionToken,
       redirect: `/${role.toLowerCase()}`,
     };
