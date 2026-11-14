@@ -58,6 +58,7 @@ export const config = {
     "/api/governor/:path*",
     "/api/father/:path*",
     "/api/auth/session",
+    "/api/auth/refresh",
     "/api/message/:path*",
     "/api/appointments/:path*",
     "/api/notifications/:path*",

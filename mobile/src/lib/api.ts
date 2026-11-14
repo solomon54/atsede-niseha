@@ -1,3 +1,4 @@
+import { authEvents } from "./auth-events";
 import { authStorage } from "./storage";
 
 const API_BASE_URL =
@@ -37,6 +38,13 @@ export async function apiRequest<T = any>(
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
+    // A rejected session must not look like a generic network error: clear
+    // the dead token and let the auth provider return to the gateway.
+    if (response.status === 401 && requiresAuth) {
+      await authStorage.clear().catch(() => {});
+      authEvents.emitUnauthorized();
+    }
+
     const errorMessage =
       data?.error || data?.message || `Request failed with status ${response.status}`;
     const error: any = new Error(errorMessage);

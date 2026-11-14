@@ -1,75 +1,80 @@
-// src/app/api/auth/session/route.ts
+// src/app/api/auth/refresh/route.ts
+import { NextResponse } from "next/server";
 
-import { NextRequest, NextResponse } from "next/server";
+import { requireSession } from "@/core/auth/requireSession";
+import { createSessionFromUid } from "@/core/auth/session.service";
 
-import { createSessionFromUid, getSession } from "@/core/auth/session.service";
-import { adminAuth, adminDb } from "@/services/firebase/admin";
+/**
+ * GET — identity hydration.
+ *
+ * Historical name for the session identity endpoint; the web client still
+ * boots with `fetch("/api/auth/refresh")` and expects `{ uid, familyId, role }`.
+ * Kept as a separate handler (rather than a cross-route re-export) so both
+ * transports resolve through the same auth guard.
+ */
+export async function GET() {
+  try {
+    const session = await requireSession();
 
-export async function GET(req: NextRequest) {
-  const session = await getSession();
+    return NextResponse.json({
+      success: true,
+      uid: session.uid,
+      role: session.role,
+      familyId: session.familyId,
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "";
 
-  if (!session) {
-    return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
-  }
-
-  let familyId = "";
-  let role: string | undefined;
-
-  // Fathers
-  const fatherSnap = await adminDb
-    .collection("Fathers")
-    .where("uid", "==", session.uid)
-    .limit(1)
-    .get();
-
-  if (!fatherSnap.empty) {
-    const data = fatherSnap.docs[0].data();
-
-    familyId = data.familyId || data.fatherId || data.uid;
-    role = "FATHER";
-  }
-
-  // Students
-  if (!role) {
-    const studentSnap = await adminDb
-      .collection("Students")
-      .where("uid", "==", session.uid)
-      .limit(1)
-      .get();
-
-    if (!studentSnap.empty) {
-      const data = studentSnap.docs[0].data();
-
-      if (!data.familyId && !data.fatherId) {
-        throw new Error("STUDENT record missing familyId/fatherId");
-      }
-
-      familyId = data.familyId || data.fatherId;
-      role = "STUDENT";
+    if (message === "UNAUTHORIZED") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-  }
 
-  // Governors
-  if (!role) {
-    const governorSnap = await adminDb
-      .collection("Governors")
-      .where("uid", "==", session.uid)
-      .limit(1)
-      .get();
-
-    if (!governorSnap.empty) {
-      role = "GOVERNOR";
-      familyId = "GOVERNOR_GLOBAL"; // ✅ avoid empty string
+    if (message === "USER_NOT_FOUND" || message === "INCOMPLETE_PROFILE") {
+      return NextResponse.json(
+        { error: "Forbidden", code: message },
+        { status: 403 }
+      );
     }
-  }
 
-  if (!role) {
-    return NextResponse.json({ error: "USER_NOT_FOUND" }, { status: 404 });
+    console.error("[GET /api/auth/refresh]", error);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
+}
 
-  return NextResponse.json({
-    uid: session.uid,
-    familyId,
-    role,
-  });
+/**
+ * POST — sliding session renewal.
+ *
+ * A 5-day session cookie used to expire mid-use, leaving the phone silently
+ * broken. While the current session is still valid we mint a fresh one and
+ * return it as a Bearer token for native clients (the web gets a new cookie).
+ */
+export async function POST() {
+  try {
+    const session = await requireSession();
+    const token = await createSessionFromUid(session.uid);
+
+    return NextResponse.json({
+      success: true,
+      token,
+      uid: session.uid,
+      role: session.role,
+      familyId: session.familyId,
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "";
+
+    if (message === "UNAUTHORIZED") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (message === "USER_NOT_FOUND" || message === "INCOMPLETE_PROFILE") {
+      return NextResponse.json(
+        { error: "Forbidden", code: message },
+        { status: 403 }
+      );
+    }
+
+    console.error("[POST /api/auth/refresh]", error);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
 }

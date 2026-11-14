@@ -1,5 +1,14 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { AppState } from "react-native";
+import { useRouter } from "expo-router";
 import { apiRequest } from "./api";
+import { authEvents } from "./auth-events";
 import { authStorage } from "./storage";
 
 interface SessionIdentity {
@@ -30,12 +39,67 @@ interface AuthState {
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [role, setRole] = useState<string | null>(null);
   const [eotcUid, setEotcUid] = useState<string | null>(null);
   const [uid, setUid] = useState<string | null>(null);
   const [familyId, setFamilyId] = useState<string | null>(null);
+  const lastRefreshAt = useRef(0);
+
+  /**
+   * Slide the session forward while it is still valid. Safe to call on cold
+   * start and on foreground; a dead session is handled by the 401 listener.
+   */
+  const refreshSession = async (): Promise<void> => {
+    try {
+      const res = await apiRequest<{
+        success: boolean;
+        token?: string;
+        role?: string;
+        uid?: string;
+        familyId?: string;
+      }>("/api/auth/refresh", { method: "POST" });
+
+      if (!res.token) return;
+
+      const meta = await authStorage.getUserMeta();
+      await authStorage.saveToken(res.token);
+
+      if (res.role && res.uid) {
+        await authStorage.saveUserMeta(
+          res.role,
+          meta.eotcUid ?? undefined,
+          res.uid,
+          res.familyId
+        );
+        setRole(res.role);
+        setUid(res.uid);
+        setFamilyId(res.familyId ?? null);
+      }
+
+      lastRefreshAt.current = Date.now();
+    } catch (error) {
+      // 401s already cleared the session via the auth event.
+      console.warn("Session refresh skipped:", error);
+    }
+  };
+
+  /**
+   * A 401 from any API call clears the dead token and returns to the gateway
+   * instead of leaving the user on a screen that can never load.
+   */
+  useEffect(() => {
+    return authEvents.onUnauthorized(() => {
+      setIsAuthenticated(false);
+      setRole(null);
+      setEotcUid(null);
+      setUid(null);
+      setFamilyId(null);
+      router.replace("/(auth)/login");
+    });
+  }, [router]);
 
   /**
    * Fetch the authoritative identity from the server. Used after login/claim
@@ -107,6 +171,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!meta.uid || !meta.familyId) {
           hydrateIdentity().catch(() => {});
         }
+
+        // Slide the 5-day session forward on launch.
+        lastRefreshAt.current = Date.now();
+        refreshSession().catch(() => {});
       } catch (e) {
         console.error("Failed to load stored session:", e);
       } finally {
@@ -117,6 +185,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadStoredSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Refresh when the app returns to the foreground after a long pause, so a
+  // session cannot expire while the app sits in the background for days.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      if (Date.now() - lastRefreshAt.current < 12 * 60 * 60 * 1000) return;
+      refreshSession().catch(() => {});
+    });
+
+    return () => subscription.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
 
   const login = async (eotcId: string, password: string) => {
     const formattedUid = eotcId.trim().toUpperCase();
