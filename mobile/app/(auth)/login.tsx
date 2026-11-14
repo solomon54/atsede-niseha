@@ -136,8 +136,10 @@ export default function LoginScreen() {
       }
       setLoading(true);
       try {
-        await login(context.eotcUid, password);
-        router.replace("/(tabs)/appointments");
+        const { role } = await login(context.eotcUid, password);
+        router.replace(
+          role === "GOVERNOR" ? "/(tabs)/profile" : "/(tabs)/appointments"
+        );
       } catch (err: any) {
         setError(err.message || "የተሳሳተ የይለፍ ቃል ነው");
       } finally {
@@ -149,14 +151,25 @@ export default function LoginScreen() {
         setError("የይለፍ ቃል ቢያንስ 8 ፊደላት መሆን አለበት");
         return;
       }
+      if (!email.trim() || !email.includes("@")) {
+        setError("ትክክለኛ የኢሜይል አድራሻ ያስገቡ");
+        return;
+      }
       if (password !== confirmPassword) {
         setError("የይለፍ ቃሎቹ አይመሳሰሉም");
         return;
       }
       setLoading(true);
       try {
-        await claim(context.eotcUid, password, email);
-        router.replace("/(tabs)/appointments");
+        const { role } = await claim(
+          context.eotcUid,
+          password,
+          email,
+          context.role
+        );
+        router.replace(
+          role === "GOVERNOR" ? "/(tabs)/profile" : "/(tabs)/appointments"
+        );
       } catch (err: any) {
         setError(err.message || "መለያውን ማረጋገጥ አልተቻለም");
       } finally {
@@ -399,7 +412,7 @@ export default function LoginScreen() {
               {/* Claim flow: Email input */}
               {!context.accountClaimed && (
                 <View style={styles.inputGroup}>
-                  <Text style={styles.fieldLabel}>ኢሜይል (አማራጭ)</Text>
+                  <Text style={styles.fieldLabel}>ኢሜይል</Text>
                   <TextInput
                     style={styles.formInput}
                     placeholder="example@mail.com"

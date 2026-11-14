@@ -8,7 +8,12 @@ interface AuthState {
   role: string | null;
   eotcUid: string | null;
   login: (eotcUid: string, password: string) => Promise<{ role: string }>;
-  claim: (eotcUid: string, password: string, email: string) => Promise<{ role: string }>;
+  claim: (
+    eotcUid: string,
+    password: string,
+    email: string,
+    role?: string
+  ) => Promise<{ role: string }>;
   logout: () => Promise<void>;
 }
 
@@ -60,9 +65,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }),
     });
 
-    if (res.token) {
-      await authStorage.saveToken(res.token);
+    if (!res.token) {
+      throw new Error("የመግቢያ ቶከን አልተገኘም። እባክዎ እንደገና ይሞክሩ።");
     }
+    await authStorage.saveToken(res.token);
     await authStorage.saveUserMeta(res.role, formattedUid);
 
     setIsAuthenticated(true);
@@ -72,7 +78,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { role: res.role };
   };
 
-  const claim = async (uid: string, password: string, email: string) => {
+  const claim = async (
+    uid: string,
+    password: string,
+    email: string,
+    role?: string
+  ) => {
     const formattedUid = uid.trim().toUpperCase();
     const res = await apiRequest<{
       success: boolean;
@@ -85,13 +96,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         eotcUid: formattedUid,
         password,
         email: email.trim().toLowerCase(),
+        ...(role ? { role } : {}),
       }),
     });
 
-    const userRole = res.role || "STUDENT";
-    if (res.token) {
-      await authStorage.saveToken(res.token);
+    // The server is the source of truth for the role: the gateway preview may
+    // not have known it, and defaulting to STUDENT would mislabel fathers.
+    const userRole = res.role || role;
+    if (!userRole) {
+      throw new Error("መለያውን ማረጋገጥ አልተቻለም");
     }
+    if (!res.token) {
+      throw new Error("የመግቢያ ቶከን አልተገኘም። እባክዎ እንደገና ይሞክሩ።");
+    }
+
+    await authStorage.saveToken(res.token);
     await authStorage.saveUserMeta(userRole, formattedUid);
 
     setIsAuthenticated(true);

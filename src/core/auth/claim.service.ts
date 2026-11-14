@@ -22,10 +22,74 @@ import { createSessionFromUid } from "./session.service";
  * Defines the strict requirements for claiming a pre-existing sanctuary identity.
  */
 const ClaimSchema = z.object({
-  eotcUid: z.string().min(4),
+  eotcUid: z.string().trim().min(4),
   password: z.string().min(8),
-  role: z.enum(["FATHER", "STUDENT", "GOVERNOR"]),
+  /**
+   * Role is optional: the mobile gateway does not know the role of every
+   * account it previews. When omitted we resolve it from Firestore, which is
+   * the source of truth anyway.
+   */
+  role: z.enum(["FATHER", "STUDENT", "GOVERNOR"]).optional(),
+  /**
+   * Optional fallback email. Legacy records sometimes have no email stored;
+   * in that case the claimer supplies one and it is persisted on the record.
+   */
+  email: z.string().trim().email().optional(),
 });
+
+type ClaimRole = "FATHER" | "STUDENT" | "GOVERNOR";
+
+function collectionForRole(role: ClaimRole) {
+  if (role === "GOVERNOR") return "Governors";
+  if (role === "FATHER") return "Fathers";
+  return "Students";
+}
+
+/**
+ * Finds the pre-registered Firestore record for an EOTC id.
+ * Governors are keyed by document id; Fathers/Students by `eotcUid` field.
+ */
+async function resolveClaimRecord(eotcUid: string, requestedRole?: ClaimRole) {
+  const allRoles: ClaimRole[] = ["GOVERNOR", "FATHER", "STUDENT"];
+  // Prefer the hinted role, then fall back to the other collections so a
+  // stale/wrong client hint cannot block a legitimate claim.
+  const candidates = requestedRole
+    ? [requestedRole, ...allRoles.filter((r) => r !== requestedRole)]
+    : allRoles;
+
+  for (const role of candidates) {
+    const collection = collectionForRole(role);
+
+    if (role === "GOVERNOR") {
+      const snap = await adminDb.collection(collection).doc(eotcUid).get();
+      if (snap.exists) {
+        return {
+          role,
+          docRef: snap.ref,
+          data: snap.data() ?? ({} as FirebaseFirestore.DocumentData),
+        };
+      }
+      continue;
+    }
+
+    const query = await adminDb
+      .collection(collection)
+      .where("eotcUid", "==", eotcUid)
+      .limit(1)
+      .get();
+
+    if (!query.empty) {
+      const doc = query.docs[0];
+      return {
+        role,
+        docRef: doc.ref,
+        data: doc.data() ?? ({} as FirebaseFirestore.DocumentData),
+      };
+    }
+  }
+
+  return null;
+}
 
 /**
  * Firebase Auth Error Interface
@@ -44,62 +108,45 @@ interface FirebaseAuthError {
 export async function claimAccount(raw: unknown) {
   // 1. Validation
   const body = ClaimSchema.parse(raw);
+  const eotcUid = body.eotcUid.trim().toUpperCase();
 
-  // Logic: Map the role to the correct Firestore collection
-  const collection =
-    body.role === "GOVERNOR"
-      ? "Governors"
-      : body.role === "FATHER"
-      ? "Fathers"
-      : "Students";
+  // 2. Identity resolution — the client may not know the role.
+  const identity = await resolveClaimRecord(eotcUid, body.role);
+  if (!identity) {
+    throw new AuthError("መለያ አልተገኘም", "NOT_FOUND", 404);
+  }
+
+  const role = identity.role;
+  const email = (identity.data.email || body.email || "").trim().toLowerCase();
+
+  if (!email) {
+    throw new AuthError(
+      "ለአካውንት ምስረታ ኢሜል ያስፈልጋል። እባክዎ መምህርዎን ያማክሩ።",
+      "VALIDATION_ERROR",
+      400
+    );
+  }
 
   let uidCreated: string | null = null;
 
   try {
-    // 2. Atomic Transaction for Account Creation
+    // 3. Atomic Transaction for Account Creation
     await adminDb.runTransaction(async (tx) => {
-      let docRef;
-      let data;
+      const snap = await tx.get(identity.docRef);
+      const data = snap.data();
 
-      /**
-       * PROFESSIONAL FIX: Identity Resolution
-       * Governors use eotcUid as the Document ID for O(1) access.
-       * Fathers/Students are queried via the eotcUid field.
-       */
-      if (body.role === "GOVERNOR") {
-        const gDoc = await tx.get(
-          adminDb.collection(collection).doc(body.eotcUid)
-        );
-        if (!gDoc.exists) throw new AuthError("መለያ አልተገኘም", "NOT_FOUND", 404);
-        docRef = gDoc.ref;
-        data = gDoc.data();
-      } else {
-        const query = await adminDb
-          .collection(collection)
-          .where("eotcUid", "==", body.eotcUid)
-          .limit(1)
-          .get();
-        if (query.empty) throw new AuthError("መለያ አልተገኘም", "NOT_FOUND", 404);
-        docRef = query.docs[0].ref;
-        data = query.docs[0].data();
+      // 4. Status and Integrity Checks
+      if (!snap.exists || !data) {
+        throw new AuthError("መለያ አልተገኘም", "NOT_FOUND", 404);
       }
 
-      // 3. Status and Integrity Checks
-      if (!data || data.accountClaimed) {
+      if (data.accountClaimed) {
         throw new AuthError("ይህ መለያ ቀድሞ ተይዟል", "ALREADY_CLAIMED", 400);
       }
 
-      if (!data.email) {
-        throw new AuthError(
-          "ለአካውንት ምስረታ ኢሜል ያስፈልጋል። እባክዎ መምህርዎን ያማክሩ።",
-          "VALIDATION_ERROR",
-          400
-        );
-      }
-
-      // 4. Firebase Auth User Creation
+      // 5. Firebase Auth User Creation
       const userRecord = await adminAuth.createUser({
-        email: data.email,
+        email,
         password: body.password,
         displayName:
           data.christianName || data.fullName || data.secularName || "User",
@@ -108,10 +155,9 @@ export async function claimAccount(raw: unknown) {
       uidCreated = userRecord.uid;
 
       /**
-       * 5. Sovereign Claim Injection
+       * 6. Sovereign Claim Injection
        * Critical: eotcUid is included here to satisfy the Middleware's performance requirement.
        */
-      const role = body.role;
       let calculatedFamilyId = "";
 
       if (role === "FATHER") {
@@ -119,19 +165,20 @@ export async function claimAccount(raw: unknown) {
         calculatedFamilyId = userRecord.uid;
       } else if (role === "STUDENT") {
         // Use the fatherId (which is a UID) from the Firestore student doc
-        calculatedFamilyId = data.fatherId || "";
+        calculatedFamilyId = data.fatherId || data.familyId || "";
       }
 
       await adminAuth.setCustomUserClaims(userRecord.uid, {
-        role: role,
-        eotcUid: body.eotcUid,
+        role,
+        eotcUid,
         familyId: calculatedFamilyId,
         profileVersion: data.profileVersion ?? 1,
       });
 
-      // 6. Record Synchronization
-      tx.update(docRef, {
+      // 7. Record Synchronization
+      tx.update(identity.docRef, {
         uid: userRecord.uid,
+        email,
         accountClaimed: true,
         status: "ACTIVE",
         lastLogin: new Date().toISOString(),
@@ -154,13 +201,13 @@ export async function claimAccount(raw: unknown) {
     // Post-claim side effects – channel provisioning / joining
     // ────────────────────────────────────────────────
 
-    if (body.role === "FATHER" && uidCreated) {
+    if (role === "FATHER") {
       try {
         const fatherUid = uidCreated as UID;
         const studentUids: UID[] = [];
 
         console.log(
-          `[FATHER CLAIM] Creating/ensuring COMMON_HOUSE channel for father ${body.eotcUid} (UID: ${fatherUid})`
+          `[FATHER CLAIM] Creating/ensuring COMMON_HOUSE channel for father ${eotcUid} (UID: ${fatherUid})`
         );
 
         const { familyChannel, directChannels } = await provisionFamilyChannels(
@@ -176,49 +223,29 @@ export async function claimAccount(raw: unknown) {
           "[FATHER CLAIM] Channel provisioning failed but account created:",
           {
             uid: uidCreated,
-            eotcUid: body.eotcUid,
+            eotcUid,
             error: provisionErr,
           }
         );
       }
-    } else if (body.role === "STUDENT" && uidCreated) {
+    } else if (role === "STUDENT") {
       try {
-        const studentDocSnap = await adminDb
-          .collection("Students")
-          .doc(body.eotcUid)
-          .get();
+        // The claim transaction just wrote `uid` onto this same record.
+        const studentDocSnap = await identity.docRef.get();
+        const studentData = studentDocSnap.data();
+        const studentUid = studentData?.uid as UID | undefined;
 
-        if (!studentDocSnap.exists) {
+        if (!studentUid) {
           console.warn(
-            `[STUDENT CLAIM] Student doc not found: ${body.eotcUid}`
+            `[STUDENT CLAIM] uid missing in student doc ${eotcUid} — join skipped`
           );
         } else {
-          const studentData = studentDocSnap.data();
-          const studentUid = studentData?.uid as UID | undefined;
-
-          // ✅ Defensive future-proof guard
-          if (!studentUid) {
-            console.warn(
-              `[STUDENT CLAIM] uid missing in student doc ${body.eotcUid} — join skipped`
-            );
-            return;
-          }
-
-          // ✅ FIX: pass BOTH required arguments
-          joinStudentToFamilyChannels(studentUid, body.eotcUid).catch((err) => {
-            console.error(
-              "[STUDENT CLAIM] Channel join failed (non-critical):",
-              {
-                uid: studentUid,
-                eotcUid: body.eotcUid,
-                error: err,
-              }
-            );
-          });
+          await joinStudentToFamilyChannels(studentUid, eotcUid);
         }
       } catch (err) {
-        console.error("[STUDENT CLAIM] Failed fetching student doc:", {
-          eotcUid: body.eotcUid,
+        // Non-critical: the account exists and can still log in.
+        console.error("[STUDENT CLAIM] Channel join failed:", {
+          eotcUid,
           error: err,
         });
       }
@@ -226,8 +253,9 @@ export async function claimAccount(raw: unknown) {
 
     return {
       success: true,
+      role,
       token: sessionToken,
-      redirect: `/${body.role.toLowerCase()}`,
+      redirect: `/${role.toLowerCase()}`,
     };
   } catch (error: unknown) {
     if (error instanceof AuthError) throw error;
@@ -237,7 +265,7 @@ export async function claimAccount(raw: unknown) {
         typeof err === "object" &&
         err !== null &&
         "code" in err &&
-        typeof (err as any).code === "string"
+        typeof (err as { code?: unknown }).code === "string"
       );
     };
 

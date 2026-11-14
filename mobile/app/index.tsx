@@ -5,18 +5,22 @@ import { useAuth } from "../src/lib/auth-context";
 import { THEME } from "../src/constants/theme";
 
 export default function IndexScreen() {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated, role } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (!isLoading) {
       if (isAuthenticated) {
-        router.replace("/(tabs)/appointments");
+        // Governors have no family-scoped appointments feed; send them to
+        // their profile instead of a screen that returns 403.
+        router.replace(
+          role === "GOVERNOR" ? "/(tabs)/profile" : "/(tabs)/appointments"
+        );
       } else {
         router.replace("/(auth)/login");
       }
     }
-  }, [isLoading, isAuthenticated]);
+  }, [isLoading, isAuthenticated, role]);
 
   return (
     <View style={styles.container}>
