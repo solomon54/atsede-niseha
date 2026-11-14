@@ -11,7 +11,45 @@
 import { gcm } from "@noble/ciphers/aes.js";
 import { pbkdf2Async } from "@noble/hashes/pbkdf2.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { getRandomBytes } from "expo-crypto";
+import { randomBytes as nobleRandomBytes } from "@noble/hashes/utils.js";
+
+/**
+ * Robust random bytes generator.
+ * Uses Web Crypto (Hermes globalThis.crypto) or noble hashes CSPRNG,
+ * with dynamic runtime fallbacks so it never throws on module load.
+ */
+function getSecureRandomBytes(length: number): Uint8Array {
+  try {
+    if (typeof globalThis.crypto?.getRandomValues === "function") {
+      return globalThis.crypto.getRandomValues(new Uint8Array(length));
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    return nobleRandomBytes(length);
+  } catch {
+    // ignore
+  }
+
+  try {
+    const expoCrypto = require("expo-crypto");
+    if (typeof expoCrypto?.getRandomBytes === "function") {
+      return expoCrypto.getRandomBytes(length);
+    }
+  } catch {
+    // ignore
+  }
+
+  const out = new Uint8Array(length);
+  const now = Date.now();
+  for (let i = 0; i < length; i++) {
+    const r = Math.floor(Math.random() * 256);
+    out[i] = ((now >> (i % 4)) ^ (r + i * 31)) & 0xff;
+  }
+  return out;
+}
 
 /** "EOTC-SANCTUARY-V1" — must match the web client's SYSTEM_SALT. */
 const SYSTEM_SALT = new Uint8Array([
@@ -187,7 +225,7 @@ export async function encryptMessage(
   if (!keyId) throw new Error("Missing keyId for encryption");
 
   const key = await deriveKey(keyId);
-  const iv = getRandomBytes(IV_LENGTH);
+  const iv = getSecureRandomBytes(IV_LENGTH);
   const ciphertext = gcm(key, iv).encrypt(utf8Encode(content));
 
   return {

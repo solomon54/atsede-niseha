@@ -121,7 +121,7 @@ export default function RegisterChildForm({
     control,
     formState: { errors, isSubmitting },
   } = useForm<RegisterChildFormData>({
-    resolver: zodResolver(RegisterChildSchema),
+    resolver: zodResolver(RegisterChildSchema) as any,
     mode: "all", // 🔥 CHANGED: Enables true real-time feedback as the user types/selects
     defaultValues: {
       fullToken: "",
@@ -375,19 +375,19 @@ export default function RegisterChildForm({
             <IdentitySection
               register={register}
               errors={errors}
-              control={control}
+              control={control as any}
             />
-            <GeographySection control={control} errors={errors} />
+            <GeographySection control={control as any} errors={errors} />
             <AcademicSection
               register={register}
-              control={control}
+              control={control as any}
               errors={errors}
               setValue={setValue}
             />
             <ConnectSection
               register={register}
               errors={errors}
-              control={control}
+              control={control as any}
               emailVerification={emailVerification}
             />
           </div>

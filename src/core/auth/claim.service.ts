@@ -8,6 +8,7 @@ import {
 } from "@/features/messaging/services/channelProvision.service";
 import { UID } from "@/features/messaging/types/messaging.types";
 import { adminAuth, adminDb } from "@/services/firebase/admin";
+import { verifyEmailDeliverability } from "@/services/email/email.service";
 import { validateEmailAddress } from "@/shared/validations/email";
 
 import { AuthError } from "./auth.errors";

@@ -55,18 +55,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   const refreshSession = async (): Promise<void> => {
     try {
-      const res = await apiRequest<{
-        success: boolean;
+      let res: {
+        success?: boolean;
         token?: string;
         role?: string;
         uid?: string;
         familyId?: string;
-      }>("/api/auth/refresh", { method: "POST" });
+      } | null = null;
 
-      if (!res.token) return;
+      try {
+        res = await apiRequest<{
+          success: boolean;
+          token?: string;
+          role?: string;
+          uid?: string;
+          familyId?: string;
+        }>("/api/auth/refresh", { method: "POST" });
+      } catch (err: any) {
+        // Fallback to GET /api/auth/refresh if backend only has GET deployed
+        if (err?.status === 405) {
+          res = await apiRequest<{
+            success: boolean;
+            role?: string;
+            uid?: string;
+            familyId?: string;
+          }>("/api/auth/refresh", { method: "GET" });
+        } else {
+          throw err;
+        }
+      }
+
+      if (!res) return;
 
       const meta = await authStorage.getUserMeta();
-      await authStorage.saveToken(res.token);
+      if (res.token) {
+        await authStorage.saveToken(res.token);
+      }
 
       if (res.role && res.uid) {
         await authStorage.saveUserMeta(
@@ -111,9 +135,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   const hydrateIdentity = async (): Promise<SessionIdentity | null> => {
     try {
-      const session = await apiRequest<SessionIdentity & { success: boolean }>(
-        "/api/auth/session"
-      );
+      let session: (SessionIdentity & { success?: boolean }) | null = null;
+
+      try {
+        session = await apiRequest<SessionIdentity & { success: boolean }>(
+          "/api/auth/session"
+        );
+      } catch (err: unknown) {
+        const status = (err as { status?: number })?.status;
+        // Fallback to /api/auth/refresh if /api/auth/session is 404
+        if (status === 404) {
+          session = await apiRequest<SessionIdentity & { success: boolean }>(
+            "/api/auth/refresh"
+          );
+        } else {
+          throw err;
+        }
+      }
+
+      if (!session?.uid || !session?.role) return null;
 
       setUid(session.uid);
       setRole(session.role);

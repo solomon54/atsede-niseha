@@ -21,7 +21,7 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
   }
 }
 
-rootProject.name = 'app'
+rootProject.name = 'ዐጸደ ንስሐ'
 
 dependencyResolutionManagement {
   versionCatalogs {

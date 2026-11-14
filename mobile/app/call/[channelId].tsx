@@ -125,11 +125,19 @@ export default function ChannelCallScreen() {
     };
   }, [channelId, incoming]);
 
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/(tabs)/chat");
+    }
+  };
+
   const handleEndCall = async () => {
     try {
       await AudioSession.stopAudioSession();
     } catch {}
-    router.back();
+    handleBack();
   };
 
   if (loading) {
@@ -149,7 +157,7 @@ export default function ChannelCallScreen() {
         <Shield color="#EF4444" size={48} />
         <Text style={styles.errorTitle}>ጥሪውን መጀመር አልተቻለም</Text>
         <Text style={styles.errorSubtitle}>{error}</Text>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
           <Text style={styles.backBtnText}>ወደ ውይይት ተመለስ</Text>
         </TouchableOpacity>
       </View>
