@@ -47,8 +47,26 @@ interface Appointment {
 interface AppointmentsResponse {
   success: boolean;
   appointments: Appointment[];
+  children?: ChildOption[];
   fatherName?: string;
   fatherEotcUid?: string;
+}
+
+interface ChildOption {
+  uid: string;
+  eotcUid: string;
+  name: string;
+  lastNisehaDate?: string;
+}
+
+const DEFAULT_TIME = "10:00";
+
+/** Local (device) calendar date as YYYY-MM-DD — avoids UTC off-by-one. */
+function localDateInput(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export default function AppointmentsScreen() {
@@ -57,14 +75,15 @@ export default function AppointmentsScreen() {
 
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedType, setSelectedType] = useState<AppointmentType>("NISEHA");
-  const [scheduledDate, setScheduledDate] = useState("");
-  const [scheduledTime, setScheduledTime] = useState("");
+  const [selectedChildUid, setSelectedChildUid] = useState("");
+  const [scheduledDate, setScheduledDate] = useState(localDateInput);
+  const [scheduledTime, setScheduledTime] = useState(DEFAULT_TIME);
   const [location, setLocation] = useState("በአካል (በቤተክርስቲያን)");
   const [note, setNote] = useState("");
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
 
   // 1. Query Appointments
-  const { data, isLoading, refetch, isRefetching } =
+  const { data, isLoading, isError, error, refetch, isRefetching } =
     useQuery<AppointmentsResponse>({
       queryKey: ["appointments"],
       queryFn: async () => {
@@ -92,6 +111,7 @@ export default function AppointmentsScreen() {
   // 2. Create Appointment Mutation
   const createMutation = useMutation({
     mutationFn: async (payload: {
+      childUid?: string;
       type: AppointmentType;
       scheduledAt: string;
       location?: string;
@@ -130,24 +150,44 @@ export default function AppointmentsScreen() {
 
   const resetForm = () => {
     setSelectedType("NISEHA");
-    setScheduledDate("");
-    setScheduledTime("");
+    setSelectedChildUid("");
+    setScheduledDate(localDateInput());
+    setScheduledTime(DEFAULT_TIME);
     setLocation("በአካል (በቤተክርስቲያን)");
     setNote("");
   };
 
   const handleCreate = () => {
+    const isFather = role === "FATHER";
+
+    if (isFather && !selectedChildUid) {
+      Alert.alert("ማሳሰቢያ", "እባክዎ ቀጠሮው የሚደረግለትን ልጅ ይምረጡ");
+      return;
+    }
+
     if (!scheduledDate.trim()) {
       Alert.alert("ማሳሰቢያ", "እባክዎ የቀጠሮ ቀን ያስገቡ (ምሳሌ፡ 2026-11-20)");
       return;
     }
-    const combinedDatetime = scheduledTime.trim()
-      ? `${scheduledDate.trim()}T${scheduledTime.trim()}:00`
-      : `${scheduledDate.trim()}T10:00:00`;
+
+    // Build the Date in the device's timezone, then send UTC ISO — sending a
+    // naive "YYYY-MM-DDTHH:mm:ss" string made the server parse it as UTC and
+    // shifted Ethiopian appointments by +3 hours.
+    const scheduledAt = new Date(
+      `${scheduledDate.trim()}T${scheduledTime.trim() || DEFAULT_TIME}:00`
+    );
+    if (isNaN(scheduledAt.getTime())) {
+      Alert.alert(
+        "ማሳሰቢያ",
+        "ቀንና ሰዓቱን በትክክለኛ ቅርጽ ያስገቡ (ምሳሌ፡ 2026-11-20 እና 10:00)"
+      );
+      return;
+    }
 
     createMutation.mutate({
+      ...(isFather ? { childUid: selectedChildUid } : {}),
       type: selectedType,
-      scheduledAt: combinedDatetime,
+      scheduledAt: scheduledAt.toISOString(),
       location: location.trim() || undefined,
       message: note.trim() || undefined,
     });
@@ -199,9 +239,23 @@ export default function AppointmentsScreen() {
   };
 
   const appointments = data?.appointments || [];
+  const children = data?.children || [];
 
   return (
     <View style={styles.container}>
+      {/* Load failure must be visible — an empty list is ambiguous. */}
+      {isError && (
+        <View style={styles.errorBanner}>
+          <XCircle color={THEME.colors.error} size={16} />
+          <Text style={styles.errorBannerText}>
+            {(error as Error)?.message || "ቀጠሮዎችን ማምጣት አልተሳካም"}
+          </Text>
+          <TouchableOpacity onPress={() => refetch()} hitSlop={8}>
+            <Text style={styles.retryText}>እንደገና ሞክር</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Father Banner for Students */}
       {data?.fatherName && role === "STUDENT" && (
         <View style={styles.fatherBanner}>
@@ -224,7 +278,7 @@ export default function AppointmentsScreen() {
         }
         contentContainerStyle={styles.listContainer}
         ListEmptyComponent={
-          !isLoading ? (
+          !isLoading && !isError ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
                 <Calendar color={THEME.colors.sacredAmber} size={36} />
@@ -359,6 +413,48 @@ export default function AppointmentsScreen() {
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Child selector — Father only. POST /api/appointments needs
+                  childUid for FATHER; without it the server rejects the request. */}
+              {role === "FATHER" && (
+                <>
+                  <Text style={styles.formLabel}>ልጅ</Text>
+                  {children.length === 0 ? (
+                    <Text style={styles.helperText}>
+                      ምዝገባቸውን ያጠናቀቁ ልጆች አልተገኙም። በመጀመሪያ ልጅዎን ያስመዝግቡ።
+                    </Text>
+                  ) : (
+                    <View style={styles.childList}>
+                      {children.map((child) => {
+                        const active = selectedChildUid === child.uid;
+                        return (
+                          <TouchableOpacity
+                            key={child.uid}
+                            style={[
+                              styles.childChip,
+                              active && styles.childChipActive,
+                            ]}
+                            onPress={() => setSelectedChildUid(child.uid)}
+                            activeOpacity={0.8}
+                          >
+                            <Text
+                              style={[
+                                styles.childChipName,
+                                active && styles.childChipNameActive,
+                              ]}
+                            >
+                              {child.name}
+                            </Text>
+                            <Text style={styles.childChipUid}>
+                              {child.eotcUid}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
+                </>
+              )}
+
               <Text style={styles.formLabel}>የቀጠሮ ዓይነት</Text>
               <View style={styles.typeSelector}>
                 <TouchableOpacity
@@ -396,7 +492,7 @@ export default function AppointmentsScreen() {
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.formLabel}>ቀን (ዓ.ም / ምሳሌ፡ 2026-11-20)</Text>
+              <Text style={styles.formLabel}>ቀን (ምሳሌ፡ 2026-11-20)</Text>
               <TextInput
                 style={styles.formInput}
                 placeholder="2026-11-20"
@@ -473,6 +569,64 @@ const styles = StyleSheet.create({
   bold: {
     fontWeight: "800",
     color: THEME.colors.sacredCrimson,
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: THEME.colors.errorBg,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.errorBorder,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  errorBannerText: {
+    flex: 1,
+    color: THEME.colors.error,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  retryText: {
+    color: THEME.colors.sacredCrimson,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  helperText: {
+    color: THEME.colors.inkMuted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  childList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  childChip: {
+    minWidth: 96,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: THEME.radii.md,
+    backgroundColor: THEME.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  childChipActive: {
+    borderColor: THEME.colors.sacredAmber,
+    backgroundColor: THEME.colors.amberLight,
+  },
+  childChipName: {
+    color: THEME.colors.inkPrimary,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  childChipNameActive: {
+    color: THEME.colors.sacredCrimson,
+  },
+  childChipUid: {
+    color: THEME.colors.inkSubtle,
+    fontSize: 10,
+    fontWeight: "600",
+    marginTop: 2,
   },
   listContainer: {
     paddingHorizontal: 16,
