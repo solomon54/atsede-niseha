@@ -2,6 +2,7 @@
 import "server-only";
 
 import { adminDb } from "@/services/firebase/admin";
+import { sendPushToUsers } from "@/services/push";
 
 import type {
   InAppNotification,
@@ -34,6 +35,17 @@ export async function createNotification(input: {
   await broadcastAppointmentEvent(input.familyId, {
     type: "notification.new",
     notification: record,
+  });
+
+  // Push is best-effort: the in-app record already exists.
+  await sendPushToUsers([input.userId], {
+    title: input.title,
+    body: input.body,
+    channelId: "atsede-appointments",
+    data: {
+      type: "appointment",
+      ...(input.appointmentId ? { appointmentId: input.appointmentId } : {}),
+    },
   });
 
   return record;

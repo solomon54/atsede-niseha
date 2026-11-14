@@ -201,6 +201,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     try {
+      // Stop pushes to this device before the token is invalidated.
+      await apiRequest("/api/notifications/fcm", {
+        method: "DELETE",
+      }).catch(() => {});
+
       await apiRequest("/api/auth/logout", {
         method: "POST",
         requiresAuth: true,

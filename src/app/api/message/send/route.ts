@@ -20,6 +20,11 @@ import {
   UID,
 } from "@/features/messaging/types/messaging.types";
 import { adminDb } from "@/services/firebase/admin";
+import {
+  getChannelRecipientUids,
+  getDisplayName,
+  sendPushToUsers,
+} from "@/services/push";
 import { pusherServer } from "@/services/pusher";
 
 /* ============================================================
@@ -150,7 +155,27 @@ export async function POST(req: NextRequest) {
       clientMessageId: body.clientMessageId,
     });
 
-    // 6. ASYNC BROADCAST (Non-Blocking)
+    // 6. PUSH NOTIFICATION (best-effort — failures never break the send)
+    const recipients = await getChannelRecipientUids(
+      body.channelId,
+      session.uid
+    );
+    if (recipients.length > 0) {
+      const senderName = await getDisplayName(session.uid);
+      await sendPushToUsers(recipients, {
+        title: senderName,
+        // The server only holds ciphertext for E2EE messages, so never echo
+        // message content in a push payload.
+        body: "አዲስ መልእክት ልከዋል",
+        channelId: "atsede-messages",
+        data: {
+          type: "message",
+          channelId: body.channelId,
+        },
+      });
+    }
+
+    // 7. ASYNC BROADCAST (Non-Blocking)
     broadcastNewMessage(
       { uid: session.uid, role: session.role as "FATHER" | "STUDENT" },
       body.channelId,

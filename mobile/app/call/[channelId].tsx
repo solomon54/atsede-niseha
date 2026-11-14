@@ -17,7 +17,7 @@ if (typeof (global as any).FinalizationRegistry === "undefined") {
   };
 }
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -62,12 +62,16 @@ interface TokenResponse {
 }
 
 export default function ChannelCallScreen() {
-  const { channelId } = useLocalSearchParams<{ channelId: string }>();
+  const { channelId, incoming } = useLocalSearchParams<{
+    channelId: string;
+    incoming?: string;
+  }>();
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tokenData, setTokenData] = useState<TokenResponse | null>(null);
+  const hasRung = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -90,6 +94,18 @@ export default function ChannelCallScreen() {
           setTokenData(res);
           // 2. Start LiveKit Audio Session on device
           await AudioSession.startAudioSession();
+
+          // 3. Ring the other participants (the callee opened this screen
+          //    from a push, so only the caller rings).
+          if (incoming !== "1" && !hasRung.current) {
+            hasRung.current = true;
+            apiRequest("/api/livekit/ring", {
+              method: "POST",
+              body: JSON.stringify({ channelId }),
+            }).catch((ringErr) => {
+              console.warn("Failed to ring channel members:", ringErr);
+            });
+          }
         } else {
           setError("የቪዲዮ ጥሪ ፈቃድ ማግኘት አልተቻለም");
         }
@@ -107,7 +123,7 @@ export default function ChannelCallScreen() {
       isMounted = false;
       AudioSession.stopAudioSession().catch(() => {});
     };
-  }, [channelId]);
+  }, [channelId, incoming]);
 
   const handleEndCall = async () => {
     try {

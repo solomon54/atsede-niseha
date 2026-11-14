@@ -24,7 +24,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as ScreenCapture from "expo-screen-capture";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { registerGlobals } from "@livekit/react-native";
-import { AuthProvider } from "../src/lib/auth-context";
+import { AuthProvider, useAuth } from "../src/lib/auth-context";
 import { notificationService } from "../src/lib/notifications";
 import { THEME } from "../src/constants/theme";
 
@@ -44,6 +44,28 @@ const queryClient = new QueryClient({
   },
 });
 
+/**
+ * Registers the FCM token only after a session exists — at cold start the
+ * token is read from SecureStore asynchronously, so registering in RootLayout
+ * would always fire an unauthenticated request.
+ */
+function NotificationBridge() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  useEffect(() => {
+    if (isLoading || !isAuthenticated) return;
+
+    notificationService.registerForPushNotifications();
+    const cleanupTokenRefresh = notificationService.setupTokenRefresh();
+
+    return () => {
+      cleanupTokenRefresh();
+    };
+  }, [isAuthenticated, isLoading]);
+
+  return null;
+}
+
 export default function RootLayout() {
   const router = useRouter();
 
@@ -58,8 +80,7 @@ export default function RootLayout() {
     }
     enableScreenPrivacy();
 
-    // 2. Register for Push Notifications & Setup Deep-link navigation
-    notificationService.registerForPushNotifications();
+    // 2. Deep-link navigation when a notification is tapped.
     const cleanupListeners = notificationService.setupListeners(
       (targetRoute) => {
         router.push(targetRoute as any);
@@ -75,6 +96,7 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
+          <NotificationBridge />
           <StatusBar style="dark" backgroundColor={THEME.colors.navigationBg} />
           <Stack
             screenOptions={{

@@ -31,7 +31,14 @@
       ]
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "color": "#D97706",
+          "defaultChannel": "atsede-messages"
+        }
+      ]
     ]
   }
 }
