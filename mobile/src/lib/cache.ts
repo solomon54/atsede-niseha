@@ -1,6 +1,23 @@
 import * as SQLite from "expo-sqlite";
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
+let writeQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Sequential transaction mutex.
+ * SQLite is strictly single-threaded per connection. Overlapping calls to
+ * `withTransactionAsync` (e.g. rapid chat polling or simultaneous cache writes)
+ * will fail with "cannot start a transaction within a transaction".
+ * Enqueuing writes guarantees one transaction finishes before the next begins.
+ */
+function enqueueWrite<T>(op: () => Promise<T>): Promise<T> {
+  const next = writeQueue.then(op, op);
+  writeQueue = next.then(
+    () => {},
+    () => {}
+  );
+  return next;
+}
 
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbInstance) {
@@ -76,25 +93,34 @@ export const offlineCache = {
     channelId: string,
     messages: Array<{ id: string; createdAt: number; [key: string]: any }>
   ): Promise<void> {
-    try {
-      const db = await getDb();
-      // Keep only the latest 50 messages
-      const latest50 = [...messages]
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, 50);
+    return enqueueWrite(async () => {
+      try {
+        const db = await getDb();
+        // Keep only the latest 50 messages
+        const latest50 = [...messages]
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .slice(0, 50);
 
-      await db.withTransactionAsync(async () => {
-        await db.runAsync("DELETE FROM messages_cache WHERE channelId = ?", [channelId]);
-        for (const msg of latest50) {
-          await db.runAsync(
-            "INSERT OR REPLACE INTO messages_cache (id, channelId, data, createdAt) VALUES (?, ?, ?, ?)",
-            [msg.id, channelId, JSON.stringify(msg), msg.createdAt || Date.now()]
-          );
-        }
-      });
-    } catch (e) {
-      console.warn("Failed saving messages to offline cache:", e);
-    }
+        await db.withTransactionAsync(async () => {
+          await db.runAsync("DELETE FROM messages_cache WHERE channelId = ?", [
+            channelId,
+          ]);
+          for (const msg of latest50) {
+            await db.runAsync(
+              "INSERT OR REPLACE INTO messages_cache (id, channelId, data, createdAt) VALUES (?, ?, ?, ?)",
+              [
+                msg.id,
+                channelId,
+                JSON.stringify(msg),
+                msg.createdAt || Date.now(),
+              ]
+            );
+          }
+        });
+      } catch (e) {
+        console.warn("Failed saving messages to offline cache:", e);
+      }
+    });
   },
 
   // ─── PRIVACY ───────────────────────────────────────────────
