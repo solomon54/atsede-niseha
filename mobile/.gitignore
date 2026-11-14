@@ -14,4 +14,5 @@ android/.cxx/
 *.apk
 *.aab
 .DS_Store
+*google-services.json
 

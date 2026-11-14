@@ -23,6 +23,7 @@ import { SubmitHandler, useForm } from "react-hook-form";
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
 import { getTodayEthiopian } from "@/shared/utils/calendar/ethiopianCalendar";
 import { cn } from "@/shared/utils/utils";
+import { validateEmailAddress } from "@/shared/validations/email";
 
 import {
   RegisterChildFormData,
@@ -31,11 +32,56 @@ import {
 import {
   AcademicSection,
   ConnectSection,
+  EmailVerificationState,
   GeographySection,
   IdentitySection,
 } from "./FormModules";
 import { PortraitPicker } from "./PortraitPicker";
 import { TokenSanctuary } from "./TokenSanctuary";
+
+const EMAIL_VERIFIED_MESSAGE = "ኢሜይሉ ተረጋግጧል ✞ (Email verified)";
+
+/**
+ * Asks the server to verify the address (syntax + blocklist + MX). The server
+ * repeats the same checks on submit, so this is purely for early UI feedback.
+ */
+async function requestEmailVerification(
+  email: string,
+  signal?: AbortSignal
+): Promise<{ valid: boolean; message: string }> {
+  const local = validateEmailAddress(email);
+  if (!local.valid) return { valid: false, message: local.message };
+
+  try {
+    const res = await fetch("/api/email/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+      signal,
+    });
+
+    const data = (await res.json().catch(() => ({}))) as {
+      valid?: boolean;
+      message?: string;
+    };
+
+    if (res.ok && data.valid) return { valid: true, message: "" };
+
+    return {
+      valid: false,
+      message:
+        data.message ||
+        "ኢሜይሉን ማረጋገጥ አልተቻለም። እባክዎ ትክክለኛ ኢሜይል ያስገቡ። (Could not verify this email)",
+    };
+  } catch (error) {
+    if ((error as { name?: string }).name === "AbortError") throw error;
+    return {
+      valid: false,
+      message:
+        "የኢሜይል ማረጋገጫ ግንኙነት አልተሳካም። እንደገና ይሞክሩ። (Email verification unavailable)",
+    };
+  }
+}
 
 interface RegisterChildFormProps {
   fatherId: string;
@@ -57,6 +103,11 @@ export default function RegisterChildForm({
     type: "success" | "error";
     text: string;
   } | null>(null);
+  const [emailVerification, setEmailVerification] =
+    useState<EmailVerificationState>({
+      status: "idle",
+      message: "",
+    });
 
   // ─────────────────────────────────────────────
   // FORM SETUP
@@ -70,7 +121,7 @@ export default function RegisterChildForm({
     control,
     formState: { errors, isSubmitting },
   } = useForm<RegisterChildFormData>({
-    resolver: zodResolver(RegisterChildSchema) as any,
+    resolver: zodResolver(RegisterChildSchema),
     mode: "all", // 🔥 CHANGED: Enables true real-time feedback as the user types/selects
     defaultValues: {
       fullToken: "",
@@ -100,6 +151,59 @@ export default function RegisterChildForm({
   });
 
   const currentToken = watch("fullToken");
+  const emailValue = watch("email");
+
+  // ─────────────────────────────────────────────
+  // EMAIL VERIFICATION (debounced)
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+    const email = (emailValue || "").trim();
+
+    if (!email) {
+      setEmailVerification({ status: "idle", message: "" });
+      return;
+    }
+
+    const local = validateEmailAddress(email);
+    if (!local.valid) {
+      setEmailVerification({ status: "invalid", message: local.message });
+      return;
+    }
+
+    setEmailVerification({
+      status: "checking",
+      message: "ኢሜይሉን በማረጋገጥ ላይ... (Verifying email)",
+    });
+
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const result = await requestEmailVerification(
+          email,
+          controller.signal
+        );
+        if (controller.signal.aborted) return;
+
+        setEmailVerification(
+          result.valid
+            ? { status: "valid", message: EMAIL_VERIFIED_MESSAGE }
+            : { status: "invalid", message: result.message }
+        );
+      } catch (error) {
+        if ((error as { name?: string }).name === "AbortError") return;
+        setEmailVerification({
+          status: "invalid",
+          message:
+            "የኢሜይል ማረጋገጫ ግንኙነት አልተሳካም። (Email verification unavailable)",
+        });
+      }
+    }, 650);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [emailValue]);
 
   // ─────────────────────────────────────────────
   // TOKEN GENERATOR
@@ -161,6 +265,19 @@ export default function RegisterChildForm({
     setStatus(null);
 
     try {
+      // Re-check immediately before submission so a stale "valid" state from
+      // a previous address can never slip through.
+      const emailCheck = await requestEmailVerification(data.email);
+      if (!emailCheck.valid) {
+        setEmailVerification({ status: "invalid", message: emailCheck.message });
+        setStatus({ type: "error", text: emailCheck.message });
+        return;
+      }
+      setEmailVerification({
+        status: "valid",
+        message: EMAIL_VERIFIED_MESSAGE,
+      });
+
       let photoUrl = "";
 
       // Upload image
@@ -258,19 +375,20 @@ export default function RegisterChildForm({
             <IdentitySection
               register={register}
               errors={errors}
-              control={control as any}
+              control={control}
             />
-            <GeographySection control={control as any} errors={errors} />
+            <GeographySection control={control} errors={errors} />
             <AcademicSection
               register={register}
-              control={control as any}
+              control={control}
               errors={errors}
               setValue={setValue}
             />
             <ConnectSection
               register={register}
               errors={errors}
-              control={control as any}
+              control={control}
+              emailVerification={emailVerification}
             />
           </div>
 
@@ -285,7 +403,14 @@ export default function RegisterChildForm({
 
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={
+                isSubmitting || emailVerification.status !== "valid"
+              }
+              title={
+                emailVerification.status === "valid"
+                  ? undefined
+                  : "ኢሜይሉ እስኪረጋገጥ ድረስ መመዝገብ አይቻልም (Verify the email first)"
+              }
               className={cn(
                 "w-full md:w-2/3 lg:w-1/3 py-4 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] flex items-center justify-center gap-2 transition-all active:scale-95 disabled:bg-slate-600",
                 "bg-slate-950 hover:bg-amber-600 text-white shadow-lg"

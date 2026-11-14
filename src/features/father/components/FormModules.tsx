@@ -9,7 +9,15 @@
 
 "use client";
 
-import { GraduationCap, MapPin, Phone, User } from "lucide-react";
+import {
+  CheckCircle2,
+  GraduationCap,
+  MapPin,
+  Phone,
+  RefreshCcw,
+  User,
+  XCircle,
+} from "lucide-react";
 import React, { useMemo } from "react";
 import {
   Control,
@@ -43,6 +51,11 @@ interface GroupProps {
   watch: UseFormWatch<RegisterChildFormData>;
   setValue: UseFormSetValue<RegisterChildFormData>;
   control: Control<RegisterChildFormData>;
+}
+
+export interface EmailVerificationState {
+  status: "idle" | "checking" | "valid" | "invalid";
+  message: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -375,7 +388,10 @@ export function ConnectSection({
   register,
   errors,
   control,
-}: Pick<GroupProps, "register" | "errors" | "control">) {
+  emailVerification,
+}: Pick<GroupProps, "register" | "errors" | "control"> & {
+  emailVerification?: EmailVerificationState;
+}) {
   return (
     <div className="space-y-7">
       <SectionTitle title="የመገናኛ መረጃ" icon={<Phone size={12} />} />
@@ -389,11 +405,65 @@ export function ConnectSection({
       </Field>
 
       <Field label="ኢሜል " error={errors.email?.message}>
-        <input
-          {...register("email")}
-          className="sanctuary-input font-mono"
-          placeholder="ለምሳሌ፡ atsedenis@gmail.com"
-        />
+        <div className="relative">
+          <input
+            {...register("email")}
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            autoCapitalize="none"
+            spellCheck={false}
+            aria-invalid={
+              emailVerification?.status === "invalid" ? true : undefined
+            }
+            className={cn(
+              "sanctuary-input font-mono pr-10",
+              emailVerification?.status === "valid" &&
+                "border-emerald-300 focus:border-emerald-400",
+              emailVerification?.status === "invalid" &&
+                "border-red-300 focus:border-red-400"
+            )}
+            placeholder="ለምሳሌ፡ atsedenis@gmail.com"
+          />
+          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
+            {emailVerification?.status === "checking" && (
+              <RefreshCcw
+                size={16}
+                className="animate-spin text-amber-500"
+                aria-label="Verifying email"
+              />
+            )}
+            {emailVerification?.status === "valid" && (
+              <CheckCircle2
+                size={16}
+                className="text-emerald-500"
+                aria-label="Email verified"
+              />
+            )}
+            {emailVerification?.status === "invalid" && (
+              <XCircle
+                size={16}
+                className="text-red-500"
+                aria-label="Email not verified"
+              />
+            )}
+          </span>
+        </div>
+        {emailVerification &&
+          emailVerification.status !== "idle" &&
+          emailVerification.message && (
+            <p
+              className={cn(
+                "text-[10px] font-bold mt-1 ml-0.5 flex items-start gap-1",
+                emailVerification.status === "valid"
+                  ? "text-emerald-600"
+                  : emailVerification.status === "checking"
+                    ? "text-amber-600"
+                    : "text-red-600"
+              )}>
+              {emailVerification.message}
+            </p>
+          )}
       </Field>
 
       <Field label="የአፍ መፍቻ ቋንቋ" error={errors.language?.message}>

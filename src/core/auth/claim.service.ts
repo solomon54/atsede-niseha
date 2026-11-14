@@ -2,15 +2,13 @@
 
 import { z } from "zod";
 
-// ────────────────────────────────────────────────
-// Added imports for channel provisioning / joining
-// Adjust path if your folder structure is different
 import {
   joinStudentToFamilyChannels,
   provisionFamilyChannels,
 } from "@/features/messaging/services/channelProvision.service";
 import { UID } from "@/features/messaging/types/messaging.types";
 import { adminAuth, adminDb } from "@/services/firebase/admin";
+import { validateEmailAddress } from "@/shared/validations/email";
 
 import { AuthError } from "./auth.errors";
 import { createSessionFromUid } from "./session.service";
@@ -125,6 +123,16 @@ export async function claimAccount(raw: unknown) {
       "VALIDATION_ERROR",
       400
     );
+  }
+
+  const emailValidation = validateEmailAddress(email);
+  if (!emailValidation.valid) {
+    throw new AuthError(emailValidation.message, "VALIDATION_ERROR", 400);
+  }
+
+  const deliverability = await verifyEmailDeliverability(email);
+  if (!deliverability.valid) {
+    throw new AuthError(deliverability.message, "VALIDATION_ERROR", 400);
   }
 
   let uidCreated: string | null = null;

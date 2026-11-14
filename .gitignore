@@ -61,4 +61,5 @@ mobile/android/.idea/
 mobile/android/.cxx/
 *.apk
 *.aab
+*google-services.json
 

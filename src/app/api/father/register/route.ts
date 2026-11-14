@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { ZodError } from "zod";
 
 import { saveChildRecord } from "@/features/auth/services/childRegistration.service";
 import { RegisterChildSchema } from "@/features/father/services/validators";
-import { adminDb } from "@/services/firebase/admin";
 import {
   sendChildRegistrationEmail,
   verifyEmailDeliverability,
 } from "@/services/email/email.service";
+import { adminDb } from "@/services/firebase/admin";
 
 /**
  * API Route Handler for Spiritual Child Registration
@@ -63,12 +62,13 @@ export async function POST(req: Request): Promise<NextResponse> {
      * Phase 4: Email Verification (Deliverability Check)
      */
     if (childData.email) {
-      const isDeliverable = await verifyEmailDeliverability(childData.email);
-      if (!isDeliverable) {
+      const verification = await verifyEmailDeliverability(childData.email);
+      if (!verification.valid) {
         return NextResponse.json(
           {
-            error: "Invalid Email Domain",
-            message: "እባክዎ ትክክለኛ እና የሚሰራ የኢሜይል አድራሻ ያስገቡ። (Please enter a deliverable email address)",
+            error: "Invalid Email",
+            code: verification.code,
+            message: verification.message,
           },
           { status: 400 }
         );
@@ -108,12 +108,20 @@ export async function POST(req: Request): Promise<NextResponse> {
      * Phase 7: Dispatch Email with Token and Deep Link
      */
     if (childData.email) {
-      await sendChildRegistrationEmail(
+      const emailResult = await sendChildRegistrationEmail(
         childData.email,
         childData.secularName,
         fatherName,
         childData.fullToken
       );
+
+      if (!emailResult.success) {
+        console.warn(
+          "[STUDENT_REGISTRATION_EMAIL_FAILED]:",
+          childData.email,
+          emailResult.error ?? emailResult.status
+        );
+      }
     }
 
     return NextResponse.json({

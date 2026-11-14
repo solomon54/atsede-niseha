@@ -151,8 +151,25 @@ export default function LoginScreen() {
         setError("የይለፍ ቃል ቢያንስ 8 ፊደላት መሆን አለበት");
         return;
       }
-      if (!email.trim() || !email.includes("@")) {
-        setError("ትክክለኛ የኢሜይል አድራሻ ያስገቡ");
+      const emailClean = email.trim().toLowerCase();
+      if (!emailClean || !emailClean.includes("@") || !emailClean.includes(".")) {
+        setError("ትክክለኛ የኢሜይል አድራሻ ያስገቡ (example@domain.com)");
+        return;
+      }
+      const placeholderPatterns = [
+        "example.com",
+        "test.com",
+        "fake.com",
+        "sample.com",
+        "domain.com",
+        "mailinator.com",
+        "tempmail.com",
+        "10minutemail.com",
+        "trashmail.com",
+        "yopmail.com",
+      ];
+      if (placeholderPatterns.some((d) => emailClean.endsWith("@" + d) || emailClean.endsWith("." + d))) {
+        setError("የምሳሌ/የቦታ ያዥ ኢሜይል አይፈቀድም (Placeholder emails are not allowed)");
         return;
       }
       if (password !== confirmPassword) {

@@ -3,6 +3,8 @@ import { z } from "zod";
 
 import { getTodayEthiopian } from "@/shared/utils/calendar/ethiopianCalendar";
 
+import { validateEmailAddress } from "./email";
+
 /**
  * Common Ethiopian name normalization
  * - Removes parentheses content (e.g. (ሙሉ))
@@ -147,14 +149,23 @@ export function ethiopianPhoneField() {
 }
 
 /**
- * Strictly required email
+ * Strictly required email.
+ *
+ * Uses the shared validator so the browser, the API, and the mobile client all
+ * reject the same malformed / placeholder / disposable addresses. Deliverability
+ * (MX records) is checked asynchronously on the server.
  */
 export function requiredEmailField() {
   return z
     .string()
     .trim()
-    .min(1, { message: "ኢሜይል ባዶ መሆን አይችልም" })
-    .email({ message: "ትክክለኛ ኢሜይል አስገባ (example@domain.com)" });
+    .superRefine((value, ctx) => {
+      const result = validateEmailAddress(value);
+      if (!result.valid) {
+        ctx.addIssue({ code: "custom", message: result.message });
+      }
+    })
+    .transform((value) => value.toLowerCase());
 }
 
 /**
