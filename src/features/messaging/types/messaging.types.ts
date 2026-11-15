@@ -116,6 +116,14 @@ export interface MediaDescriptor {
   thumbnailUrl?: string | null;
 }
 
+export interface ReplyToDescriptor {
+  messageId: string;
+  senderName: string;
+  senderRole?: string;
+  contentSnippet: string;
+  type?: MessageType;
+}
+
 export interface Message {
   isRead: boolean;
   id: MessageID;
@@ -131,6 +139,9 @@ export interface Message {
   createdAt: number;
   editedAt?: number;
   deletedAt?: number;
+  deletedBy?: string;
+  reactions?: Record<string, string[]>;
+  replyTo?: ReplyToDescriptor | null;
 }
 
 /* ============================================================

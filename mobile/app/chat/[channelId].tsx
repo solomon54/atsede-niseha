@@ -18,18 +18,25 @@ import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
+import * as Clipboard from "expo-clipboard";
 import {
   Camera,
   Check,
   Clock,
+  Copy,
+  CornerUpLeft,
   Download,
+  Edit2,
   FileText,
   Image as ImageIcon,
   Lock,
+  MoreVertical,
   Paperclip,
   Play,
   Send,
   Shield,
+  Smile,
+  Trash2,
   Video,
   X,
   XCircle,
@@ -70,6 +77,14 @@ export interface StagedAttachment {
   isDocument?: boolean;
 }
 
+export interface ReplyToDescriptor {
+  messageId: string;
+  senderName: string;
+  senderRole?: string;
+  contentSnippet: string;
+  type?: string;
+}
+
 interface MessageItem {
   id: string;
   channelId: string;
@@ -80,10 +95,23 @@ interface MessageItem {
   content: string;
   media?: MediaDescriptor | null;
   createdAt: number;
+  editedAt?: number;
+  deletedAt?: number;
   status?: "PENDING" | "SENT";
   isEncrypted?: boolean;
   encryption?: EncryptionEnvelope | null;
+  reactions?: Record<string, string[]>;
+  replyTo?: ReplyToDescriptor | null;
 }
+
+export const DIGNIFIED_REACTIONS = [
+  { emoji: "🙏", label: "አሜን / ጸሎት" },
+  { emoji: "✝️", label: "መስቀል" },
+  { emoji: "🕊️", label: "ሰላም" },
+  { emoji: "❤️", label: "ፍቅር" },
+  { emoji: "🕯️", label: "ተስፋ" },
+  { emoji: "✨", label: "በረከት" },
+] as const;
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB
 
@@ -240,6 +268,12 @@ export default function ChannelChatScreen() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState("");
 
+  // Replies, Edits, Reactions & Action Menu State
+  const [replyingTo, setReplyingTo] = useState<MessageItem | null>(null);
+  const [editingMessage, setEditingMessage] = useState<MessageItem | null>(null);
+  const [selectedMessage, setSelectedMessage] = useState<MessageItem | null>(null);
+  const [actionMenuVisible, setActionMenuVisible] = useState(false);
+
   const flatListRef = useRef<FlatList>(null);
   const attemptedDecrypt = useRef<Set<string>>(new Set());
   const lastMarkedRead = useRef<string | null>(null);
@@ -390,13 +424,14 @@ export default function ChannelChatScreen() {
     (a, b) => a.createdAt - b.createdAt
   );
 
-  // 6. Send Mutation (handles text and media)
+  // 6. Send Mutation (handles text, media, and replies)
   const sendMutation = useMutation({
     mutationFn: async (payload: {
       content?: string;
       type?: "TEXT" | "IMAGE" | "FILE" | "VIDEO" | "AUDIO";
       media?: MediaDescriptor | null;
       clientMessageId: string;
+      replyTo?: ReplyToDescriptor | null;
     }) => {
       let ciphertext = payload.content || "";
       let encryptionEnvelope: EncryptionEnvelope | null = null;
@@ -429,6 +464,7 @@ export default function ChannelChatScreen() {
             isEncrypted: Boolean(encryptionEnvelope),
             encryption: encryptionEnvelope,
             clientMessageId: payload.clientMessageId,
+            replyTo: payload.replyTo,
           }),
         }
       );
@@ -450,6 +486,121 @@ export default function ChannelChatScreen() {
     },
   });
 
+  // Edit Message Mutation
+  const editMutation = useMutation({
+    mutationFn: async (payload: { messageId: string; content: string }) => {
+      return await apiRequest<{ success: boolean }>("/api/message/edit", {
+        method: "POST",
+        body: JSON.stringify({
+          channelId,
+          messageId: payload.messageId,
+          content: payload.content,
+        }),
+      });
+    },
+    onSuccess: (_res, vars) => {
+      queryClient.setQueryData<MessageItem[]>(
+        ["messages", channelId],
+        (old) => {
+          if (!old) return old;
+          return old.map((m) =>
+            m.id === vars.messageId
+              ? { ...m, content: vars.content, editedAt: Date.now() }
+              : m
+          );
+        }
+      );
+      setEditingMessage(null);
+      setInputText("");
+      queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
+    },
+    onError: (err: any) => {
+      Alert.alert("ስህተት", "መልዕክቱን ማረም አልተቻለም፡ " + (err.message || ""));
+    },
+  });
+
+  // Delete Message Mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (messageId: string) => {
+      return await apiRequest<{ success: boolean }>("/api/message/delete", {
+        method: "POST",
+        body: JSON.stringify({
+          channelId,
+          messageId,
+        }),
+      });
+    },
+    onSuccess: (_res, messageId) => {
+      queryClient.setQueryData<MessageItem[]>(
+        ["messages", channelId],
+        (old) => {
+          if (!old) return old;
+          return old.map((m) =>
+            m.id === messageId
+              ? { ...m, deletedAt: Date.now(), content: "", media: null }
+              : m
+          );
+        }
+      );
+      queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
+    },
+    onError: (err: any) => {
+      Alert.alert("ስህተት", "መልዕክቱን መሰረዝ አልተቻለም፡ " + (err.message || ""));
+    },
+  });
+
+  // Toggle Reaction Mutation
+  const reactMutation = useMutation({
+    mutationFn: async (payload: { messageId: string; emoji: string }) => {
+      return await apiRequest<{
+        success: boolean;
+        reactions: Record<string, string[]>;
+      }>("/api/message/react", {
+        method: "POST",
+        body: JSON.stringify({
+          channelId,
+          messageId: payload.messageId,
+          emoji: payload.emoji,
+        }),
+      });
+    },
+    onSuccess: (data, vars) => {
+      queryClient.setQueryData<MessageItem[]>(
+        ["messages", channelId],
+        (old) => {
+          if (!old) return old;
+          return old.map((m) =>
+            m.id === vars.messageId ? { ...m, reactions: data.reactions } : m
+          );
+        }
+      );
+      queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
+    },
+    onError: (err: any) => {
+      console.warn("Reaction failed:", err);
+    },
+  });
+
+  const getReplySnippet = (target: MessageItem | null): ReplyToDescriptor | null => {
+    if (!target) return null;
+    const plain = displayContent(target);
+    return {
+      messageId: target.id,
+      senderName:
+        target.senderId === uid ? "እርስዎ" : target.senderName || "ተጠቃሚ",
+      senderRole: target.senderRole,
+      contentSnippet: plain
+        ? plain.substring(0, 80)
+        : target.media
+        ? target.media.mimeType.startsWith("image/")
+          ? "[ፎቶ]"
+          : target.media.mimeType.startsWith("video/")
+          ? "[ቪዲዮ]"
+          : "[ፋይል]"
+        : "[መልዕክት]",
+    };
+  };
+
   const handleSendText = () => {
     const trimmed = inputText.trim();
     if (!trimmed || sendMutation.isPending) return;
@@ -457,6 +608,8 @@ export default function ChannelChatScreen() {
     const clientId = `local_${Date.now()}_${Math.random()
       .toString(36)
       .substring(2, 7)}`;
+    const replySnippet = getReplySnippet(replyingTo);
+
     const newMsg: MessageItem = {
       id: clientId,
       channelId: channelId!,
@@ -465,15 +618,18 @@ export default function ChannelChatScreen() {
       content: trimmed,
       createdAt: Date.now(),
       status: "PENDING",
+      replyTo: replySnippet,
     };
 
     setOptimisticMessages((prev) => [...prev, newMsg]);
     setInputText("");
+    setReplyingTo(null);
 
     sendMutation.mutate({
       content: trimmed,
       type: "TEXT",
       clientMessageId: clientId,
+      replyTo: replySnippet,
     });
 
     setTimeout(() => {
@@ -486,6 +642,7 @@ export default function ChannelChatScreen() {
     if (!stagedAttachment || !channelId) return;
     const attachment = stagedAttachment;
     const caption = inputText.trim();
+    const replySnippet = getReplySnippet(replyingTo);
 
     setIsUploading(true);
     setUploadStatusText("ፋይሉን በመጫን ላይ…");
@@ -532,17 +689,20 @@ export default function ChannelChatScreen() {
           type: msgType,
           createdAt: Date.now(),
           status: "PENDING",
+          replyTo: replySnippet,
         };
 
         setOptimisticMessages((prev) => [...prev, newMsg]);
         setStagedAttachment(null);
         setInputText("");
+        setReplyingTo(null);
 
         sendMutation.mutate({
           content: caption,
           type: msgType,
           media: finalMedia,
           clientMessageId: clientId,
+          replyTo: replySnippet,
         });
 
         setTimeout(() => {
@@ -561,6 +721,16 @@ export default function ChannelChatScreen() {
   };
 
   const handlePressSend = () => {
+    if (editingMessage) {
+      const trimmed = inputText.trim();
+      if (!trimmed || editMutation.isPending) return;
+      editMutation.mutate({
+        messageId: editingMessage.id,
+        content: trimmed,
+      });
+      return;
+    }
+
     if (stagedAttachment) {
       handleSendWithAttachment();
     } else {
@@ -754,6 +924,7 @@ export default function ChannelChatScreen() {
           renderItem={({ item }) => {
             const isMe = item.senderId === uid || item.senderId === "me";
             const isFather = item.senderRole === "FATHER";
+            const isDeleted = Boolean(item.deletedAt);
             const locked =
               item.isEncrypted &&
               displayContent(item) === LOCKED_MESSAGE_PLACEHOLDER;
@@ -772,7 +943,14 @@ export default function ChannelChatScreen() {
                   isMe ? styles.myMsgRow : styles.otherMsgRow,
                 ]}
               >
-                <View
+                <TouchableOpacity
+                  activeOpacity={0.88}
+                  onLongPress={() => {
+                    if (!isDeleted) {
+                      setSelectedMessage(item);
+                      setActionMenuVisible(true);
+                    }
+                  }}
                   style={[
                     styles.bubble,
                     isMe
@@ -780,9 +958,10 @@ export default function ChannelChatScreen() {
                       : isFather
                       ? styles.fatherBubble
                       : styles.otherBubble,
+                    isDeleted && styles.deletedBubble,
                   ]}
                 >
-                  {!isMe && isFather && (
+                  {!isMe && isFather && !isDeleted && (
                     <View style={styles.fatherBadgeRow}>
                       <Shield color={THEME.colors.sacredAmber} size={13} />
                       <Text style={styles.fatherBadgeText}>
@@ -791,159 +970,251 @@ export default function ChannelChatScreen() {
                     </View>
                   )}
 
-                  {!isMe && !isFather && item.senderName ? (
+                  {!isMe && !isFather && item.senderName && !isDeleted ? (
                     <Text style={styles.senderName}>{item.senderName}</Text>
                   ) : null}
 
-                  {/* Media Content */}
-                  {hasMedia && item.media?.url && (
-                    <View style={styles.mediaContainer}>
-                      {isImg ? (
-                        <TouchableOpacity
-                          activeOpacity={0.9}
-                          onPress={() =>
-                            item.media?.url && Linking.openURL(item.media.url)
-                          }
-                          style={styles.imageCard}
-                        >
-                          <Image
-                            source={{ uri: item.media.url }}
-                            style={styles.msgImage}
-                            resizeMode="cover"
-                          />
-                        </TouchableOpacity>
-                      ) : isVid ? (
-                        <TouchableOpacity
-                          activeOpacity={0.9}
-                          onPress={() =>
-                            item.media?.url && Linking.openURL(item.media.url)
-                          }
-                          style={styles.videoCard}
-                        >
-                          {item.media.thumbnailUrl ? (
-                            <Image
-                              source={{ uri: item.media.thumbnailUrl }}
-                              style={styles.msgImage}
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <View style={styles.videoPlaceholder}>
-                              <Video color="#FFFFFF" size={32} />
-                            </View>
-                          )}
-                          <View style={styles.playIconOverlay}>
-                            <Play color="#FFFFFF" size={24} fill="#FFFFFF" />
-                          </View>
-                          {item.media.durationSeconds ? (
-                            <View style={styles.durationBadge}>
-                              <Text style={styles.durationText}>
-                                {Math.floor(item.media.durationSeconds / 60)}:
-                                {String(
-                                  item.media.durationSeconds % 60
-                                ).padStart(2, "0")}
-                              </Text>
-                            </View>
-                          ) : null}
-                        </TouchableOpacity>
-                      ) : (
-                        <TouchableOpacity
-                          activeOpacity={0.8}
-                          onPress={() =>
-                            item.media?.url && Linking.openURL(item.media.url)
-                          }
+                  {/* Reply Quote Header in Bubble */}
+                  {!isDeleted && item.replyTo && (
+                    <View
+                      style={[
+                        styles.bubbleReplyBox,
+                        isMe
+                          ? styles.myBubbleReplyBox
+                          : styles.otherBubbleReplyBox,
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.bubbleReplyBar,
+                          {
+                            backgroundColor: isMe
+                              ? THEME.colors.sacredAmber
+                              : THEME.colors.sacredCrimson,
+                          },
+                        ]}
+                      />
+                      <View style={styles.bubbleReplyContent}>
+                        <Text
                           style={[
-                            styles.docCard,
-                            isMe ? styles.myDocCard : styles.otherDocCard,
+                            styles.bubbleReplyAuthor,
+                            isMe
+                              ? styles.myBubbleReplyAuthor
+                              : styles.otherBubbleReplyAuthor,
                           ]}
+                          numberOfLines={1}
                         >
-                          {(() => {
-                            const fileName = resolveFilename(item.media);
-                            const badge = getFileBadge(
-                              fileName,
-                              item.media.mimeType
-                            );
-                            return (
-                              <>
-                                <View
-                                  style={[
-                                    styles.docBadgeBox,
-                                    { backgroundColor: badge.bg },
-                                  ]}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.docBadgeText,
-                                      { color: badge.text },
-                                    ]}
-                                  >
-                                    {badge.label}
-                                  </Text>
-                                </View>
-                                <View style={styles.docInfo}>
-                                  <Text
-                                    numberOfLines={2}
-                                    style={[
-                                      styles.docName,
-                                      isMe
-                                        ? styles.myDocName
-                                        : styles.otherDocName,
-                                    ]}
-                                  >
-                                    {fileName}
-                                  </Text>
-                                  <Text
-                                    style={[
-                                      styles.docSize,
-                                      isMe && {
-                                        color: "rgba(255,255,255,0.7)",
-                                      },
-                                    ]}
-                                  >
-                                    {item.media.sizeBytes
-                                      ? formatFileSize(item.media.sizeBytes)
-                                      : "ፋይል"}
-                                  </Text>
-                                </View>
-                                <Download
-                                  color={
-                                    isMe ? "#FFFFFF" : THEME.colors.inkMuted
-                                  }
-                                  size={16}
-                                />
-                              </>
-                            );
-                          })()}
-                        </TouchableOpacity>
-                      )}
+                          {item.replyTo.senderName}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.bubbleReplySnippet,
+                            isMe
+                              ? styles.myBubbleReplySnippet
+                              : styles.otherBubbleReplySnippet,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.replyTo.contentSnippet}
+                        </Text>
+                      </View>
                     </View>
                   )}
 
-                  {/* Caption / Text Content */}
-                  {item.content ? (
-                    <View style={styles.contentRow}>
-                      {locked && (
-                        <Lock
-                          color={
-                            isMe
-                              ? "rgba(255,255,255,0.7)"
-                              : THEME.colors.inkSubtle
-                          }
-                          size={12}
-                        />
-                      )}
+                  {isDeleted ? (
+                    <View style={styles.deletedRow}>
+                      <XCircle
+                        color={
+                          isMe
+                            ? "rgba(255,255,255,0.6)"
+                            : THEME.colors.inkSubtle
+                        }
+                        size={14}
+                      />
                       <Text
                         style={[
-                          styles.msgText,
-                          isMe ? styles.myMsgText : styles.otherMsgText,
-                          locked && styles.lockedText,
+                          styles.deletedText,
+                          isMe
+                            ? styles.myDeletedText
+                            : styles.otherDeletedText,
                         ]}
                       >
-                        {displayContent(item)}
+                        ይህ መልዕክት ተሰርዟል
                       </Text>
                     </View>
-                  ) : null}
+                  ) : (
+                    <>
+                      {/* Media Content */}
+                      {hasMedia && item.media?.url && (
+                        <View style={styles.mediaContainer}>
+                          {isImg ? (
+                            <TouchableOpacity
+                              activeOpacity={0.9}
+                              onPress={() =>
+                                item.media?.url &&
+                                Linking.openURL(item.media.url)
+                              }
+                              style={styles.imageCard}
+                            >
+                              <Image
+                                source={{ uri: item.media.url }}
+                                style={styles.msgImage}
+                                resizeMode="cover"
+                              />
+                            </TouchableOpacity>
+                          ) : isVid ? (
+                            <TouchableOpacity
+                              activeOpacity={0.9}
+                              onPress={() =>
+                                item.media?.url &&
+                                Linking.openURL(item.media.url)
+                              }
+                              style={styles.videoCard}
+                            >
+                              {item.media.thumbnailUrl ? (
+                                <Image
+                                  source={{ uri: item.media.thumbnailUrl }}
+                                  style={styles.msgImage}
+                                  resizeMode="cover"
+                                />
+                              ) : (
+                                <View style={styles.videoPlaceholder}>
+                                  <Video color="#FFFFFF" size={32} />
+                                </View>
+                              )}
+                              <View style={styles.playIconOverlay}>
+                                <Play
+                                  color="#FFFFFF"
+                                  size={24}
+                                  fill="#FFFFFF"
+                                />
+                              </View>
+                              {item.media.durationSeconds ? (
+                                <View style={styles.durationBadge}>
+                                  <Text style={styles.durationText}>
+                                    {Math.floor(
+                                      item.media.durationSeconds / 60
+                                    )}
+                                    :
+                                    {String(
+                                      item.media.durationSeconds % 60
+                                    ).padStart(2, "0")}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </TouchableOpacity>
+                          ) : (
+                            <TouchableOpacity
+                              activeOpacity={0.8}
+                              onPress={() =>
+                                item.media?.url &&
+                                Linking.openURL(item.media.url)
+                              }
+                              style={[
+                                styles.docCard,
+                                isMe ? styles.myDocCard : styles.otherDocCard,
+                              ]}
+                            >
+                              {(() => {
+                                const fileName = resolveFilename(item.media);
+                                const badge = getFileBadge(
+                                  fileName,
+                                  item.media.mimeType
+                                );
+                                return (
+                                  <>
+                                    <View
+                                      style={[
+                                        styles.docBadgeBox,
+                                        { backgroundColor: badge.bg },
+                                      ]}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.docBadgeText,
+                                          { color: badge.text },
+                                        ]}
+                                      >
+                                        {badge.label}
+                                      </Text>
+                                    </View>
+                                    <View style={styles.docInfo}>
+                                      <Text
+                                        numberOfLines={2}
+                                        style={[
+                                          styles.docName,
+                                          isMe
+                                            ? styles.myDocName
+                                            : styles.otherDocName,
+                                        ]}
+                                      >
+                                        {fileName}
+                                      </Text>
+                                      <Text
+                                        style={[
+                                          styles.docSize,
+                                          isMe && {
+                                            color: "rgba(255,255,255,0.7)",
+                                          },
+                                        ]}
+                                      >
+                                        {item.media.sizeBytes
+                                          ? formatFileSize(item.media.sizeBytes)
+                                          : "ፋይል"}
+                                      </Text>
+                                    </View>
+                                    <Download
+                                      color={
+                                        isMe ? "#FFFFFF" : THEME.colors.inkMuted
+                                      }
+                                      size={16}
+                                    />
+                                  </>
+                                );
+                              })()}
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      )}
+
+                      {/* Caption / Text Content */}
+                      {item.content ? (
+                        <View style={styles.contentRow}>
+                          {locked && (
+                            <Lock
+                              color={
+                                isMe
+                                  ? "rgba(255,255,255,0.7)"
+                                  : THEME.colors.inkSubtle
+                              }
+                              size={12}
+                            />
+                          )}
+                          <Text
+                            style={[
+                              styles.msgText,
+                              isMe ? styles.myMsgText : styles.otherMsgText,
+                              locked && styles.lockedText,
+                            ]}
+                          >
+                            {displayContent(item)}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </>
+                  )}
 
                   <View style={styles.footerRow}>
+                    {Boolean(item.editedAt) && !isDeleted && (
+                      <Text
+                        style={[
+                          styles.editedTag,
+                          isMe && { color: "rgba(255, 255, 255, 0.6)" },
+                        ]}
+                      >
+                        (የታረመ)
+                      </Text>
+                    )}
                     <Text
                       style={[
                         styles.timeText,
@@ -962,7 +1233,55 @@ export default function ChannelChatScreen() {
                       </View>
                     )}
                   </View>
-                </View>
+                </TouchableOpacity>
+
+                {/* Reaction Badges Row */}
+                {!isDeleted &&
+                  item.reactions &&
+                  Object.keys(item.reactions).length > 0 && (
+                    <View
+                      style={[
+                        styles.reactionsRow,
+                        isMe
+                          ? styles.myReactionsRow
+                          : styles.otherReactionsRow,
+                      ]}
+                    >
+                      {Object.entries(item.reactions).map(([emoji, uids]) => {
+                        if (!Array.isArray(uids) || uids.length === 0)
+                          return null;
+                        const didReact = uids.includes(uid || "");
+                        return (
+                          <TouchableOpacity
+                            key={emoji}
+                            activeOpacity={0.7}
+                            onPress={() =>
+                              reactMutation.mutate({
+                                messageId: item.id,
+                                emoji,
+                              })
+                            }
+                            style={[
+                              styles.reactionPill,
+                              didReact && styles.reactionPillActive,
+                            ]}
+                          >
+                            <Text style={styles.reactionPillEmoji}>
+                              {emoji}
+                            </Text>
+                            <Text
+                              style={[
+                                styles.reactionPillCount,
+                                didReact && styles.reactionPillCountActive,
+                              ]}
+                            >
+                              {uids.length}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
               </View>
             );
           }}
@@ -977,8 +1296,76 @@ export default function ChannelChatScreen() {
         </View>
       )}
 
-      {/* Modern Composer Bar with Staged Attachment Preview */}
+      {/* Modern Composer Bar with Staged Attachment Preview & Reply/Edit Banners */}
       <View style={styles.composerContainer}>
+        {/* Reply Quote Banner */}
+        {replyingTo && (
+          <View style={styles.replyBannerContainer}>
+            <View style={styles.replyBannerBar} />
+            <View style={styles.replyBannerContent}>
+              <View style={styles.replyBannerHeader}>
+                <CornerUpLeft color={THEME.colors.sacredCrimson} size={13} />
+                <Text style={styles.replyBannerUser} numberOfLines={1}>
+                  {replyingTo.senderId === uid
+                    ? "እርስዎ"
+                    : replyingTo.senderName || "ተጠቃሚ"}
+                </Text>
+              </View>
+              <Text style={styles.replyBannerText} numberOfLines={1}>
+                {replyingTo.content
+                  ? displayContent(replyingTo)
+                  : replyingTo.media
+                  ? replyingTo.media.mimeType.startsWith("image/")
+                    ? "📷 ፎቶ"
+                    : replyingTo.media.mimeType.startsWith("video/")
+                    ? "🎥 ቪዲዮ"
+                    : "📎 ፋይል"
+                  : "መልዕክት"}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => setReplyingTo(null)}
+              style={styles.replyBannerClose}
+              hitSlop={8}
+            >
+              <X color={THEME.colors.inkMuted} size={16} />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Edit Message Banner */}
+        {editingMessage && (
+          <View style={styles.editingBannerContainer}>
+            <View style={styles.editingBannerBar} />
+            <View style={styles.replyBannerContent}>
+              <View style={styles.replyBannerHeader}>
+                <Edit2 color={THEME.colors.sacredAmber} size={13} />
+                <Text
+                  style={[
+                    styles.replyBannerUser,
+                    { color: THEME.colors.sacredAmber },
+                  ]}
+                >
+                  መልዕክት በማረም ላይ...
+                </Text>
+              </View>
+              <Text style={styles.replyBannerText} numberOfLines={1}>
+                {displayContent(editingMessage)}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => {
+                setEditingMessage(null);
+                setInputText("");
+              }}
+              style={styles.replyBannerClose}
+              hitSlop={8}
+            >
+              <X color={THEME.colors.inkMuted} size={16} />
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Staged Attachment Preview Card with Cancel/Delete Button */}
         {stagedAttachment && (
           <View style={styles.stagedCard}>
@@ -1048,7 +1435,9 @@ export default function ChannelChatScreen() {
           <TextInput
             style={styles.textInput}
             placeholder={
-              stagedAttachment
+              editingMessage
+                ? "የታረመውን መልዕክት ይጻፉ..."
+                : stagedAttachment
                 ? "መግለጫ ይጻፉ... (አማራጭ)"
                 : "መልእክት ይጻፉ... (ምክርና መመሪያ)"
             }
@@ -1070,11 +1459,12 @@ export default function ChannelChatScreen() {
             disabled={
               (!inputText.trim() && !stagedAttachment) ||
               isUploading ||
-              sendMutation.isPending
+              sendMutation.isPending ||
+              editMutation.isPending
             }
             activeOpacity={0.8}
           >
-            {isUploading || sendMutation.isPending ? (
+            {isUploading || sendMutation.isPending || editMutation.isPending ? (
               <ActivityIndicator color="#FFFFFF" size="small" />
             ) : (
               <Send color="#FFFFFF" size={16} />
@@ -1082,6 +1472,228 @@ export default function ChannelChatScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Message Long Press Action Sheet Modal */}
+      <Modal
+        visible={actionMenuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setActionMenuVisible(false);
+          setSelectedMessage(null);
+        }}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => {
+            setActionMenuVisible(false);
+            setSelectedMessage(null);
+          }}
+        >
+          <View style={styles.modalCard}>
+            {/* Top Row: Dignified Spiritual Reactions */}
+            <View style={styles.reactionsSheetRow}>
+              {DIGNIFIED_REACTIONS.map((r) => {
+                const isSelected = selectedMessage?.reactions?.[
+                  r.emoji
+                ]?.includes(uid || "");
+                return (
+                  <TouchableOpacity
+                    key={r.emoji}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      if (selectedMessage) {
+                        reactMutation.mutate({
+                          messageId: selectedMessage.id,
+                          emoji: r.emoji,
+                        });
+                      }
+                      setActionMenuVisible(false);
+                      setSelectedMessage(null);
+                    }}
+                    style={[
+                      styles.sheetReactionBtn,
+                      isSelected && styles.sheetReactionBtnActive,
+                    ]}
+                  >
+                    <Text style={styles.sheetReactionEmoji}>{r.emoji}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={styles.sheetDivider} />
+
+            {/* Action: Reply (ጥቅስ / መልስ) */}
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={() => {
+                if (selectedMessage) {
+                  setReplyingTo(selectedMessage);
+                  setEditingMessage(null);
+                }
+                setActionMenuVisible(false);
+                setSelectedMessage(null);
+              }}
+              activeOpacity={0.7}
+            >
+              <View
+                style={[
+                  styles.modalOptionIcon,
+                  { backgroundColor: "#EFF6FF" },
+                ]}
+              >
+                <CornerUpLeft color="#2563EB" size={20} />
+              </View>
+              <View style={styles.modalOptionText}>
+                <Text style={styles.modalOptionLabel}>መልስ ስጥ (Reply)</Text>
+                <Text style={styles.modalOptionSub}>
+                  ለዚህ መልዕክት ጥቅስ ሰጥተው ይመልሱ
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Action: Copy Text */}
+            {selectedMessage?.content ? (
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={async () => {
+                  if (selectedMessage) {
+                    const textToCopy = displayContent(selectedMessage);
+                    await Clipboard.setStringAsync(textToCopy);
+                    Alert.alert(
+                      "ተገልብጧል",
+                      "የመልዕክቱ ጽሑፍ ወደ ቅንጥብ ሰሌዳ ተገልብጧል።"
+                    );
+                  }
+                  setActionMenuVisible(false);
+                  setSelectedMessage(null);
+                }}
+                activeOpacity={0.7}
+              >
+                <View
+                  style={[
+                    styles.modalOptionIcon,
+                    { backgroundColor: "#F3F4F6" },
+                  ]}
+                >
+                  <Copy color="#374151" size={20} />
+                </View>
+                <View style={styles.modalOptionText}>
+                  <Text style={styles.modalOptionLabel}>ጽሑፍ ቅዳ (Copy)</Text>
+                  <Text style={styles.modalOptionSub}>
+                    ጽሑፉን ወደ ቅንጥብ ሰሌዳ ለመገልበጥ
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ) : null}
+
+            {/* Action: Edit (isMe only) */}
+            {selectedMessage &&
+            (selectedMessage.senderId === uid ||
+              selectedMessage.senderId === "me") &&
+            !selectedMessage.deletedAt ? (
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  setEditingMessage(selectedMessage);
+                  setInputText(displayContent(selectedMessage));
+                  setReplyingTo(null);
+                  setActionMenuVisible(false);
+                  setSelectedMessage(null);
+                }}
+                activeOpacity={0.7}
+              >
+                <View
+                  style={[
+                    styles.modalOptionIcon,
+                    { backgroundColor: "#FEF3C7" },
+                  ]}
+                >
+                  <Edit2 color="#B45309" size={20} />
+                </View>
+                <View style={styles.modalOptionText}>
+                  <Text
+                    style={[
+                      styles.modalOptionLabel,
+                      { color: THEME.colors.sacredAmber },
+                    ]}
+                  >
+                    አርትዕ (Edit)
+                  </Text>
+                  <Text style={styles.modalOptionSub}>
+                    የላኩትን መልዕክት ጽሑፍ ያስተካክሉ
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ) : null}
+
+            {/* Action: Delete (isMe or Father) */}
+            {selectedMessage &&
+            !selectedMessage.deletedAt &&
+            (selectedMessage.senderId === uid ||
+              selectedMessage.senderId === "me" ||
+              role === "FATHER" ||
+              role === "GOVERNOR") ? (
+              <TouchableOpacity
+                style={styles.modalOption}
+                onPress={() => {
+                  const msgId = selectedMessage.id;
+                  setActionMenuVisible(false);
+                  setSelectedMessage(null);
+                  Alert.alert(
+                    "መልዕክት ሰርዝ",
+                    "ይህንን መልዕክት መሰረዝ እርግጠኛ ነዎት?",
+                    [
+                      { text: "ተመለስ", style: "cancel" },
+                      {
+                        text: "ሰርዝ",
+                        style: "destructive",
+                        onPress: () => deleteMutation.mutate(msgId),
+                      },
+                    ]
+                  );
+                }}
+                activeOpacity={0.7}
+              >
+                <View
+                  style={[
+                    styles.modalOptionIcon,
+                    { backgroundColor: "#FEE2E2" },
+                  ]}
+                >
+                  <Trash2 color="#DC2626" size={20} />
+                </View>
+                <View style={styles.modalOptionText}>
+                  <Text
+                    style={[
+                      styles.modalOptionLabel,
+                      { color: THEME.colors.error },
+                    ]}
+                  >
+                    ሰርዝ (Delete)
+                  </Text>
+                  <Text style={styles.modalOptionSub}>
+                    ይህ መልዕክት ከውይይቱ እንዲሰረዝ ያድርጉ
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ) : null}
+
+            <TouchableOpacity
+              style={styles.modalCancelBtn}
+              onPress={() => {
+                setActionMenuVisible(false);
+                setSelectedMessage(null);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.modalCancelText}>ተመለስ</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Attachment Bottom Sheet Modal */}
       <Modal
@@ -1598,5 +2210,214 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     color: THEME.colors.inkMuted,
+  },
+
+  /* Reply Quote in Bubble */
+  bubbleReplyBox: {
+    flexDirection: "row",
+    backgroundColor: "rgba(0, 0, 0, 0.06)",
+    borderRadius: 8,
+    padding: 6,
+    marginBottom: 6,
+    overflow: "hidden",
+  },
+  myBubbleReplyBox: {
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+  },
+  otherBubbleReplyBox: {
+    backgroundColor: "rgba(0, 0, 0, 0.04)",
+  },
+  bubbleReplyBar: {
+    width: 3.5,
+    borderRadius: 2,
+    marginRight: 6,
+  },
+  bubbleReplyContent: {
+    flex: 1,
+  },
+  bubbleReplyAuthor: {
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 1,
+  },
+  myBubbleReplyAuthor: {
+    color: THEME.colors.sacredAmber,
+  },
+  otherBubbleReplyAuthor: {
+    color: THEME.colors.sacredCrimson,
+  },
+  bubbleReplySnippet: {
+    fontSize: 11.5,
+  },
+  myBubbleReplySnippet: {
+    color: "rgba(255, 255, 255, 0.8)",
+  },
+  otherBubbleReplySnippet: {
+    color: THEME.colors.inkSubtle,
+  },
+
+  /* Deleted Message State */
+  deletedBubble: {
+    opacity: 0.75,
+    backgroundColor: "#F3F4F6",
+    borderColor: "#E5E7EB",
+    borderWidth: 1,
+  },
+  deletedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 2,
+  },
+  deletedText: {
+    fontSize: 13,
+    fontStyle: "italic",
+  },
+  myDeletedText: {
+    color: "rgba(255, 255, 255, 0.7)",
+  },
+  otherDeletedText: {
+    color: THEME.colors.inkMuted,
+  },
+  editedTag: {
+    fontSize: 9.5,
+    fontStyle: "italic",
+    color: THEME.colors.inkSubtle,
+    marginRight: 3,
+  },
+
+  /* Reaction Badges Row on Message */
+  reactionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 4,
+    marginTop: 4,
+  },
+  myReactionsRow: {
+    justifyContent: "flex-end",
+  },
+  otherReactionsRow: {
+    justifyContent: "flex-start",
+  },
+  reactionPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    gap: 3,
+    ...THEME.shadows.button,
+  },
+  reactionPillActive: {
+    backgroundColor: "#FEF3C7",
+    borderColor: THEME.colors.sacredAmber,
+  },
+  reactionPillEmoji: {
+    fontSize: 13,
+  },
+  reactionPillCount: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: THEME.colors.inkMuted,
+  },
+  reactionPillCountActive: {
+    color: "#B45309",
+    fontWeight: "800",
+  },
+
+  /* Reply & Edit Composer Banners */
+  replyBannerContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: THEME.colors.surface,
+    borderTopLeftRadius: 10,
+    borderTopRightRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+  },
+  replyBannerBar: {
+    width: 3.5,
+    height: "100%",
+    backgroundColor: THEME.colors.sacredCrimson,
+    borderRadius: 2,
+    marginRight: 8,
+  },
+  editingBannerContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFBEB",
+    borderTopLeftRadius: 10,
+    borderTopRightRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  editingBannerBar: {
+    width: 3.5,
+    height: "100%",
+    backgroundColor: THEME.colors.sacredAmber,
+    borderRadius: 2,
+    marginRight: 8,
+  },
+  replyBannerContent: {
+    flex: 1,
+  },
+  replyBannerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  replyBannerUser: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: THEME.colors.sacredCrimson,
+  },
+  replyBannerText: {
+    fontSize: 11.5,
+    color: THEME.colors.inkMuted,
+    marginTop: 1,
+  },
+  replyBannerClose: {
+    padding: 4,
+  },
+
+  /* Reaction Sheet Palette */
+  reactionsSheetRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    alignItems: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  sheetReactionBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  sheetReactionBtnActive: {
+    backgroundColor: "#FEF3C7",
+    borderColor: THEME.colors.sacredAmber,
+    transform: [{ scale: 1.1 }],
+  },
+  sheetReactionEmoji: {
+    fontSize: 22,
+  },
+  sheetDivider: {
+    height: 1,
+    backgroundColor: "#F3F4F6",
+    marginVertical: 4,
   },
 });

@@ -154,6 +154,7 @@ export async function POST(req: NextRequest) {
           }
         : undefined,
       clientMessageId: body.clientMessageId,
+      replyTo: body.replyTo || null,
     });
 
     // 6. PUSH NOTIFICATION (best-effort — failures never break the send)

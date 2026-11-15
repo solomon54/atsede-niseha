@@ -54,3 +54,7 @@ export async function DELETE(req: NextRequest) {
     );
   }
 }
+
+export async function POST(req: NextRequest) {
+  return DELETE(req);
+}

@@ -14,6 +14,7 @@ import {
   MessageID,
   UID,
 } from "@/features/messaging/types/messaging.types";
+import { pusherServer } from "@/services/pusher";
 
 export async function POST(req: NextRequest) {
   try {
@@ -38,6 +39,20 @@ export async function POST(req: NextRequest) {
       editorId: session.uid as UID,
       newContent: body.content,
     });
+
+    try {
+      await pusherServer.trigger(
+        `private-chat-${body.channelId}`,
+        "message-edited",
+        {
+          messageId: body.messageId,
+          content: body.content,
+          editedAt: Date.now(),
+        }
+      );
+    } catch (pushErr) {
+      console.warn("[Pusher Edit Trigger Warning]:", pushErr);
+    }
 
     const response: EditMessageResponse = { success: true };
     return NextResponse.json(response);

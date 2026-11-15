@@ -16,6 +16,7 @@ import {
   Message,
   MessageID,
   MessageType,
+  ReplyToDescriptor,
   UID,
 } from "../types/messaging.types";
 import { encryptionService } from "./encryption.service";
@@ -134,6 +135,7 @@ export interface SendMessageInput {
   isEncrypted: boolean;
   encryption?: { keyId: string; iv?: string };
   clientMessageId?: string;
+  replyTo?: ReplyToDescriptor | null;
 }
 
 export interface EditMessageInput {
@@ -149,6 +151,14 @@ export interface DeleteMessageInput {
   messageId: MessageID;
   channelId: ChannelID;
   requesterId: UID;
+}
+
+export interface ToggleReactionInput {
+  familyId: FamilyID;
+  channelId: ChannelID;
+  messageId: MessageID;
+  userId: UID;
+  emoji: string;
 }
 
 /* ============================================================
@@ -311,6 +321,7 @@ export const messageService = {
         isEncrypted: input.isEncrypted,
         encryption,
         createdAt: now,
+        replyTo: input.replyTo || null,
       };
 
       const messageRef = channelRef
@@ -450,6 +461,68 @@ export const messageService = {
         media: null,
         encryption: encryptedWipe,
       });
+    });
+  },
+
+  /* ------------------------------------------------------------
+   TOGGLE REACTION (Atomic Reaction Palette)
+  ------------------------------------------------------------ */
+  async toggleReaction(
+    input: ToggleReactionInput
+  ): Promise<Record<string, string[]>> {
+    return await adminDb.runTransaction(async (transaction) => {
+      const channelRef = adminDb
+        .collection(COLLECTIONS.CHANNELS)
+        .doc(input.channelId);
+      const messageRef = channelRef
+        .collection(COLLECTIONS.MESSAGES)
+        .doc(input.messageId);
+
+      const [chanSnap, msgSnap] = await Promise.all([
+        transaction.get(channelRef),
+        transaction.get(messageRef),
+      ]);
+
+      if (!msgSnap.exists) throw new MessagingError("Message not found.");
+      const message = msgSnap.data() as Message;
+
+      const membership = await getMembership(
+        input.channelId,
+        input.userId
+      );
+      if (!membership) {
+        throw new PermissionDeniedError();
+      }
+
+      assertFamilyBoundary(
+        chanSnap.data() as Channel,
+        input.familyId,
+        membership.role as string
+      );
+
+      const reactions: Record<string, string[]> = {
+        ...(message.reactions || {}),
+      };
+
+      const currentUsers: string[] = Array.isArray(reactions[input.emoji])
+        ? [...reactions[input.emoji]]
+        : [];
+
+      const existsIdx = currentUsers.indexOf(input.userId);
+      if (existsIdx >= 0) {
+        currentUsers.splice(existsIdx, 1);
+      } else {
+        currentUsers.push(input.userId);
+      }
+
+      if (currentUsers.length === 0) {
+        delete reactions[input.emoji];
+      } else {
+        reactions[input.emoji] = currentUsers;
+      }
+
+      transaction.update(messageRef, { reactions });
+      return reactions;
     });
   },
 };

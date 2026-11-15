@@ -26,6 +26,14 @@ export interface RequestMedia {
   thumbnailUrl?: string | null;
 }
 
+export interface ReplyToPayload {
+  messageId: string;
+  senderName: string;
+  senderRole?: string;
+  contentSnippet: string;
+  type?: MessageType;
+}
+
 /**
  * The primary payload for the /api/message/send endpoint.
  */
@@ -40,6 +48,7 @@ export interface SendMessageRequest {
     keyId: string;
     iv: string;
   };
+  replyTo?: ReplyToPayload | null;
 }
 
 //
