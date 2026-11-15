@@ -23,6 +23,7 @@ import {
   westernToEthiopianClock,
 } from "@/shared/utils/calendar/ethiopianCalendar";
 import { cn } from "@/shared/utils/utils";
+import { db } from "@/features/messaging/db/ladger-db";
 
 import {
   LOCATION_TEMPLATES,
@@ -132,19 +133,42 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
   const [showMsgSug, setShowMsgSug] = useState(false);
   const recent = useRef(loadRecentTemplates());
 
-  // ── Load ─────────────────────────────────
+  // ── Load (Dexie Local-First + Server Sync) ──
   const load = useCallback(async () => {
     try {
-      setLoading(true); setError(null);
+      setError(null);
+
+      // 1. Instantly load from Dexie local database
+      try {
+        const cached = await db.appointments.toArray();
+        if (cached && cached.length > 0) {
+          setAppointments(cached as any);
+          setLoading(false);
+        }
+      } catch (cacheErr) {
+        console.warn("Dexie appointments load failed:", cacheErr);
+      }
+
+      // 2. Fetch fresh from server
       const [aptRes, notifRes] = await Promise.all([
         fetch("/api/appointments"),
         fetch("/api/notifications"),
       ]);
       const aptJson = await aptRes.json();
       const notifJson = await notifRes.json();
-      if (!aptRes.ok || !aptJson.success)
+
+      if (aptRes.ok && aptJson.success && Array.isArray(aptJson.appointments)) {
+        setAppointments(aptJson.appointments);
+        // Persist to Dexie for offline access
+        db.appointments.bulkPut(aptJson.appointments).catch(() => {});
+      } else if (!aptRes.ok) {
+        if (!navigator.onLine) {
+          // If offline and we already have cached appointments, don't show error
+          return;
+        }
         throw new Error(aptJson.error || "ቀጠሮዎችን ማምጣት አልተሳካም");
-      setAppointments(aptJson.appointments || []);
+      }
+
       setChildren(aptJson.children || []);
       if (aptJson.fatherName) setFatherName(aptJson.fatherName);
       if (notifRes.ok && notifJson.success) {
@@ -152,7 +176,9 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
         setUnreadCount(notifJson.unreadCount || 0);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "ስህተት");
+      if (navigator.onLine) {
+        setError(e instanceof Error ? e.message : "ስህተት");
+      }
     } finally {
       setLoading(false);
     }
@@ -166,6 +192,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     const ch = pusherClient.subscribe(`family-appointments-${familyId}`);
     ch.bind("sanctuary-update", (event: AppointmentRealtimeEvent) => {
       if (event.type === "appointment.upsert") {
+        db.appointments.put(event.appointment as any).catch(() => {});
         setAppointments((prev) => {
           const idx = prev.findIndex((a) => a.id === event.appointment.id);
           if (idx >= 0) {

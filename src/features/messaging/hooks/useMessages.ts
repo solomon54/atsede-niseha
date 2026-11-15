@@ -7,6 +7,7 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect } from "react";
 
 import { CachedMember, db, LocalLedgerMessage } from "../db/ladger-db";
+import { syncService } from "../services/sync.service";
 import { encryptionService } from "../services/encryption.service";
 import { ChannelID, ChannelRole, Message } from "../types/messaging.types";
 
@@ -20,58 +21,21 @@ export interface EnrichedMessage extends Message {
 
 export function useMessages(channelId: ChannelID) {
   /**
-   * 1. ATOMIC SYNC LOGIC
-   * Prevents overwriting local 'sending' states with 'sent' states from the server
-   * until the server confirms the specific message.
+   * 1. SINGLE-FLIGHT DELTA SYNC
+   * Pulls only changes since last sync cursor; does not refetch on focus.
    */
   const syncLedger = useCallback(async () => {
+    if (!channelId) return;
     try {
-      const res = await fetch(`/api/message/list?channelId=${channelId}`);
-      if (!res.ok) throw new Error("Network response was not ok");
-
-      const data = await res.json();
-      if (!Array.isArray(data)) return;
-
-      // Wrap in a transaction for atomicity and performance
-      await db.transaction("rw", [db.members, db.messages], async () => {
-        // A. Sync Members (Identity Registry)
-        const memberProfiles: CachedMember[] = data.map((m) => ({
-          id: m.senderId,
-          fullName: m.senderName || "የቤተሰብ አባል",
-          role: m.senderRole || "CHILD",
-          photoUrl: m.senderPhoto,
-          isDiacon: m.isDiacon || false,
-        }));
-        await db.members.bulkPut(memberProfiles);
-
-        // B. Smart Message Merge
-        // We only "put" messages that aren't currently in a 'sending' state locally
-        for (const remoteMsg of data) {
-          const localMsg = await db.messages.get(remoteMsg.id);
-
-          // Strategy: Don't overwrite if local version is currently uploading
-          if (!localMsg || localMsg.status !== "sending") {
-            await db.messages.put({
-              ...remoteMsg,
-              status: "sent",
-              version: "v1",
-            });
-          }
-        }
-      });
+      await syncService.sync(channelId);
     } catch (err) {
-      // If offline, we fail silently because useLiveQuery still provides the cached data
       console.warn("Ledger Sync suspended (Offline mode):", err);
     }
   }, [channelId]);
 
-  // Trigger sync on mount or channel change
+  // Trigger delta sync on mount or channel change only
   useEffect(() => {
     if (channelId) syncLedger();
-
-    // Optional: Sync when returning to the tab/regaining focus
-    window.addEventListener("focus", syncLedger);
-    return () => window.removeEventListener("focus", syncLedger);
   }, [channelId, syncLedger]);
 
   /**

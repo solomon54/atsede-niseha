@@ -48,22 +48,69 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // 2. FETCH MESSAGES: Typed as an array of the Message interface
-    const msgSnapshot = await adminDb
-      .collection("Channels")
-      .doc(channelId)
-      .collection("Messages")
-      .orderBy("createdAt", "asc")
-      .limit(100)
-      .get();
+    // 2. FETCH MESSAGES: Supports delta sync via ?since= and initial limit via ?limit=
+    const sinceParam = searchParams.get("since");
+    const limitParam = searchParams.get("limit");
+    const limitNum = Math.min(Math.max(parseInt(limitParam || "30", 10) || 30, 1), 100);
 
-    if (msgSnapshot.empty) return NextResponse.json([]);
+    let rawMessages: Message[] = [];
 
-    // Cast Firestore data to partial Message type
-    const rawMessages = msgSnapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    })) as Array<Message>;
+    if (sinceParam) {
+      const sinceNum = parseInt(sinceParam, 10);
+      if (!isNaN(sinceNum) && sinceNum > 0) {
+        // Delta sync: fetch messages updated since 'sinceNum'
+        const deltaSnapshot = await adminDb
+          .collection("Channels")
+          .doc(channelId)
+          .collection("Messages")
+          .where("updatedAt", ">", sinceNum)
+          .orderBy("updatedAt", "asc")
+          .limit(limitNum)
+          .get();
+
+        if (!deltaSnapshot.empty) {
+          rawMessages = deltaSnapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          })) as Message[];
+        } else {
+          // Fallback for older records where updatedAt was not yet set
+          const createdDeltaSnap = await adminDb
+            .collection("Channels")
+            .doc(channelId)
+            .collection("Messages")
+            .where("createdAt", ">", sinceNum)
+            .orderBy("createdAt", "asc")
+            .limit(limitNum)
+            .get();
+
+          rawMessages = createdDeltaSnap.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          })) as Message[];
+        }
+      }
+    }
+
+    if (!sinceParam) {
+      // Initial fetch: latest limitNum (default 30) messages
+      const msgSnapshot = await adminDb
+        .collection("Channels")
+        .doc(channelId)
+        .collection("Messages")
+        .orderBy("createdAt", "desc")
+        .limit(limitNum)
+        .get();
+
+      rawMessages = msgSnapshot.docs
+        .map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }))
+        .reverse() as Message[];
+    }
+
+    if (rawMessages.length === 0) return NextResponse.json([]);
 
     // 3. THE JOIN LOGIC: Zero 'any'
     // Extract unique sender UIDs

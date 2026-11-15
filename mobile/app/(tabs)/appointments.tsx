@@ -28,6 +28,7 @@ import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
+import { getMobilePusher } from "../../src/lib/pusher";
 import { THEME } from "../../src/constants/theme";
 
 type AppointmentType = "NISEHA" | "COUNSELING";
@@ -72,8 +73,9 @@ function localDateInput(date = new Date()) {
 }
 
 export default function AppointmentsScreen() {
-  const { role } = useAuth();
+  const { role, uid, familyId } = useAuth();
   const queryClient = useQueryClient();
+  const effectiveFamilyId = familyId || (role === "FATHER" ? uid : null);
   const params = useLocalSearchParams<{
     childUid?: string;
     childEotcUid?: string;
@@ -99,25 +101,72 @@ export default function AppointmentsScreen() {
     }
   }, [params.openModal, params.childUid]);
 
-  // 1. Query Appointments — cached snapshot renders first, network refreshes it.
+  // 1. Query Appointments — cached snapshot renders first, background refresh with staleTime.
   const { data, isLoading, isError, error, refetch, isRefetching } =
     useQuery<AppointmentsResponse>({
       queryKey: ["appointments"],
       queryFn: async () => {
-        const res = await apiRequest<AppointmentsResponse>("/api/appointments");
-        if (res?.appointments) {
-          // Cache the whole response so the father's child list survives a
-          // cold start too, not just the appointment cards.
-          offlineCache.setQuery("appointments", res);
+        const cached = await offlineCache.getQuery<AppointmentsResponse>("appointments");
+        try {
+          const res = await apiRequest<AppointmentsResponse>("/api/appointments");
+          if (res?.appointments) {
+            offlineCache.setQuery("appointments", res);
+            return res;
+          }
+          return cached || res;
+        } catch {
+          if (cached) return cached;
+          throw new Error("ቀጠሮዎችን ማምጣት አልተሳካም");
         }
-        return res;
       },
+      staleTime: 1000 * 60 * 15,
+      refetchOnWindowFocus: false,
+      refetchOnMount: false,
     });
 
   const cacheChecked = useCacheFirst<AppointmentsResponse>(
     ["appointments"],
     () => offlineCache.getQuery<AppointmentsResponse>("appointments")
   );
+
+  // Realtime Pusher subscription for appointment updates
+  useEffect(() => {
+    if (!effectiveFamilyId) return;
+    const pusher = getMobilePusher();
+    const chName = `family-appointments-${effectiveFamilyId}`;
+    const ch = pusher.subscribe(chName);
+
+    ch.bind("sanctuary-update", (event: any) => {
+      if (event?.type === "appointment.upsert" && event?.appointment) {
+        queryClient.setQueryData<AppointmentsResponse>(
+          ["appointments"],
+          (old) => {
+            if (!old) return old;
+            const prev = old.appointments || [];
+            const idx = prev.findIndex((a) => a.id === event.appointment.id);
+            let updatedList: Appointment[];
+            if (idx >= 0) {
+              updatedList = [...prev];
+              updatedList[idx] = event.appointment;
+            } else {
+              updatedList = [event.appointment, ...prev];
+            }
+            const updatedResponse: AppointmentsResponse = {
+              ...old,
+              appointments: updatedList,
+            };
+            offlineCache.setQuery("appointments", updatedResponse);
+            return updatedResponse;
+          }
+        );
+      }
+    });
+
+    return () => {
+      ch.unbind_all();
+      pusher.unsubscribe(chName);
+    };
+  }, [effectiveFamilyId, queryClient]);
 
   useEffect(() => {
     if (params.childEotcUid && data?.children && !selectedChildUid) {

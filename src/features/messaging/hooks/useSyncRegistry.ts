@@ -1,33 +1,36 @@
 //src/features/messaging/hooks/useSyncRegistry.ts
 
 import { useEffect } from "react";
-
+import { getPusherClient } from "@/services/pusher";
 import { syncService } from "../services/sync.service";
 
 /**
- * Hook to be called in your main Dashboard/Layout.
+ * Hook mounted at Dashboard/Layout level for coordinated single-flight sync.
  */
 export function useSyncRegistry() {
   useEffect(() => {
-    // 1. Sync immediately on load
-    syncService.syncPendingMessages();
+    // 1. Initial sync on app start
+    syncService.sync().catch(() => {});
 
-    // 2. Listen for the browser coming back online
+    // 2. Listen for network reconnection
     const handleOnline = () => {
-      console.log("[NETWORK] Connection restored. Starting Sync...");
-      syncService.syncPendingMessages();
+      syncService.sync().catch(() => {});
     };
 
     window.addEventListener("online", handleOnline);
 
-    // 3. Periodic heartbeat (every 5 mins) just in case
-    const interval = setInterval(() => {
-      if (navigator.onLine) syncService.syncPendingMessages();
-    }, 1000 * 60 * 5);
+    // 3. Listen for Pusher reconnect to heal any missed real-time events
+    try {
+      const pusher = getPusherClient();
+      pusher.connection.bind("connected", () => {
+        syncService.sync().catch(() => {});
+      });
+    } catch (e) {
+      console.warn("Pusher connection listener failed:", e);
+    }
 
     return () => {
       window.removeEventListener("online", handleOnline);
-      clearInterval(interval);
     };
   }, []);
 }

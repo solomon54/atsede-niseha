@@ -69,6 +69,24 @@ export function useSendMessage(senderId: UID) {
       // Add the "Sending..." state to Dexie
       await db.messages.add(optimisticMessage);
 
+      // Queue in outbox immediately for persistent offline guarantee
+      await db.outbox.put({
+        operationId: `op_${clientMessageId}`,
+        channelId: options.channelId,
+        type: "SEND_MESSAGE",
+        payload: {
+          channelId: options.channelId,
+          content: options.content,
+          type: options.type,
+          media: optimisticMessage.media,
+          clientMessageId,
+          isEncrypted: options.isEncrypted,
+        },
+        status: "pending",
+        retryCount: 0,
+        createdAt: now,
+      });
+
       let finalMedia: MediaDescriptor | null = null;
       let finalContent = options.content;
       let envelope = null;
@@ -148,8 +166,17 @@ export function useSendMessage(senderId: UID) {
         });
       });
 
+      // Handshake succeeded: remove operation from outbox
+      await db.outbox.delete(`op_${clientMessageId}`);
+
       if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
     } catch (error: unknown) {
+      if (typeof window !== "undefined" && !navigator.onLine) {
+        // Offline: preserve "sending" state in Dexie and outbox for automatic sync upon reconnection
+        console.log("[OFFLINE] Message preserved in outbox for background delivery:", clientMessageId);
+        return;
+      }
+
       const errorMessage =
         error instanceof Error ? error.message : "ያልታወቀ ስህተት አጋጥሟል።";
       console.error("❌ [SEND_ERROR]:", errorMessage);

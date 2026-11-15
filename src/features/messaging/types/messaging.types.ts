@@ -155,6 +155,7 @@ export interface Message {
   isEncrypted: boolean;
   encryption?: EncryptionEnvelope | null;
   createdAt: number;
+  updatedAt?: number;
   editedAt?: number;
   deletedAt?: number;
   deletedBy?: string;

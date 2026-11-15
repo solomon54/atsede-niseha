@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -10,12 +10,14 @@ import {
   Image,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle, Users, XCircle } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { useAuth } from "../../src/lib/auth-context";
+import { mobileSyncService } from "../../src/lib/sync";
+import { getMobilePusher } from "../../src/lib/pusher";
 import { THEME } from "../../src/constants/theme";
 
 interface Conversation {
@@ -50,6 +52,7 @@ interface Conversation {
 export default function ChatScreen() {
   const router = useRouter();
   const { uid } = useAuth();
+  const queryClient = useQueryClient();
 
   const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
     Conversation[]
@@ -62,12 +65,76 @@ export default function ChatScreen() {
       offlineCache.setQuery("conversations", conversations);
       return conversations;
     },
-    refetchInterval: 8000,
+    staleTime: 1000 * 60 * 15, // 15 minutes: render from cache without periodic background queries
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   const cacheChecked = useCacheFirst<Conversation[]>(["conversations"], () =>
     offlineCache.getQuery<Conversation[]>("conversations")
   );
+
+  // Initialize Pusher realtime connection & auto-recovery
+  useEffect(() => {
+    mobileSyncService.initRealtimeRecovery();
+    // Reconcile outbox and sync in background
+    mobileSyncService.sync().catch(() => {});
+  }, []);
+
+  // Subscribe to realtime room updates via Pusher
+  useEffect(() => {
+    const convos = data || [];
+    if (convos.length === 0) return;
+
+    try {
+      const pusher = getMobilePusher();
+      const subscribedChannels: string[] = [];
+
+      convos.forEach((c) => {
+        const chName = `private-chat-${c.id}`;
+        subscribedChannels.push(chName);
+        const channel = pusher.subscribe(chName);
+
+        channel.bind("new-message", (msg: any) => {
+          // Update room row locally without full Firestore refetch
+          queryClient.setQueryData<Conversation[]>(["conversations"], (old) => {
+            if (!old) return old;
+            return old.map((room) => {
+              if (room.id === c.id) {
+                const isCurrentMe = msg.senderId === uid;
+                return {
+                  ...room,
+                  lastMessage: {
+                    id: msg.id,
+                    content: msg.content,
+                    createdAt: msg.createdAt,
+                    senderId: msg.senderId,
+                    type: msg.type,
+                    media: msg.media,
+                    isEncrypted: msg.isEncrypted,
+                  },
+                  unreadCount: isCurrentMe
+                    ? room.unreadCount
+                    : (room.unreadCount || 0) + 1,
+                };
+              }
+              return room;
+            });
+          });
+        });
+      });
+
+      return () => {
+        subscribedChannels.forEach((chName) => {
+          try {
+            pusher.unsubscribe(chName);
+          } catch {}
+        });
+      };
+    } catch (e) {
+      console.warn("Pusher subscription error on mobile:", e);
+    }
+  }, [data, uid, queryClient]);
 
   // Sort conversations most recent first
   const conversations = useMemo(() => {

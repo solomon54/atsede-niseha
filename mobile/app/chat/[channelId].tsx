@@ -55,6 +55,8 @@ import { apiRequest, apiUpload } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
+import { getMobilePusher } from "../../src/lib/pusher";
+import { mobileSyncService } from "../../src/lib/sync";
 import {
   decryptMessage,
   encryptMessage,
@@ -435,7 +437,7 @@ export default function ChannelChatScreen() {
   const attemptedDecrypt = useRef<Set<string>>(new Set());
   const initialScrollDone = useRef(false);
 
-  // 1. Fetch channel messages
+  // 1. Fetch channel messages (SQLite-first + background delta sync)
   const {
     data: serverMessages,
     isLoading,
@@ -445,16 +447,18 @@ export default function ChannelChatScreen() {
   } = useQuery<MessageItem[]>({
     queryKey: ["messages", channelId],
     queryFn: async () => {
-      const res = await apiRequest<MessageItem[]>(
-        `/api/message/list?channelId=${channelId}`
-      );
-      if (res && channelId) {
-        offlineCache.saveMessages(channelId, res);
+      const cached = await offlineCache.getMessages<MessageItem>(channelId);
+      try {
+        const synced = await mobileSyncService.syncChannelMessages(channelId);
+        return synced && synced.length > 0 ? synced : cached;
+      } catch {
+        return cached;
       }
-      return res || [];
     },
     enabled: Boolean(channelId),
-    refetchInterval: 4000,
+    staleTime: 1000 * 60 * 15,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
 
   const cacheChecked = useCacheFirst<MessageItem[]>(
@@ -465,7 +469,14 @@ export default function ChannelChatScreen() {
   // 2. Fetch conversations to know channel title / recipient name
   const { data: convos } = useQuery<any[]>({
     queryKey: ["conversations"],
-    queryFn: () => apiRequest<any[]>("/api/message/conversation"),
+    queryFn: async () => {
+      const cached = await offlineCache.getQuery<any[]>("conversations");
+      if (cached && cached.length > 0) return cached;
+      return await mobileSyncService.syncConversations();
+    },
+    staleTime: 1000 * 60 * 15,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
   });
   const currentConvo = convos?.find((c) => c.id === channelId);
   const isCommonHouse =
@@ -514,14 +525,113 @@ export default function ChannelChatScreen() {
     })();
   }, [serverMessages]);
 
-  // 4. Mark channel read on mount / change
+  // 4. Mark channel read on mount / change & drain outbox
   useEffect(() => {
     if (!channelId) return;
-    apiRequest("/api/message/read", {
-      method: "POST",
-      body: JSON.stringify({ channelId }),
-    }).catch(() => {});
+    offlineCache.queueOutbox(channelId, "MARK_READ", { channelId }).catch(() => {});
+    mobileSyncService.drainOutbox().catch(() => {});
   }, [channelId]);
+
+  // 5. Pusher Real-Time Channel Subscription
+  useEffect(() => {
+    if (!channelId) return;
+
+    mobileSyncService.syncChannelMessages(channelId).catch(() => {});
+
+    const pusher = getMobilePusher();
+    const chName = `private-chat-${channelId}`;
+    const ch = pusher.subscribe(chName);
+
+    ch.bind("new-message", async (msg: any) => {
+      if (!msg || !msg.id) return;
+
+      let content = msg.content;
+      if (msg.isEncrypted && msg.encryption) {
+        try {
+          content = await decryptMessage(msg.content, msg.encryption);
+          setDecryptedContent((prev) => ({ ...prev, [msg.id]: content }));
+        } catch {
+          setDecryptedContent((prev) => ({
+            ...prev,
+            [msg.id]: LOCKED_MESSAGE_PLACEHOLDER,
+          }));
+        }
+      }
+
+      const normalized: MessageItem = { ...msg, status: "SENT" };
+      await offlineCache.saveMessages(channelId, [normalized]);
+      queryClient.setQueryData<MessageItem[]>(
+        ["messages", channelId],
+        (old = []) => {
+          if (old.some((m) => m.id === normalized.id)) {
+            return old.map((m) => (m.id === normalized.id ? normalized : m));
+          }
+          return [...old, normalized].sort((a, b) => a.createdAt - b.createdAt);
+        }
+      );
+    });
+
+    ch.bind(
+      "message-updated",
+      async (data: { messageId: string; content: string; updatedAt?: number }) => {
+        if (!data?.messageId) return;
+        await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
+          ...m,
+          content: data.content,
+          editedAt: data.updatedAt || Date.now(),
+        }));
+        queryClient.setQueryData<MessageItem[]>(
+          ["messages", channelId],
+          (old = []) =>
+            old.map((m) =>
+              m.id === data.messageId
+                ? {
+                    ...m,
+                    content: data.content,
+                    editedAt: data.updatedAt || Date.now(),
+                  }
+                : m
+            )
+        );
+      }
+    );
+
+    ch.bind(
+      "message-deleted",
+      async (data: { messageId: string; deletedAt?: number }) => {
+        if (!data?.messageId) return;
+        await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
+          ...m,
+          deletedAt: data.deletedAt || Date.now(),
+          content: "",
+          media: null,
+        }));
+        queryClient.setQueryData<MessageItem[]>(
+          ["messages", channelId],
+          (old = []) =>
+            old.map((m) =>
+              m.id === data.messageId
+                ? {
+                    ...m,
+                    deletedAt: data.deletedAt || Date.now(),
+                    content: "",
+                    media: null,
+                  }
+                : m
+            )
+        );
+      }
+    );
+
+    ch.bind("message-seen", () => {
+      // Read state acknowledged
+    });
+
+    return () => {
+      ch.unbind_all();
+      pusher.unsubscribe(chName);
+    };
+  }, [channelId, queryClient]);
 
   // Combine server messages with optimistic messages
   const allMessages: MessageItem[] = useMemo(() => {
@@ -619,22 +729,38 @@ export default function ChannelChatScreen() {
             : "FILE"
           : "TEXT");
 
-      return await apiRequest<{ success: boolean; messageId: string }>(
-        "/api/message/send",
+      // Queue in SQLite outbox for guaranteed delivery across offline & restarts
+      await offlineCache.queueOutbox(channelId!, "SEND_MESSAGE", {
+        channelId,
+        content: ciphertext,
+        type: messageType,
+        media: payload.media,
+        isEncrypted: Boolean(encryptionEnvelope),
+        encryption: encryptionEnvelope,
+        clientMessageId: payload.clientMessageId,
+        replyTo: payload.replyTo,
+      });
+
+      // Save to SQLite message cache as PENDING
+      await offlineCache.saveMessages(channelId!, [
         {
-          method: "POST",
-          body: JSON.stringify({
-            channelId,
-            type: messageType,
-            content: ciphertext,
-            media: payload.media,
-            isEncrypted: Boolean(encryptionEnvelope),
-            encryption: encryptionEnvelope,
-            clientMessageId: payload.clientMessageId,
-            replyTo: payload.replyTo,
-          }),
-        }
-      );
+          id: payload.clientMessageId,
+          channelId: channelId!,
+          senderId: uid || "me",
+          senderRole: role as MessageItem["senderRole"],
+          content: payload.content || "",
+          media: payload.media,
+          type: messageType,
+          createdAt: Date.now(),
+          status: "PENDING",
+          replyTo: payload.replyTo,
+        },
+      ]);
+
+      // Drain outbox in single flight
+      mobileSyncService.drainOutbox().catch(() => {});
+
+      return { success: true, messageId: payload.clientMessageId };
     },
     onSuccess: (res, vars) => {
       setOptimisticMessages((prev) =>
@@ -642,13 +768,11 @@ export default function ChannelChatScreen() {
           m.id === vars.clientMessageId ? { ...m, status: "SENT" } : m
         )
       );
-      queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
     onError: (_err: any, vars) => {
       setOptimisticMessages((prev) =>
         prev.map((m) =>
-          m.id === vars.clientMessageId ? { ...m, status: "FAILED" } : m
+          m.id === vars.clientMessageId ? { ...m, status: "PENDING" } : m
         )
       );
     },
@@ -657,14 +781,18 @@ export default function ChannelChatScreen() {
   // Edit Message Mutation
   const editMutation = useMutation({
     mutationFn: async (payload: { messageId: string; content: string }) => {
-      return await apiRequest<{ success: boolean }>("/api/message/edit", {
-        method: "POST",
-        body: JSON.stringify({
-          channelId,
-          messageId: payload.messageId,
-          content: payload.content,
-        }),
+      await offlineCache.queueOutbox(channelId!, "EDIT_MESSAGE", {
+        channelId,
+        messageId: payload.messageId,
+        content: payload.content,
       });
+      await offlineCache.updateMessage(channelId!, payload.messageId, (m) => ({
+        ...m,
+        content: payload.content,
+        editedAt: Date.now(),
+      }));
+      mobileSyncService.drainOutbox().catch(() => {});
+      return { success: true };
     },
     onSuccess: (_res, vars) => {
       queryClient.setQueryData<MessageItem[]>(
@@ -680,7 +808,6 @@ export default function ChannelChatScreen() {
       );
       setEditingMessage(null);
       setInputText("");
-      queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
     },
     onError: (err: any) => {
       Alert.alert("ስህተት", "መልዕክቱን ማረም አልተቻለም፡ " + (err.message || ""));
@@ -690,13 +817,18 @@ export default function ChannelChatScreen() {
   // Delete Message Mutation
   const deleteMutation = useMutation({
     mutationFn: async (messageId: string) => {
-      return await apiRequest<{ success: boolean }>("/api/message/delete", {
-        method: "POST",
-        body: JSON.stringify({
-          channelId,
-          messageId,
-        }),
+      await offlineCache.queueOutbox(channelId!, "DELETE_MESSAGE", {
+        channelId,
+        messageId,
       });
+      await offlineCache.updateMessage(channelId!, messageId, (m) => ({
+        ...m,
+        deletedAt: Date.now(),
+        content: "",
+        media: null,
+      }));
+      mobileSyncService.drainOutbox().catch(() => {});
+      return { success: true };
     },
     onSuccess: (_res, messageId) => {
       queryClient.setQueryData<MessageItem[]>(
@@ -710,7 +842,6 @@ export default function ChannelChatScreen() {
           );
         }
       );
-      queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
     },
     onError: (err: any) => {
       Alert.alert("ስህተት", "መልዕክቱን መሰረዝ አልተቻለም፡ " + (err.message || ""));
@@ -742,7 +873,10 @@ export default function ChannelChatScreen() {
           );
         }
       );
-      queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
+      offlineCache.updateMessage(channelId!, vars.messageId, (m) => ({
+        ...m,
+        reactions: data.reactions,
+      }));
     },
   });
 
@@ -887,10 +1021,64 @@ export default function ChannelChatScreen() {
         }, 80);
       }
     } catch (e: any) {
-      Alert.alert(
-        "ስህተት",
-        e.message || "ፋይሉን መጫን አልተቻለም። እባክዎ እንደገና ይሞክሩ።"
+      // Offline fallback: stage file and queue in SQLite outbox
+      const safeName = (attachment.name || `file_${Date.now()}`).replace(
+        /\s+/g,
+        "_"
       );
+      const safeType = inferMime(safeName, attachment.type);
+      const clientId = `local_${Date.now()}_${Math.random()
+        .toString(36)
+        .substring(2, 7)}`;
+      const isImg = safeType.startsWith("image/");
+      const isVid = safeType.startsWith("video/");
+      const isAud = safeType.startsWith("audio/");
+      const msgType = isImg ? "IMAGE" : isVid ? "VIDEO" : isAud ? "AUDIO" : "FILE";
+
+      const optimisticMedia: MediaDescriptor = {
+        url: attachment.uri,
+        mimeType: safeType,
+        sizeBytes: attachment.size || 0,
+        originalName: attachment.name,
+      };
+
+      const newMsg: MessageItem = {
+        id: clientId,
+        channelId: channelId,
+        senderId: uid || "me",
+        senderRole: role as MessageItem["senderRole"],
+        content: caption,
+        media: optimisticMedia,
+        type: msgType,
+        createdAt: Date.now(),
+        status: "PENDING",
+        replyTo: replySnippet,
+      };
+
+      setOptimisticMessages((prev) => [...prev, newMsg]);
+      setStagedAttachment(null);
+      setInputText("");
+      setReplyingTo(null);
+
+      offlineCache
+        .queueOutbox(channelId, "SEND_MESSAGE", {
+          channelId,
+          content: caption,
+          type: msgType,
+          clientMessageId: clientId,
+          replyTo: replySnippet,
+          _stagedFile: {
+            uri: attachment.uri,
+            name: safeName,
+            type: safeType,
+          },
+        })
+        .catch(() => {});
+      offlineCache.saveMessages(channelId, [newMsg]).catch(() => {});
+
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }, 80);
     } finally {
       setIsUploading(false);
       setUploadStatusText("");

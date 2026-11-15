@@ -27,15 +27,30 @@ export async function requireSession(): Promise<SessionUser> {
   const claimEotcUid = (session as any).eotcUid as string | undefined;
 
   /**
-   * 1. Fast Path: Trust existing claims if fully populated
+   * 1. Fast Path: Trust cryptographically signed token claims if populated
    */
-  if (session.familyId && session.role) {
-    return {
-      uid: session.uid,
-      familyId: session.familyId,
-      role: session.role,
-      eotcUid: claimEotcUid,
-    };
+  const roleClaim = session.role as string | undefined;
+  let resolvedFamilyId = (session as any).familyId as string | undefined;
+
+  if (roleClaim) {
+    if (!resolvedFamilyId) {
+      if (roleClaim === "FATHER") {
+        resolvedFamilyId = session.uid;
+      } else if (roleClaim === "STUDENT") {
+        resolvedFamilyId = (session as any).fatherId || (session as any).father;
+      } else if (roleClaim === "GOVERNOR") {
+        resolvedFamilyId = "";
+      }
+    }
+
+    if (resolvedFamilyId !== undefined) {
+      return {
+        uid: session.uid,
+        familyId: resolvedFamilyId,
+        role: roleClaim,
+        eotcUid: claimEotcUid,
+      };
+    }
   }
 
   /**

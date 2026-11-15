@@ -5,7 +5,7 @@ import { z } from "zod";
 import { adminAuth, adminDb } from "@/services/firebase/admin";
 
 import { AuthError } from "./auth.errors";
-import { createSession } from "./session.service";
+import { createSession, createSessionFromUid } from "./session.service";
 
 const LoginSchema = z.object({
   eotcUid: z.string().min(3),
@@ -73,16 +73,25 @@ export async function loginUser(raw: unknown) {
 
   /**
    * 4. Custom Claims Injection
-   * Hydrates the ID Token with metadata for Middleware performance.
+   * Hydrates the ID Token with metadata for Middleware and fast-path authorization.
    */
+  const calculatedFamilyId =
+    role === "FATHER"
+      ? record.familyId || record.fatherId || record.uid || uid
+      : role === "STUDENT"
+      ? record.fatherId || record.familyId || ""
+      : "";
+
   await adminAuth.setCustomUserClaims(uid, {
     role,
     eotcUid: id,
+    familyId: calculatedFamilyId,
     father: record.fatherId || null,
+    fatherId: record.fatherId || null,
   });
 
-  // 5. Establish Session (Passes idToken for cookie generation and mobile bearer token)
-  const sessionToken = await createSession(idToken);
+  // 5. Establish Session with fresh claims
+  const sessionToken = await createSessionFromUid(uid);
 
   return {
     success: true,

@@ -26,6 +26,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { registerGlobals } from "@livekit/react-native";
 import { AuthProvider, useAuth } from "../src/lib/auth-context";
 import { notificationService } from "../src/lib/notifications";
+import { mobileSyncService } from "../src/lib/sync";
 import { THEME } from "../src/constants/theme";
 
 // Register LiveKit WebRTC and Audio Globals
@@ -66,6 +67,19 @@ function NotificationBridge() {
   return null;
 }
 
+function SyncBridge() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  useEffect(() => {
+    if (isLoading || !isAuthenticated) return;
+
+    mobileSyncService.initRealtimeRecovery();
+    mobileSyncService.sync().catch(() => {});
+  }, [isAuthenticated, isLoading]);
+
+  return null;
+}
+
 export default function RootLayout() {
   const router = useRouter();
 
@@ -97,6 +111,7 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <NotificationBridge />
+          <SyncBridge />
           <StatusBar style="dark" backgroundColor={THEME.colors.navigationBg} />
           <Stack
             screenOptions={{

@@ -5,10 +5,7 @@ let writeQueue: Promise<void> = Promise.resolve();
 
 /**
  * Sequential transaction mutex.
- * SQLite is strictly single-threaded per connection. Overlapping calls to
- * `withTransactionAsync` (e.g. rapid chat polling or simultaneous cache writes)
- * will fail with "cannot start a transaction within a transaction".
- * Enqueuing writes guarantees one transaction finishes before the next begins.
+ * SQLite is strictly single-threaded per connection.
  */
 function enqueueWrite<T>(op: () => Promise<T>): Promise<T> {
   const next = writeQueue.then(op, op);
@@ -19,18 +16,30 @@ function enqueueWrite<T>(op: () => Promise<T>): Promise<T> {
   return next;
 }
 
+export interface SQLiteOutboxItem {
+  operationId: string;
+  channelId: string;
+  type: "SEND_MESSAGE" | "EDIT_MESSAGE" | "DELETE_MESSAGE" | "MARK_READ";
+  payload: any;
+  status: "PENDING" | "SENDING" | "FAILED";
+  retryCount: number;
+  createdAt: number;
+}
+
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbInstance) {
     dbInstance = await SQLite.openDatabaseAsync("atsede_offline.db");
     await dbInstance.execAsync(`
       PRAGMA journal_mode = WAL;
-      -- Generic snapshot store for list responses (appointments, conversations).
+
+      -- Generic snapshot store for list responses (appointments, conversations)
       CREATE TABLE IF NOT EXISTS query_cache (
         key TEXT PRIMARY KEY,
         data TEXT NOT NULL,
         updatedAt INTEGER NOT NULL
       );
-      -- Per-message rows keep ordering cheap and let us trim to the last 50.
+
+      -- Individual messages table
       CREATE TABLE IF NOT EXISTS messages_cache (
         id TEXT PRIMARY KEY,
         channelId TEXT NOT NULL,
@@ -38,9 +47,24 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
         createdAt INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages_cache(channelId, createdAt);
-      -- Superseded by query_cache; dropped so upgraded installs don't keep a
-      -- second copy of pastoral appointment data around.
-      DROP TABLE IF EXISTS appointments_cache;
+
+      -- Persistent Outbox table for offline actions
+      CREATE TABLE IF NOT EXISTS outbox (
+        operationId TEXT PRIMARY KEY,
+        channelId TEXT NOT NULL,
+        type TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL,
+        retryCount INTEGER DEFAULT 0,
+        createdAt INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, createdAt);
+
+      -- Sync metadata table for cursors
+      CREATE TABLE IF NOT EXISTS sync_meta (
+        key TEXT PRIMARY KEY,
+        lastSyncAt INTEGER NOT NULL
+      );
     `);
   }
   return dbInstance;
@@ -74,13 +98,13 @@ export const offlineCache = {
     }
   },
 
-  // ─── MESSAGES (Last 50 per channel) ───────────────────────
-  async getMessages<T = any>(channelId: string): Promise<T[]> {
+  // ─── MESSAGES ──────────────────────────────────────────────
+  async getMessages<T = any>(channelId: string, limit = 50): Promise<T[]> {
     try {
       const db = await getDb();
       const rows = await db.getAllAsync<{ data: string }>(
-        "SELECT data FROM messages_cache WHERE channelId = ? ORDER BY createdAt ASC",
-        [channelId]
+        "SELECT data FROM messages_cache WHERE channelId = ? ORDER BY createdAt ASC LIMIT ?",
+        [channelId, limit]
       );
       return rows.map((r) => JSON.parse(r.data));
     } catch (e) {
@@ -96,16 +120,8 @@ export const offlineCache = {
     return enqueueWrite(async () => {
       try {
         const db = await getDb();
-        // Keep only the latest 50 messages
-        const latest50 = [...messages]
-          .sort((a, b) => b.createdAt - a.createdAt)
-          .slice(0, 50);
-
         await db.withTransactionAsync(async () => {
-          await db.runAsync("DELETE FROM messages_cache WHERE channelId = ?", [
-            channelId,
-          ]);
-          for (const msg of latest50) {
+          for (const msg of messages) {
             await db.runAsync(
               "INSERT OR REPLACE INTO messages_cache (id, channelId, data, createdAt) VALUES (?, ?, ?, ?)",
               [
@@ -123,18 +139,151 @@ export const offlineCache = {
     });
   },
 
-  // ─── PRIVACY ───────────────────────────────────────────────
-  /**
-   * Wipe every cached snapshot. Called on logout and when a session is
-   * rejected, so a shared device cannot show one family's pastoral data to
-   * the next person who signs in.
-   */
+  async updateMessage(
+    channelId: string,
+    messageId: string,
+    updater: (prev: any) => any
+  ): Promise<void> {
+    return enqueueWrite(async () => {
+      try {
+        const db = await getDb();
+        const row = await db.getFirstAsync<{ data: string }>(
+          "SELECT data FROM messages_cache WHERE id = ?",
+          [messageId]
+        );
+        if (row) {
+          const current = JSON.parse(row.data);
+          const updated = updater(current);
+          await db.runAsync(
+            "UPDATE messages_cache SET data = ? WHERE id = ?",
+            [JSON.stringify(updated), messageId]
+          );
+        }
+      } catch (e) {
+        console.warn("Failed updating message in offline cache:", e);
+      }
+    });
+  },
+
+  async deleteMessage(messageId: string): Promise<void> {
+    return enqueueWrite(async () => {
+      try {
+        const db = await getDb();
+        await db.runAsync("DELETE FROM messages_cache WHERE id = ?", [messageId]);
+      } catch (e) {
+        console.warn("Failed deleting message in offline cache:", e);
+      }
+    });
+  },
+
+  // ─── OUTBOX ────────────────────────────────────────────────
+  async queueOutbox(
+    channelId: string,
+    type: SQLiteOutboxItem["type"],
+    payload: any
+  ): Promise<string> {
+    const operationId = `op_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    return enqueueWrite(async () => {
+      try {
+        const db = await getDb();
+        await db.runAsync(
+          "INSERT OR REPLACE INTO outbox (operationId, channelId, type, payload, status, retryCount, createdAt) VALUES (?, ?, ?, ?, 'PENDING', 0, ?)",
+          [operationId, channelId, type, JSON.stringify(payload), Date.now()]
+        );
+        return operationId;
+      } catch (e) {
+        console.warn("Failed to queue outbox item:", e);
+        return operationId;
+      }
+    });
+  },
+
+  async getPendingOutbox(): Promise<SQLiteOutboxItem[]> {
+    try {
+      const db = await getDb();
+      const rows = await db.getAllAsync<{
+        operationId: string;
+        channelId: string;
+        type: string;
+        payload: string;
+        status: string;
+        retryCount: number;
+        createdAt: number;
+      }>("SELECT * FROM outbox WHERE status = 'PENDING' ORDER BY createdAt ASC");
+
+      return rows.map((r) => ({
+        ...r,
+        type: r.type as SQLiteOutboxItem["type"],
+        status: r.status as SQLiteOutboxItem["status"],
+        payload: JSON.parse(r.payload),
+      }));
+    } catch (e) {
+      console.warn("Failed to get pending outbox items:", e);
+      return [];
+    }
+  },
+
+  async removeOutbox(operationId: string): Promise<void> {
+    return enqueueWrite(async () => {
+      try {
+        const db = await getDb();
+        await db.runAsync("DELETE FROM outbox WHERE operationId = ?", [operationId]);
+      } catch (e) {
+        console.warn("Failed removing outbox item:", e);
+      }
+    });
+  },
+
+  async markOutboxFailed(operationId: string): Promise<void> {
+    return enqueueWrite(async () => {
+      try {
+        const db = await getDb();
+        await db.runAsync(
+          "UPDATE outbox SET status = 'FAILED', retryCount = retryCount + 1 WHERE operationId = ?",
+          [operationId]
+        );
+      } catch (e) {
+        console.warn("Failed marking outbox item failed:", e);
+      }
+    });
+  },
+
+  // ─── SYNC CURSORS ──────────────────────────────────────────
+  async getSyncCursor(key: string): Promise<number> {
+    try {
+      const db = await getDb();
+      const row = await db.getFirstAsync<{ lastSyncAt: number }>(
+        "SELECT lastSyncAt FROM sync_meta WHERE key = ?",
+        [key]
+      );
+      return row?.lastSyncAt || 0;
+    } catch {
+      return 0;
+    }
+  },
+
+  async setSyncCursor(key: string, timestamp: number): Promise<void> {
+    try {
+      const db = await getDb();
+      await db.runAsync(
+        "INSERT OR REPLACE INTO sync_meta (key, lastSyncAt) VALUES (?, ?)",
+        [key, timestamp]
+      );
+    } catch (e) {
+      console.warn("Failed saving sync cursor:", e);
+    }
+  },
+
+  // ─── PRIVACY & ACCOUNT ISOLATION ────────────────────────────
   async clearAll(): Promise<void> {
     try {
       const db = await getDb();
-      await db.execAsync(
-        "DELETE FROM query_cache; DELETE FROM messages_cache;"
-      );
+      await db.execAsync(`
+        DELETE FROM query_cache;
+        DELETE FROM messages_cache;
+        DELETE FROM outbox;
+        DELETE FROM sync_meta;
+      `);
     } catch (e) {
       console.warn("Failed clearing offline cache:", e);
     }

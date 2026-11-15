@@ -321,6 +321,7 @@ export const messageService = {
         isEncrypted: input.isEncrypted,
         encryption,
         createdAt: now,
+        updatedAt: now,
         replyTo: input.replyTo || null,
       };
 
@@ -394,11 +395,13 @@ export const messageService = {
         }
       }
 
+      const now = Date.now();
       const updated: Message = {
         ...message,
         content,
         encryption,
-        editedAt: Date.now(),
+        editedAt: now,
+        updatedAt: now,
       };
 
       transaction.set(messageRef, updated);
@@ -463,9 +466,11 @@ export const messageService = {
         }
       }
 
+      const now = Date.now();
       transaction.update(messageRef, {
-        deletedAt: Date.now(),
+        deletedAt: now,
         deletedBy: input.requesterId,
+        updatedAt: now,
         content: message.isEncrypted ? "[deleted]" : "",
         media: null,
         encryption: encryptedWipe,
@@ -530,7 +535,7 @@ export const messageService = {
         reactions[input.emoji] = currentUsers;
       }
 
-      transaction.update(messageRef, { reactions });
+      transaction.update(messageRef, { reactions, updatedAt: Date.now() });
       return reactions;
     });
   },

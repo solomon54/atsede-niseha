@@ -1,47 +1,75 @@
 //src/features/messaging/hooks/useConversation.ts
 "use client";
 
-import { useEffect, useState } from "react";
-
-import { fetchConversations } from "../services/conversation.service";
+import { useEffect, useMemo } from "react";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db, LocalConversation } from "../db/ladger-db";
+import { syncService } from "../services/sync.service";
 import { ConversationSummary } from "../types/messaging.types";
 
-const CACHE_KEY = "atsede_conversation";
-
 export function useConversations() {
-  const [data, setData] = useState<ConversationSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [offline, setOffline] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 1. Reactive live query on Dexie conversations table (local-first)
+  const localConversations = useLiveQuery(async () => {
+    const list = await db.conversations.toArray();
+    return list.sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+  });
 
-  useEffect(() => {
-    const cached = localStorage.getItem(CACHE_KEY);
-
-    if (cached) {
-      setData(JSON.parse(cached));
-      setLoading(false);
-    }
-
-    const fetchData = () => {
-      fetchConversations()
-        .then((res) => {
-          setData(res);
-          localStorage.setItem(CACHE_KEY, JSON.stringify(res));
-          setOffline(false);
-        })
-        .catch(() => {
-          setOffline(true);
-          if (!cached) {
-            setError("Unable to load conversations");
+  // 2. Map LocalConversation to ConversationSummary interface expected by UI
+  const data: ConversationSummary[] = useMemo(() => {
+    if (!localConversations) return [];
+    return localConversations.map((c) => ({
+      id: c.id,
+      fullName: c.fullName || (c.role === "COMMON_HOUSE" ? "የጋራ ቤት" : "የግል መልዕክት"),
+      photoUrl: c.photoUrl || "",
+      role: (c.role || "CHILD") as any,
+      unreadCount: c.unreadCount || 0,
+      channel: {
+        id: c.id as any,
+        familyId: "" as any,
+        type: c.role as any,
+        title: c.title,
+        createdBy: "" as any,
+        createdAt: c.updatedAt,
+        lastMessageId: c.lastMessage?.id as any,
+        lastMessageAt: c.lastMessageAt,
+      },
+      lastMessage: c.lastMessage
+        ? {
+            id: c.lastMessage.id as any,
+            channelId: c.id as any,
+            senderId: c.lastMessage.senderId as any,
+            content: c.lastMessage.content,
+            createdAt: c.lastMessage.createdAt,
+            type: (c.lastMessage.type as any) || "TEXT",
+            media: c.lastMessage.media,
+            isEncrypted: c.lastMessage.isEncrypted || false,
+            isRead: true,
+            version: "v1",
+            callDetails: c.lastMessage.callDetails,
           }
-        })
-        .finally(() => setLoading(false));
-    };
+        : undefined,
+      members: c.members?.map((m) => ({
+        id: m.userId,
+        channelId: c.id as any,
+        userId: m.userId as any,
+        joinedAt: 0,
+        isActive: true,
+        fullName: m.fullName || "ተሳታፊ",
+        role: (m.role as any) || "CHILD",
+        photoUrl: m.photoUrl,
+      })),
+    }));
+  }, [localConversations]);
 
-    fetchData();
-    const interval = setInterval(fetchData, 15000);
-    return () => clearInterval(interval);
+  // 3. Trigger initial sync once on mount (no 15s interval polling)
+  useEffect(() => {
+    syncService.sync().catch(() => {});
   }, []);
 
-  return { data, loading, offline, error };
+  return {
+    data,
+    loading: localConversations === undefined,
+    offline: typeof window !== "undefined" && !navigator.onLine,
+    error: null,
+  };
 }
