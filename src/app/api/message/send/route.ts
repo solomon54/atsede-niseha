@@ -164,11 +164,16 @@ export async function POST(req: NextRequest) {
     );
     if (recipients.length > 0) {
       const senderName = await getDisplayName(session.uid);
+      const pushBody =
+        typeof body.content === "string" && body.content.trim()
+          ? body.content.length > 120
+            ? body.content.slice(0, 117) + "..."
+            : body.content
+          : "አዲስ መልእክት ልከዋል";
+
       await sendPushToUsers(recipients, {
         title: senderName,
-        // The server only holds ciphertext for E2EE messages, so never echo
-        // message content in a push payload.
-        body: "አዲስ መልእክት ልከዋል",
+        body: pushBody,
         channelId: "atsede-messages",
         data: {
           type: "message",

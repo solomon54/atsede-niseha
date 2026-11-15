@@ -3,32 +3,44 @@ import { Platform } from "react-native";
 import { apiRequest } from "./api";
 
 export const PUSH_CHANNELS = {
-  urgent: "atsede-urgent",
+  call: "atsede-call",
+  urgent: "atsede-call",
   messages: "atsede-messages",
   appointments: "atsede-appointments",
 } as const;
 
 // Configure how notifications appear when the app is in the foreground.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
+  handleNotification: async (notification) => {
+    const isCall = notification.request.content.data?.type === "incoming_call";
+    return {
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      priority: isCall
+        ? Notifications.AndroidNotificationPriority.MAX
+        : Notifications.AndroidNotificationPriority.HIGH,
+    };
+  },
 });
 
 async function ensureAndroidChannels(): Promise<void> {
   if (Platform.OS !== "android") return;
 
-  await Notifications.setNotificationChannelAsync(PUSH_CHANNELS.urgent, {
-    name: "ጥሪዎችና አስቸኳይ ማሳወቂያዎች",
+  // 1. Incoming Call Channel: MAX importance, custom sound, vibration, public visibility
+  await Notifications.setNotificationChannelAsync(PUSH_CHANNELS.call, {
+    name: "ጥሪዎች (Incoming Calls)",
     importance: Notifications.AndroidImportance.MAX,
-    vibrationPattern: [0, 250, 250, 250],
+    vibrationPattern: [0, 500, 250, 500, 250, 500],
     lightColor: "#D97706",
-    sound: "default",
+    sound: "call_ring",
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    bypassDnd: true,
+    enableVibrate: true,
+    showBadge: true,
   });
 
+  // 2. Chat Messages: High importance, default sound
   await Notifications.setNotificationChannelAsync(PUSH_CHANNELS.messages, {
     name: "አዲስ መልእክቶች",
     importance: Notifications.AndroidImportance.HIGH,
@@ -37,12 +49,35 @@ async function ensureAndroidChannels(): Promise<void> {
     sound: "default",
   });
 
+  // 3. Appointments: Default importance
   await Notifications.setNotificationChannelAsync(PUSH_CHANNELS.appointments, {
     name: "የቀጠሮ ማሳወቂያዎች",
     importance: Notifications.AndroidImportance.DEFAULT,
     lightColor: "#D97706",
     sound: "default",
   });
+
+  // 4. Setup Interactive Actions for Incoming Call (usable from lock screen)
+  try {
+    await Notifications.setNotificationCategoryAsync("incoming_call", [
+      {
+        identifier: "ANSWER_CALL",
+        buttonTitle: "ተቀበል 🟢",
+        options: {
+          opensAppToForeground: true,
+        },
+      },
+      {
+        identifier: "DECLINE_CALL",
+        buttonTitle: "አትቀበል 🔴",
+        options: {
+          opensAppToForeground: false,
+        },
+      },
+    ]);
+  } catch (err) {
+    console.warn("Could not register notification category:", err);
+  }
 }
 
 async function saveDeviceToken(token: string): Promise<void> {
@@ -65,9 +100,31 @@ function routeFromNotification(
   >;
 
   const channelId = typeof data.channelId === "string" ? data.channelId : null;
+  const callId = typeof data.callId === "string" ? data.callId : "";
 
   if (data.type === "incoming_call" && channelId) {
-    onNavigate(`/call/${channelId}?incoming=1`);
+    // If the user tapped Decline directly on the notification action
+    if (response.actionIdentifier === "DECLINE_CALL") {
+      apiRequest("/api/livekit/decline", {
+        method: "POST",
+        body: JSON.stringify({ channelId, callId }),
+      }).catch(() => {});
+      Notifications.dismissNotificationAsync(response.notification.request.identifier).catch(() => {});
+      return;
+    }
+
+    const callerName = typeof data.callerName === "string" ? data.callerName : "";
+    const callerRole = typeof data.callerRole === "string" ? data.callerRole : "";
+    const callerPhoto = typeof data.callerPhotoUrl === "string" ? data.callerPhotoUrl : "";
+    const isGroup = data.isGroup === "true" || data.isGroup === true ? "1" : "0";
+
+    onNavigate(
+      `/call/${channelId}?incoming=1&callId=${callId}&callerName=${encodeURIComponent(
+        callerName
+      )}&callerRole=${encodeURIComponent(
+        callerRole
+      )}&callerPhoto=${encodeURIComponent(callerPhoto)}&isGroup=${isGroup}`
+    );
     return;
   }
 
@@ -147,7 +204,24 @@ export const notificationService = {
 
     const subReceived = Notifications.addNotificationReceivedListener(
       (notification) => {
-        console.log("Foreground notification received:", notification);
+        const data = notification.request.content.data;
+        if (data?.type === "incoming_call" && data.channelId) {
+          // If in foreground and not already in call, navigate to call screen
+          const channelId = String(data.channelId);
+          const callId = String(data.callId || "");
+          const callerName = String(data.callerName || "");
+          const callerRole = String(data.callerRole || "");
+          const callerPhoto = String(data.callerPhotoUrl || "");
+          const isGroup = data.isGroup === "true" || data.isGroup === true ? "1" : "0";
+
+          onNavigate(
+            `/call/${channelId}?incoming=1&callId=${callId}&callerName=${encodeURIComponent(
+              callerName
+            )}&callerRole=${encodeURIComponent(
+              callerRole
+            )}&callerPhoto=${encodeURIComponent(callerPhoto)}&isGroup=${isGroup}`
+          );
+        }
       }
     );
 
@@ -177,5 +251,12 @@ export const notificationService = {
     }).catch((err) => {
       console.warn("Failed to clear FCM token on logout:", err);
     });
+  },
+
+  /** Clear call notifications across devices when answered/declined. */
+  async dismissCallNotifications(): Promise<void> {
+    try {
+      await Notifications.dismissAllNotificationsAsync();
+    } catch {}
   },
 };

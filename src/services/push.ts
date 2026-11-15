@@ -32,6 +32,8 @@ export interface PushPayload {
   channelId?: string;
   /** Incoming calls get a max-priority heads-up banner. */
   urgent?: boolean;
+  sound?: string;
+  tag?: string;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -103,7 +105,8 @@ export async function sendPushToUsers(
     if (targets.length === 0) return { sent: 0, failed: 0 };
 
     const channelId =
-      payload.channelId ?? (payload.urgent ? "atsede-urgent" : "atsede-messages");
+      payload.channelId ?? (payload.urgent ? "atsede-call" : "atsede-messages");
+    const sound = payload.sound ?? (payload.urgent ? "call_ring" : "default");
 
     let sent = 0;
     let failed = 0;
@@ -120,15 +123,16 @@ export async function sendPushToUsers(
           priority: payload.urgent ? "high" : "normal",
           notification: {
             channelId,
-            sound: "default",
+            sound,
             priority: payload.urgent ? "max" : "default",
             visibility: "public",
+            ...(payload.tag ? { tag: payload.tag } : {}),
           },
         },
         apns: {
           payload: {
             aps: {
-              sound: "default",
+              sound: sound === "call_ring" ? "call-ring.mp3" : "default",
               ...(payload.urgent
                 ? { interruptionLevel: "timeSensitive" }
                 : {}),
@@ -205,4 +209,44 @@ export async function getDisplayName(uid: string): Promise<string> {
   }
 
   return "የቤተሰብ አባል";
+}
+
+export interface UserSummary {
+  displayName: string;
+  photoUrl?: string | null;
+  role: "FATHER" | "STUDENT" | "GOVERNOR" | "CHILD";
+}
+
+export async function getUserSummary(uid: string): Promise<UserSummary> {
+  for (const collection of PROFILE_COLLECTIONS) {
+    try {
+      const snap = await adminDb
+        .collection(collection)
+        .where("uid", "==", uid)
+        .limit(1)
+        .get();
+
+      if (!snap.empty) {
+        const data = snap.docs[0].data();
+        const displayName =
+          data.christianName ||
+          data.fullName ||
+          data.secularName ||
+          (collection === "Fathers" ? "የንስሐ አባት" : "የቤተሰብ አባል");
+        const photoUrl =
+          data.photoUrl || data.avatarUrl || data.profileImage || null;
+        const role =
+          collection === "Fathers"
+            ? "FATHER"
+            : collection === "Governors"
+            ? "GOVERNOR"
+            : "STUDENT";
+        return { displayName, photoUrl, role };
+      }
+    } catch (error) {
+      console.error(`[push] Profile lookup failed in ${collection}:`, error);
+    }
+  }
+
+  return { displayName: "የቤተሰብ አባል", photoUrl: null, role: "STUDENT" };
 }

@@ -82,7 +82,25 @@ export type MessageType =
   | "VIDEO"
   | "FILE"
   | "LINK"
-  | "AUDIO";
+  | "AUDIO"
+  | "CALL";
+
+export type CallStatus = "answered" | "declined" | "missed" | "cancelled" | "ringing";
+
+export interface CallDetails {
+  callId: string;
+  channelId: string;
+  callerId: string;
+  callerName: string;
+  callerPhotoUrl?: string | null;
+  callerRole?: string | null;
+  status: CallStatus;
+  startedAt: number;
+  answeredAt?: number | null;
+  endedAt?: number | null;
+  durationSec?: number | null;
+  isGroup: boolean;
+}
 
 // Shared OptimisticMessage used by Composer and MessageStream
 export type OptimisticMessage = Omit<
@@ -142,6 +160,7 @@ export interface Message {
   deletedBy?: string;
   reactions?: Record<string, string[]>;
   replyTo?: ReplyToDescriptor | null;
+  callDetails?: CallDetails | null;
 }
 
 /* ============================================================

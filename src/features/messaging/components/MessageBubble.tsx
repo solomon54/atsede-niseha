@@ -15,6 +15,11 @@ import {
   Trash2,
   User,
   X,
+  Video,
+  PhoneIncoming,
+  PhoneMissed,
+  PhoneOff,
+  PhoneCall,
 } from "lucide-react";
 import { FC, useCallback, useEffect, useRef, useState } from "react";
 
@@ -449,6 +454,82 @@ const MessageBubble: FC<MessageBubbleProps> = ({
       </div>
     );
   };
+
+  /* ── call message rendering ── */
+  if (message.type === "CALL" || message.callDetails) {
+    const cd = message.callDetails;
+    const isMissed = cd?.status === "missed";
+    const isDeclined = cd?.status === "declined";
+    const isCancelled = cd?.status === "cancelled";
+    const isAnswered = cd?.status === "answered";
+
+    const formatDuration = (sec?: number | null) => {
+      if (!sec) return "";
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${m}:${s.toString().padStart(2, "0")}`;
+    };
+
+    const title = cd?.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ";
+    let subtitle = "ጥሪ";
+
+    if (isAnswered) {
+      subtitle = cd?.durationSec ? `የተመለሰ (${formatDuration(cd.durationSec)})` : "የተመለሰ";
+    } else if (isMissed) {
+      subtitle = isOwn ? "ያልተመለሰ ጥሪ" : "ያመለጠ ጥሪ";
+    } else if (isDeclined) {
+      subtitle = "የተዘጋ ጥሪ";
+    } else if (isCancelled) {
+      subtitle = isOwn ? "የተሰረዘ ጥሪ" : "ያመለጠ ጥሪ";
+    }
+
+    const isCallerMissed = isMissed || (isCancelled && !isOwn);
+
+    return (
+      <div className="flex w-full my-2 justify-center">
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-slate-900/90 border border-slate-700/70 shadow-md backdrop-blur-md max-w-sm">
+          <div
+            className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+              isCallerMissed
+                ? "bg-red-500/20 text-red-400"
+                : isDeclined || isCancelled
+                ? "bg-slate-700/40 text-slate-400"
+                : "bg-emerald-500/20 text-emerald-400"
+            }`}
+          >
+            {isCallerMissed ? (
+              <PhoneMissed size={18} />
+            ) : isDeclined || isCancelled ? (
+              <PhoneOff size={18} />
+            ) : (
+              <Video size={18} />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-bold text-white truncate">{title}</p>
+            <p
+              className={`text-[11px] font-medium ${
+                isCallerMissed ? "text-red-400" : "text-slate-300"
+              }`}
+            >
+              {subtitle} · {formatEthiopianTimeShort(message.createdAt)}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (message.channelId) {
+                window.location.href = `/call/${message.channelId}`;
+              }
+            }}
+            className="px-3 py-1 bg-amber-600 hover:bg-amber-500 rounded-full text-xs font-bold text-white shadow transition-transform active:scale-95 shrink-0 flex items-center gap-1"
+          >
+            ደውል
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   /* ── own bubble actions (shown as permanent tiny row under footer on error/sending, hover otherwise) ── */
   const showActions = isOwn && (isError || isSending || (!isSending && (onDelete || onResend)));

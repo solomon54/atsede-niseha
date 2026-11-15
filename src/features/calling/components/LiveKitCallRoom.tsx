@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Mic,
   MicOff,
@@ -12,9 +12,7 @@ import {
   Shield,
   Users,
   AlertCircle,
-  Volume2,
-  Clock,
-  PhoneMissed,
+  User,
 } from "lucide-react";
 import {
   Room,
@@ -53,6 +51,8 @@ export default function LiveKitCallRoom({
   isIncoming = false,
 }: LiveKitCallRoomProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const [callId, setCallId] = useState<string>(searchParams.get("callId") || "");
 
   const [status, setStatus] = useState<
     "loading" | "ringing" | "connected" | "reconnecting" | "declined" | "no_answer" | "error" | "ended"
@@ -61,6 +61,7 @@ export default function LiveKitCallRoom({
 
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
+  const [answeredAt, setAnsweredAt] = useState<number | null>(null);
 
   // LiveKit room & participants state
   const roomRef = useRef<Room | null>(null);
@@ -68,7 +69,7 @@ export default function LiveKitCallRoom({
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hasRungRef = useRef(false);
 
-  // Helper: map LiveKit participant to our clean state
+  // Helper: map LiveKit participant to state
   const mapParticipant = (
     p: Participant,
     isLocal: boolean
@@ -100,6 +101,9 @@ export default function LiveKitCallRoom({
 
     if (room.remoteParticipants.size > 0) {
       setStatus("connected");
+      if (!answeredAt) {
+        setAnsweredAt(Date.now());
+      }
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
@@ -134,7 +138,7 @@ export default function LiveKitCallRoom({
         const data: TokenResponse = await res.json();
         if (!isMounted) return;
 
-        // 2. Setup Pusher listener for call-declined event
+        // 2. Setup Pusher listeners
         try {
           const pusher = getPusherClient();
           const pChannel = pusher.subscribe(`private-chat-${channelId}`);
@@ -144,6 +148,14 @@ export default function LiveKitCallRoom({
               setTimeout(() => {
                 router.push("/messages");
               }, 2500);
+            }
+          });
+          pChannel.bind("call-ended", () => {
+            if (isMounted) {
+              setStatus("ended");
+              setTimeout(() => {
+                router.push("/messages");
+              }, 2000);
             }
           });
         } catch (pe) {
@@ -182,7 +194,7 @@ export default function LiveKitCallRoom({
 
         syncParticipants(room);
 
-        // 6. Ring other channel members if initiating
+        // 6. Ring other members if initiating
         if (!isIncoming && !hasRungRef.current) {
           hasRungRef.current = true;
           setStatus("ringing");
@@ -191,12 +203,24 @@ export default function LiveKitCallRoom({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ channelId }),
-          }).catch((e) => console.warn("Failed to ring:", e));
+          })
+            .then((r) => r.json())
+            .then((resData) => {
+              if (resData.callId) {
+                setCallId(resData.callId);
+              }
+            })
+            .catch((e) => console.warn("Failed to ring:", e));
 
           // 45s Timeout for No Answer
           timeoutRef.current = setTimeout(() => {
             if (isMounted && room.remoteParticipants.size === 0) {
               setStatus("no_answer");
+              fetch("/api/livekit/timeout", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ channelId, callId }),
+              }).catch(() => {});
               setTimeout(() => {
                 router.push("/messages");
               }, 3000);
@@ -246,116 +270,127 @@ export default function LiveKitCallRoom({
   };
 
   const handleEndCall = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    const durationSec = answeredAt ? Math.max(1, Math.floor((Date.now() - answeredAt) / 1000)) : 0;
+    fetch("/api/livekit/end", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channelId,
+        callId,
+        durationSec,
+        status: status === "connected" ? "answered" : "cancelled",
+      }),
+    }).catch(() => {});
+
     if (roomRef.current) {
       roomRef.current.disconnect();
     }
     router.push("/messages");
   };
 
-  // Grid layout class based on participant count
-  const gridClass = useMemo(() => {
-    const total = participants.length;
-    if (total <= 1) return "grid-cols-1";
-    if (total === 2) return "grid-cols-1 sm:grid-cols-2";
-    if (total <= 4) return "grid-cols-2";
-    return "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4";
-  }, [participants.length]);
+  // Adaptive 3-tier partitioning for participants
+  const localParticipant = participants.find((p) => p.isLocal);
+  const remoteParticipants = participants.filter((p) => !p.isLocal);
+
+  // Dominant active speaker (or first remote)
+  const activeSpeaker =
+    remoteParticipants.find((p) => p.isSpeaking) ||
+    remoteParticipants[0] ||
+    null;
+
+  // Horizontal Tray: up to 6 thumbnails
+  const trayParticipants = remoteParticipants
+    .filter((p) => p.identity !== activeSpeaker?.identity)
+    .slice(0, 6);
+
+  // Overflow for large groups
+  const overflowParticipants = remoteParticipants
+    .filter((p) => p.identity !== activeSpeaker?.identity)
+    .slice(6);
 
   return (
-    <div className="relative w-full h-screen bg-slate-950 text-white flex flex-col overflow-hidden select-none">
-      {/* Top Header Bar */}
-      <header className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-4 sm:px-6 py-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent">
+    <div className="relative w-full h-[100dvh] bg-slate-950 overflow-hidden select-none flex flex-col font-sans">
+      {/* Top Header */}
+      <header className="absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-4 sm:px-6 py-4 bg-gradient-to-b from-black/80 to-transparent">
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-amber-500/20 border border-amber-500/30 px-3 py-1.5 rounded-full backdrop-blur-md shadow-sm">
-            <Shield className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-[10px] font-black tracking-widest text-amber-300 uppercase">
-              የተጠበቀ የቪዲዮ ግንኙነት (E2EE)
-            </span>
+          <div className="w-9 h-9 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-500">
+            <Shield className="w-5 h-5" />
           </div>
-
-          <div className="hidden sm:flex items-center gap-1.5 text-slate-300 bg-slate-900/60 px-2.5 py-1 rounded-full text-xs font-semibold backdrop-blur-md">
-            <Users className="w-3.5 h-3.5 text-amber-400" />
-            <span>{participants.length} ተሳታፊ</span>
+          <div>
+            <h1 className="text-sm font-extrabold text-slate-100 flex items-center gap-2">
+              ✞ የቪዲዮ ምክክር (Sanctuary Call)
+            </h1>
+            <span className="text-[11px] text-slate-400 font-medium">
+              በቀጥታ በሚስጥር የተጠበቀ (ታሕተ ማኅተም)
+            </span>
           </div>
         </div>
 
-        {/* Live Call Status */}
-        <div className="flex items-center gap-2">
-          {status === "ringing" && (
-            <div className="flex items-center gap-2 bg-amber-500/20 text-amber-300 text-xs font-bold px-3 py-1.5 rounded-full animate-pulse border border-amber-500/30">
-              <span className="h-2 w-2 rounded-full bg-amber-400 animate-ping" />
-              እየጠራ ነው...
-            </div>
-          )}
-          {status === "connected" && (
-            <div className="flex items-center gap-2 bg-emerald-500/20 text-emerald-300 text-xs font-bold px-3 py-1.5 rounded-full border border-emerald-500/30">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              የተገናኘ ✞
-            </div>
-          )}
-          {status === "reconnecting" && (
-            <div className="flex items-center gap-2 bg-yellow-500/20 text-yellow-300 text-xs font-bold px-3 py-1.5 rounded-full animate-pulse">
-              በድጋሚ በማገናኘት ላይ...
-            </div>
-          )}
-          {status === "declined" && (
-            <div className="flex items-center gap-2 bg-red-500/20 text-red-300 text-xs font-bold px-3 py-1.5 rounded-full border border-red-500/30">
-              <PhoneMissed className="w-3.5 h-3.5 text-red-400" />
-              ጥሪው አልተመለሰም (Declined)
-            </div>
-          )}
-          {status === "no_answer" && (
-            <div className="flex items-center gap-2 bg-yellow-500/20 text-yellow-300 text-xs font-bold px-3 py-1.5 rounded-full border border-yellow-500/30">
-              <Clock className="w-3.5 h-3.5 text-yellow-400" />
-              ምላሽ አልተገኘም (No Answer)
-            </div>
-          )}
+        <div className="flex items-center gap-2 px-3 py-1 bg-slate-900/80 border border-slate-800 rounded-full text-xs font-bold text-slate-300">
+          <Users className="w-3.5 h-3.5 text-amber-400" />
+          <span>{participants.length} ተሳታፊዎች</span>
         </div>
       </header>
 
-      {/* Main Video Stage / Conference Grid */}
-      <main className="relative flex-1 w-full h-full flex items-center justify-center p-3 sm:p-6 pt-16 pb-24">
-        {/* If Only 1 participant (Caller alone waiting) */}
-        {participants.length <= 1 && status === "ringing" ? (
-          <div className="flex flex-col items-center justify-center gap-6 max-w-sm text-center">
-            <div className="relative">
-              <div className="w-28 h-28 sm:w-36 sm:h-36 rounded-full bg-gradient-to-tr from-amber-950 via-slate-900 to-amber-900/60 border-2 border-amber-500/40 flex items-center justify-center text-amber-300 shadow-2xl">
-                <Users className="w-12 h-12 sm:w-16 sm:h-16 animate-pulse" />
-              </div>
-              <div className="absolute -bottom-1 -right-1 bg-amber-500 text-slate-950 p-2 rounded-full shadow-lg animate-bounce">
-                <Volume2 className="w-4 h-4" />
-              </div>
+      {/* Main Video View: Adaptive Stage + Tray */}
+      <main className="relative flex-1 w-full h-full p-2 sm:p-4 pt-20 pb-24 flex flex-col gap-3">
+        {/* Ringing or Waiting State */}
+        {remoteParticipants.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-slate-900/40 border border-slate-800/80 rounded-3xl backdrop-blur-sm">
+            <div className="w-20 h-20 rounded-full bg-amber-500/10 border-2 border-amber-500/30 flex items-center justify-center text-amber-400 mb-4 animate-pulse">
+              <span className="text-3xl font-serif">✞</span>
             </div>
-
-            <div className="space-y-1.5">
-              <h2 className="text-xl sm:text-2xl font-black text-slate-100">
-                እየጠራ ነው...
-              </h2>
-              <p className="text-xs text-amber-200/80 leading-relaxed font-medium">
-                የተቀደሰ ጥሪ ወደ አባቱ/ልጁ ተልኳል፤ ጥሪውን እስኪቀበሉ ድረስ እባክዎ ይጠብቁ።
-              </p>
-            </div>
-
-            {/* Self-Preview Floating Card */}
-            {participants[0] && (
-              <div className="w-32 h-44 rounded-2xl overflow-hidden border-2 border-amber-500/30 shadow-2xl mt-2">
-                <ParticipantCard participant={participants[0]} />
-              </div>
-            )}
+            <h2 className="text-lg font-bold text-slate-100 mb-1">
+              {status === "ringing" ? "እየጠራ ነው... ተሳታፊዎችን በመጠበቅ ላይ" : "ክፍሉ እየተዘጋጀ ነው..."}
+            </h2>
+            <p className="text-xs text-slate-400 max-w-xs">
+              ተሳታፊዎች እስኪገቡ ድረስ እባክዎ ይጠብቁ
+            </p>
           </div>
         ) : (
-          /* Multi-party Conference Grid */
-          <div
-            className={`w-full h-full grid gap-3 sm:gap-4 max-w-7xl max-h-[85vh] ${gridClass}`}
-          >
-            {participants.map((p) => (
+          /* Active Speaker Dominant Stage */
+          <div className="flex-1 relative w-full rounded-2xl overflow-hidden shadow-2xl bg-slate-900 border border-slate-800 flex items-center justify-center">
+            {activeSpeaker && <ParticipantCard participant={activeSpeaker} />}
+          </div>
+        )}
+
+        {/* Tier 2: Horizontal Video Tray (Max 6 for group calls) */}
+        {trayParticipants.length > 0 && (
+          <div className="h-28 sm:h-32 flex items-center gap-2 overflow-x-auto px-1 py-1 shrink-0">
+            {trayParticipants.map((p) => (
               <div
                 key={p.identity}
-                className="w-full h-full min-h-[160px] rounded-2xl overflow-hidden shadow-xl"
+                className="w-24 sm:w-28 h-full rounded-xl overflow-hidden shadow-lg border border-slate-800 shrink-0"
               >
-                <ParticipantCard participant={p} />
+                <ParticipantCard participant={p} isMini />
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Tier 3: Overflow Participant List */}
+        {overflowParticipants.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto px-2 py-1 bg-slate-900/60 rounded-xl border border-slate-800 shrink-0">
+            <span className="text-[10px] font-bold text-slate-400 uppercase">
+              ተጨማሪ ({overflowParticipants.length}):
+            </span>
+            {overflowParticipants.map((p) => (
+              <div
+                key={p.identity}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 rounded-lg text-xs font-semibold text-slate-300"
+              >
+                <User className="w-3 h-3 text-amber-400" />
+                <span className="truncate max-w-[100px]">{p.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Floating Local PiP Camera */}
+        {localParticipant && (
+          <div className="absolute bottom-28 right-4 sm:right-6 w-28 sm:w-36 h-36 sm:h-48 rounded-2xl overflow-hidden shadow-2xl border-2 border-amber-500/80 bg-slate-950 z-20">
+            <ParticipantCard participant={localParticipant} />
           </div>
         )}
       </main>
@@ -381,7 +416,6 @@ export default function LiveKitCallRoom({
 
       {/* Bottom Controls Bar */}
       <footer className="absolute bottom-0 left-0 right-0 z-30 flex items-center justify-center gap-4 sm:gap-6 py-5 bg-gradient-to-t from-black/95 via-black/60 to-transparent">
-        {/* Toggle Microphone */}
         <button
           onClick={toggleMic}
           className={`p-3.5 sm:p-4 rounded-full transition-all duration-200 shadow-xl ${
@@ -391,14 +425,9 @@ export default function LiveKitCallRoom({
           }`}
           title={isMicOn ? "ማይክሮፎን አጥፋ" : "ማይክሮፎን አብራ"}
         >
-          {isMicOn ? (
-            <Mic className="w-5 h-5 sm:w-6 sm:h-6" />
-          ) : (
-            <MicOff className="w-5 h-5 sm:w-6 sm:h-6" />
-          )}
+          {isMicOn ? <Mic className="w-5 h-5 sm:w-6 sm:h-6" /> : <MicOff className="w-5 h-5 sm:w-6 sm:h-6" />}
         </button>
 
-        {/* Toggle Camera (Hide Face / Show Face) */}
         <button
           onClick={toggleCam}
           className={`p-3.5 sm:p-4 rounded-full transition-all duration-200 shadow-xl ${
@@ -406,16 +435,11 @@ export default function LiveKitCallRoom({
               ? "bg-slate-800/90 text-white hover:bg-slate-700 border border-slate-700 hover:scale-105"
               : "bg-red-500 text-white hover:bg-red-600 border border-red-400 scale-105"
           }`}
-          title={isCamOn ? "ካሜራ አጥፋ (በስም ፊደል ተሳተፍ)" : "ካሜራ አብራ"}
+          title={isCamOn ? "ካሜራ አጥፋ" : "ካሜራ አብራ"}
         >
-          {isCamOn ? (
-            <VideoIcon className="w-5 h-5 sm:w-6 sm:h-6" />
-          ) : (
-            <VideoOff className="w-5 h-5 sm:w-6 sm:h-6" />
-          )}
+          {isCamOn ? <VideoIcon className="w-5 h-5 sm:w-6 sm:h-6" /> : <VideoOff className="w-5 h-5 sm:w-6 sm:h-6" />}
         </button>
 
-        {/* End Call / Hang Up */}
         <button
           onClick={handleEndCall}
           className="p-3.5 sm:p-4 rounded-full bg-red-600 hover:bg-red-700 text-white transition-all duration-200 shadow-2xl hover:scale-110 active:scale-95 border border-red-500"
@@ -428,8 +452,13 @@ export default function LiveKitCallRoom({
   );
 }
 
-// ─── PARTICIPANT TILE (Handles Camera OR Name Initials Avatar) ──────
-function ParticipantCard({ participant }: { participant: ParticipantState }) {
+function ParticipantCard({
+  participant,
+  isMini = false,
+}: {
+  participant: ParticipantState;
+  isMini?: boolean;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -442,7 +471,6 @@ function ParticipantCard({ participant }: { participant: ParticipantState }) {
     };
   }, [participant.videoTrack, participant.isCameraEnabled]);
 
-  // Extract initial letter (Ge'ez or English)
   const initial = useMemo(() => {
     const clean = participant.name.replace(/^(ቀሲስ|ዲያቆን|መምህር|ሊቀ)\s+/i, "");
     return clean.charAt(0) || "✞";
@@ -450,13 +478,12 @@ function ParticipantCard({ participant }: { participant: ParticipantState }) {
 
   return (
     <div
-      className={`relative w-full h-full bg-slate-900 border-2 rounded-2xl overflow-hidden flex items-center justify-center transition-all ${
+      className={`relative w-full h-full bg-slate-900 border overflow-hidden flex items-center justify-center transition-all ${
         participant.isSpeaking
           ? "border-emerald-500 shadow-emerald-500/20 shadow-lg"
           : "border-slate-800"
       }`}
     >
-      {/* 1. Camera View if Camera is On */}
       {participant.isCameraEnabled && participant.videoTrack ? (
         <video
           ref={videoRef}
@@ -468,50 +495,39 @@ function ParticipantCard({ participant }: { participant: ParticipantState }) {
           }`}
         />
       ) : (
-        /* 2. Initials Avatar (Face Hidden / Camera Off) — No Broken Screen! */
-        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 p-4 text-center gap-3">
+        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 p-2 text-center gap-2">
           <div
-            className={`w-20 h-20 sm:w-24 sm:h-24 rounded-full flex items-center justify-center transition-transform ${
-              participant.isSpeaking ? "scale-105" : ""
-            } bg-gradient-to-tr from-amber-900 via-amber-700 to-amber-500 shadow-2xl border-2 border-amber-300/40`}
+            className={`rounded-full flex items-center justify-center ${
+              isMini ? "w-10 h-10" : "w-20 h-20 sm:w-24 sm:h-24"
+            } bg-gradient-to-tr from-amber-900 via-amber-700 to-amber-500 border border-amber-300/40`}
           >
-            <span className="text-2xl sm:text-3xl font-black text-amber-50 font-serif">
+            <span
+              className={`${
+                isMini ? "text-sm" : "text-2xl sm:text-3xl"
+              } font-black text-amber-50 font-serif`}
+            >
               {initial}
             </span>
           </div>
-
-          <div className="space-y-0.5 max-w-[85%]">
-            <p className="text-sm font-bold text-slate-100 truncate">
-              {participant.name}
-            </p>
-            <span className="text-[10px] text-amber-400/80 font-medium">
-              ካሜራ ጠፍቷል (ድምፅ ብቻ)
-            </span>
-          </div>
+          {!isMini && (
+            <>
+              <p className="text-xs sm:text-sm font-bold text-slate-200">
+                {participant.name}
+              </p>
+              <span className="text-[10px] text-slate-500">ካሜራ ጠፍቷል</span>
+            </>
+          )}
         </div>
       )}
 
-      {/* Bottom Name & Mic Pill */}
-      <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between pointer-events-none">
-        <div className="bg-black/70 backdrop-blur-md px-2.5 py-1 rounded-md max-w-[70%]">
-          <p className="text-[11px] font-bold text-white truncate">
-            {participant.name} {participant.isLocal && "(እርስዎ)"}
-          </p>
-        </div>
-
-        <div
-          className={`p-1.5 rounded-full shadow-md backdrop-blur-md ${
-            participant.isMicrophoneEnabled
-              ? "bg-emerald-600/90 text-white"
-              : "bg-red-600/90 text-white"
-          }`}
-        >
-          {participant.isMicrophoneEnabled ? (
-            <Mic className="w-3 h-3" />
-          ) : (
-            <MicOff className="w-3 h-3" />
-          )}
-        </div>
+      {/* Participant Name Badge */}
+      <div className="absolute bottom-2 left-2 z-10 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-sm border border-white/10 flex items-center gap-1.5 max-w-[85%]">
+        {!participant.isMicrophoneEnabled && (
+          <MicOff className="w-3 h-3 text-red-400 shrink-0" />
+        )}
+        <span className="text-[10px] font-bold text-slate-200 truncate">
+          {participant.name}
+        </span>
       </div>
     </div>
   );

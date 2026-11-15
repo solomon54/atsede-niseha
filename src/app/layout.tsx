@@ -9,6 +9,7 @@ import { Inter, Noto_Sans_Ethiopic } from "next/font/google";
 import { SanctuaryNavigation } from "@/shared/components/layout/SanctuaryNavigation";
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
+import { GlobalIncomingCallOverlay } from "@/shared/components/calling/GlobalIncomingCallOverlay";
 
 import { LegacySupport } from "./legacy-support";
 import { SWRegister } from "./sw-register";
@@ -76,6 +77,9 @@ export default function RootLayout({
 
         {/* Navigation only appears after login */}
         <SanctuaryNavigation />
+
+        {/* Global Incoming Call Ringing Overlay */}
+        <GlobalIncomingCallOverlay />
       </body>
     </html>
   );

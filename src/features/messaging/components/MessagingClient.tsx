@@ -471,48 +471,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
         </div>
       </main>
 
-      {/* Floating Incoming Call Banner */}
-      {incomingCall && (
-        <div className="fixed top-5 right-5 z-50 bg-slate-900/95 text-white p-4 rounded-2xl shadow-2xl border-2 border-amber-500/50 backdrop-blur-md flex items-center gap-4 animate-in slide-in-from-top-4 duration-300">
-          <div className="w-12 h-12 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
-            <Video className="w-6 h-6 animate-pulse" />
-          </div>
-          <div className="min-w-0 pr-2">
-            <p className="text-[10px] font-black uppercase tracking-widest text-amber-400">
-              የቪዲዮ ጥሪ እየመጣ ነው...
-            </p>
-            <p className="text-sm font-bold text-white truncate">
-              {incomingCall.callerName}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                const chId = incomingCall.channelId;
-                setIncomingCall(null);
-                router.push(`/call/${chId}?incoming=1`);
-              }}
-              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-full text-xs font-black text-white shadow-md transition-all hover:scale-105"
-            >
-              ተቀበል 🟢
-            </button>
-            <button
-              onClick={async () => {
-                const chId = incomingCall.channelId;
-                setIncomingCall(null);
-                await fetch("/api/livekit/decline", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ channelId: chId }),
-                }).catch(() => {});
-              }}
-              className="px-3 py-1.5 bg-red-600/90 hover:bg-red-600 rounded-full text-xs font-black text-white shadow-md transition-all hover:scale-105"
-            >
-              አትቀበል 🔴
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Incoming call is now handled globally by GlobalIncomingCallOverlay in layout.tsx */}
     </div>
   );
 };

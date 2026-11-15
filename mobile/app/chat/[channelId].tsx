@@ -32,6 +32,10 @@ import {
   Lock,
   MoreVertical,
   Paperclip,
+  Phone,
+  PhoneOff,
+  PhoneIncoming,
+  PhoneMissed,
   Play,
   Send,
   Shield,
@@ -91,7 +95,7 @@ interface MessageItem {
   senderId: string;
   senderName?: string;
   senderRole?: "FATHER" | "STUDENT" | "GOVERNOR" | "CHILD";
-  type?: "TEXT" | "IMAGE" | "FILE" | "VIDEO" | "AUDIO";
+  type?: "TEXT" | "IMAGE" | "FILE" | "VIDEO" | "AUDIO" | "CALL";
   content: string;
   media?: MediaDescriptor | null;
   createdAt: number;
@@ -102,6 +106,20 @@ interface MessageItem {
   encryption?: EncryptionEnvelope | null;
   reactions?: Record<string, string[]>;
   replyTo?: ReplyToDescriptor | null;
+  callDetails?: {
+    callId: string;
+    channelId: string;
+    callerId: string;
+    callerName: string;
+    callerPhotoUrl?: string | null;
+    callerRole?: string | null;
+    status: "answered" | "declined" | "missed" | "cancelled" | "ringing";
+    startedAt: number;
+    answeredAt?: number | null;
+    endedAt?: number | null;
+    durationSec?: number | null;
+    isGroup: boolean;
+  } | null;
 }
 
 export const DIGNIFIED_REACTIONS = [
@@ -940,6 +958,83 @@ export default function ChannelChatScreen() {
             ) : null
           }
           renderItem={({ item }) => {
+            if (item.type === "CALL" || item.callDetails) {
+              const cd = item.callDetails;
+              const isMissed = cd?.status === "missed";
+              const isDeclined = cd?.status === "declined";
+              const isCancelled = cd?.status === "cancelled";
+              const isAnswered = cd?.status === "answered";
+
+              const formatDuration = (sec?: number | null) => {
+                if (!sec) return "";
+                const m = Math.floor(sec / 60);
+                const s = sec % 60;
+                return `${m}:${s.toString().padStart(2, "0")}`;
+              };
+
+              const title = cd?.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ";
+              let subtitle = "ጥሪ";
+
+              if (isAnswered) {
+                subtitle = cd?.durationSec ? `የተመለሰ (${formatDuration(cd.durationSec)})` : "የተመለሰ";
+              } else if (isMissed) {
+                subtitle = item.senderId === uid ? "ያልተመለሰ ጥሪ" : "ያመለጠ ጥሪ";
+              } else if (isDeclined) {
+                subtitle = "የተዘጋ ጥሪ";
+              } else if (isCancelled) {
+                subtitle = item.senderId === uid ? "የተሰረዘ ጥሪ" : "ያመለጠ ጥሪ";
+              }
+
+              const isCallerMissed = isMissed || (isCancelled && item.senderId !== uid);
+
+              return (
+                <View style={styles.callRowContainer}>
+                  <View style={styles.callBubbleBox}>
+                    <View
+                      style={[
+                        styles.callIconCircle,
+                        isCallerMissed
+                          ? styles.callIconMissed
+                          : isDeclined || isCancelled
+                          ? styles.callIconDeclined
+                          : styles.callIconAnswered,
+                      ]}
+                    >
+                      {isCallerMissed ? (
+                        <PhoneMissed size={18} color="#EF4444" />
+                      ) : isDeclined || isCancelled ? (
+                        <PhoneOff size={18} color="#94A3B8" />
+                      ) : (
+                        <Video size={18} color="#10B981" />
+                      )}
+                    </View>
+                    <View style={styles.callDetailsCol}>
+                      <Text style={styles.callTitleText} numberOfLines={1}>
+                        {title}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.callSubtitleText,
+                          isCallerMissed && styles.callMissedText,
+                        ]}
+                      >
+                        {subtitle} · {formatTime(item.createdAt)}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        router.push(`/call/${channelId}`);
+                      }}
+                      style={styles.callRecallBtn}
+                    >
+                      <Text style={styles.callRecallBtnText}>ደውል</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            }
+
             const isMe = item.senderId === uid || item.senderId === "me";
             const isFather = item.senderRole === "FATHER";
             const isDeleted = Boolean(item.deletedAt);
@@ -1834,6 +1929,66 @@ export default function ChannelChatScreen() {
 }
 
 const styles = StyleSheet.create({
+  callRowContainer: {
+    width: "100%",
+    alignItems: "center",
+    marginVertical: 8,
+  },
+  callBubbleBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1E293B",
+    borderColor: "#334155",
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 10,
+    maxWidth: "90%",
+  },
+  callIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  callIconAnswered: {
+    backgroundColor: "rgba(16, 185, 129, 0.15)",
+  },
+  callIconMissed: {
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+  },
+  callIconDeclined: {
+    backgroundColor: "rgba(148, 163, 184, 0.15)",
+  },
+  callDetailsCol: {
+    flex: 1,
+  },
+  callTitleText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  callSubtitleText: {
+    color: "#94A3B8",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  callMissedText: {
+    color: "#F87171",
+  },
+  callRecallBtn: {
+    backgroundColor: "#D97706",
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  callRecallBtnText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "700",
+  },
   container: {
     flex: 1,
     backgroundColor: THEME.colors.sanctuaryBg,

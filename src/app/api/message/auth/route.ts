@@ -18,10 +18,20 @@ export async function POST(req: Request) {
       return new Response("Invalid request", { status: 400 });
     }
 
-    // 2. Extract Channel ID from naming convention: "private-chat-CHANNEL_ID"
+    // 2. Authorize private user channel directly if matching session uid
+    if (channelName.startsWith("private-user-")) {
+      const targetUid = channelName.replace("private-user-", "");
+      if (targetUid !== session.uid) {
+        return new Response("Forbidden: User mismatch", { status: 403 });
+      }
+      const authResponse = pusherServer.authorizeChannel(socketId, channelName);
+      return NextResponse.json(authResponse);
+    }
+
+    // 3. Extract Channel ID from naming convention: "private-chat-CHANNEL_ID"
     const targetChannelId = channelName.replace("private-chat-", "");
 
-    // 3. RESILIENT CHECK: Verify active membership in PascalCase collection
+    // 4. RESILIENT CHECK: Verify active membership in PascalCase collection
     const memberSnap = await adminDb
       .collection("ChannelMembers")
       .where("channelId", "==", targetChannelId)

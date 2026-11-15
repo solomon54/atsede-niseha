@@ -52,7 +52,9 @@ export async function POST(req: NextRequest) {
 
     const channelData = channelDoc.data() || {};
     const channelType = channelData.type || "DIRECT"; // "DIRECT" or "COMMON_HOUSE"
-    const maxParticipants = channelType === "DIRECT" ? 2 : 8;
+    
+    // Direct calls remain 1:1 by product rule; common-house calls have no app-imposed cap.
+    const maxParticipants = channelType === "DIRECT" ? 2 : 100;
 
     // 3. Resolve participant display name
     const profileColl = session.role === "FATHER" ? "Fathers" : "Students";
