@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import { clearWebAccountCache } from "@/features/messaging/services/clientAccount.service";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
 import { UserSession } from "@/shared/types/shared.types.auth";
@@ -28,10 +29,17 @@ export default function StudentDashboardClient({
   const router = useRouter();
 
   const handleLogout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    localStorage.removeItem("atsede_niseha_uid");
-    router.push("/");
-    router.refresh();
+    try {
+      // Drop cached reads/cursors for this account but keep its outbox so
+      // pending offline work survives until the same account returns.
+      await clearWebAccountCache();
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch (err) {
+      console.warn("Logout cleanup failed:", err);
+    } finally {
+      router.push("/");
+      router.refresh();
+    }
   };
 
   return (

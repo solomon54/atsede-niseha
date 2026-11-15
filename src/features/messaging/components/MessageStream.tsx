@@ -16,9 +16,9 @@ import { useIsMounted } from "@/shared/hooks/useIsMounted";
 import { formatEthiopianDateLabel } from "@/shared/utils/calendar/ethiopianCalendar";
 
 import { db } from "../db/ladger-db";
-import { useSendMessage } from "../hooks/useSendMessage";
 import { EnrichedMessage, useMessages } from "../hooks/useMessages";
 import { usePusherListener } from "../hooks/usePusherListener";
+import { useSendMessage } from "../hooks/useSendMessage";
 import {
   ChannelID,
   ChannelRole,
@@ -236,7 +236,14 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
     /* ── DELETE ── */
     const handleDelete = useCallback(
       async (messageId: string) => {
-        await db.messages.delete(messageId as MessageID);
+        // Keep a tombstone instead of physically removing the row. Other
+        // devices receive `message-deleted` too, and a mismatch in local
+        // presence must never make the message reappear on the next sync.
+        await db.messages.update(messageId as MessageID, {
+          deletedAt: Date.now(),
+          content: "[deleted]",
+          media: null,
+        });
         try {
           await fetch("/api/message/delete", {
             method: "POST",

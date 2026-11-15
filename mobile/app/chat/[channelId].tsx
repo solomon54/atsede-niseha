@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -15,7 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
@@ -52,6 +52,7 @@ import {
   XCircle,
 } from "lucide-react-native";
 import { apiRequest, apiUpload } from "../../src/lib/api";
+import { setActiveChatChannel } from "../../src/lib/active-chat";
 import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
@@ -527,10 +528,25 @@ export default function ChannelChatScreen() {
 
   // 4. Mark channel read on mount / change & drain outbox
   useEffect(() => {
-    if (!channelId) return;
-    offlineCache.queueOutbox(channelId, "MARK_READ", { channelId }).catch(() => {});
-    mobileSyncService.drainOutbox().catch(() => {});
-  }, [channelId]);
+    if (!channelId || !uid) return;
+    offlineCache.queueOutbox(channelId, "MARK_READ", { channelId }, uid).catch(() => {});
+    mobileSyncService.drainOutbox(uid).catch(() => {});
+  }, [channelId, uid]);
+
+  // Tell the conversation list which room is on screen so it never shows an
+  // unread badge for the message the user is currently reading.
+  useFocusEffect(
+    useCallback(() => {
+      if (!channelId) return;
+      setActiveChatChannel(channelId);
+      queryClient.setQueryData<any[]>(["conversations"], (old) =>
+        old?.map((room) =>
+          room.id === channelId ? { ...room, unreadCount: 0 } : room
+        )
+      );
+      return () => setActiveChatChannel(null);
+    }, [channelId, queryClient])
+  );
 
   // 5. Pusher Real-Time Channel Subscription
   useEffect(() => {
@@ -617,6 +633,26 @@ export default function ChannelChatScreen() {
                     content: "",
                     media: null,
                   }
+                : m
+            )
+        );
+      }
+    );
+
+    ch.bind(
+      "message-reaction",
+      async (data: { messageId: string; reactions: Record<string, string[]> }) => {
+        if (!data?.messageId) return;
+        await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
+          ...m,
+          reactions: data.reactions,
+        }));
+        queryClient.setQueryData<MessageItem[]>(
+          ["messages", channelId],
+          (old = []) =>
+            old.map((m) =>
+              m.id === data.messageId
+                ? { ...m, reactions: data.reactions }
                 : m
             )
         );
@@ -730,16 +766,22 @@ export default function ChannelChatScreen() {
           : "TEXT");
 
       // Queue in SQLite outbox for guaranteed delivery across offline & restarts
-      await offlineCache.queueOutbox(channelId!, "SEND_MESSAGE", {
-        channelId,
-        content: ciphertext,
-        type: messageType,
-        media: payload.media,
-        isEncrypted: Boolean(encryptionEnvelope),
-        encryption: encryptionEnvelope,
-        clientMessageId: payload.clientMessageId,
-        replyTo: payload.replyTo,
-      });
+      await offlineCache.queueOutbox(
+        channelId!,
+        "SEND_MESSAGE",
+        {
+          channelId,
+          content: ciphertext,
+          type: messageType,
+          media: payload.media,
+          isEncrypted: Boolean(encryptionEnvelope),
+          encryption: encryptionEnvelope,
+          clientMessageId: payload.clientMessageId,
+          replyTo: payload.replyTo,
+          senderId: uid || undefined,
+        },
+        uid || undefined
+      );
 
       // Save to SQLite message cache as PENDING
       await offlineCache.saveMessages(channelId!, [
@@ -758,7 +800,7 @@ export default function ChannelChatScreen() {
       ]);
 
       // Drain outbox in single flight
-      mobileSyncService.drainOutbox().catch(() => {});
+      mobileSyncService.drainOutbox(uid || undefined).catch(() => {});
 
       return { success: true, messageId: payload.clientMessageId };
     },
@@ -781,17 +823,22 @@ export default function ChannelChatScreen() {
   // Edit Message Mutation
   const editMutation = useMutation({
     mutationFn: async (payload: { messageId: string; content: string }) => {
-      await offlineCache.queueOutbox(channelId!, "EDIT_MESSAGE", {
-        channelId,
-        messageId: payload.messageId,
-        content: payload.content,
-      });
+      await offlineCache.queueOutbox(
+        channelId!,
+        "EDIT_MESSAGE",
+        {
+          channelId,
+          messageId: payload.messageId,
+          content: payload.content,
+        },
+        uid || undefined
+      );
       await offlineCache.updateMessage(channelId!, payload.messageId, (m) => ({
         ...m,
         content: payload.content,
         editedAt: Date.now(),
       }));
-      mobileSyncService.drainOutbox().catch(() => {});
+      mobileSyncService.drainOutbox(uid || undefined).catch(() => {});
       return { success: true };
     },
     onSuccess: (_res, vars) => {
@@ -817,17 +864,22 @@ export default function ChannelChatScreen() {
   // Delete Message Mutation
   const deleteMutation = useMutation({
     mutationFn: async (messageId: string) => {
-      await offlineCache.queueOutbox(channelId!, "DELETE_MESSAGE", {
-        channelId,
-        messageId,
-      });
+      await offlineCache.queueOutbox(
+        channelId!,
+        "DELETE_MESSAGE",
+        {
+          channelId,
+          messageId,
+        },
+        uid || undefined
+      );
       await offlineCache.updateMessage(channelId!, messageId, (m) => ({
         ...m,
         deletedAt: Date.now(),
         content: "",
         media: null,
       }));
-      mobileSyncService.drainOutbox().catch(() => {});
+      mobileSyncService.drainOutbox(uid || undefined).catch(() => {});
       return { success: true };
     },
     onSuccess: (_res, messageId) => {
@@ -1061,18 +1113,24 @@ export default function ChannelChatScreen() {
       setReplyingTo(null);
 
       offlineCache
-        .queueOutbox(channelId, "SEND_MESSAGE", {
+        .queueOutbox(
           channelId,
-          content: caption,
-          type: msgType,
-          clientMessageId: clientId,
-          replyTo: replySnippet,
-          _stagedFile: {
-            uri: attachment.uri,
-            name: safeName,
-            type: safeType,
+          "SEND_MESSAGE",
+          {
+            channelId,
+            content: caption,
+            type: msgType,
+            clientMessageId: clientId,
+            replyTo: replySnippet,
+            senderId: uid || undefined,
+            _stagedFile: {
+              uri: attachment.uri,
+              name: safeName,
+              type: safeType,
+            },
           },
-        })
+          uid || undefined
+        )
         .catch(() => {});
       offlineCache.saveMessages(channelId, [newMsg]).catch(() => {});
 

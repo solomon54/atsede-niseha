@@ -100,18 +100,38 @@ export function usePusherListener(channelId: ChannelID) {
     });
 
     /**
-     * 3. Handle Deletions
+     * 3. Handle Deletions (Tombstone pattern)
      */
     channel.bind("message-deleted", async (data: { messageId: MessageID }) => {
       try {
-        await db.messages.delete(data.messageId);
+        await db.messages.update(data.messageId, {
+          deletedAt: Date.now(),
+          content: "[deleted]",
+          media: null,
+        });
       } catch (err) {
-        console.error("❌ [PUSHER_DELETE] Deletion failed:", err);
+        console.error("❌ [PUSHER_DELETE] Tombstone failed:", err);
       }
     });
 
     /**
-     * 4. Handle Read Receipts (Frugal/Batch Update)
+     * 4. Handle Reactions
+     */
+    channel.bind(
+      "message-reaction",
+      async (data: { messageId: MessageID; reactions: Record<string, string[]> }) => {
+        try {
+          await db.messages.update(data.messageId, {
+            reactions: data.reactions,
+          });
+        } catch (err) {
+          console.error("❌ [PUSHER_REACTION] Reaction update failed:", err);
+        }
+      }
+    );
+
+    /**
+     * 5. Handle Read Receipts (Frugal/Batch Update)
      */
     channel.bind("message-seen", async (data: { lastMessageId: MessageID }) => {
       try {

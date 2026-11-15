@@ -21,6 +21,8 @@ import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
 import { AuthContext } from "@/shared/types/auth.types";
 import { cn } from "@/shared/utils/utils";
 
+import { clearWebAccountCache } from "../../messaging/services/clientAccount.service";
+
 interface Props {
   context: AuthContext;
   onBack: () => void;
@@ -73,8 +75,19 @@ export default function SecuritySetupStep({ context, onBack }: Props) {
       });
 
       const result = await res.json();
-      if (res.ok && result.success) router.push(result.redirect);
-      else
+      if (res.ok && result.success) {
+        // A successful login/claim may be a different account than the one
+        // whose cached reads are still in IndexedDB/localStorage. Preserve the
+        // account-scoped outbox, but never show one account's cached data to
+        // another.
+        try {
+          localStorage.setItem("atsede_niseha_uid", context.eotcUid);
+        } catch {
+          // Storage may be unavailable in private browsing.
+        }
+        await clearWebAccountCache({ clearIdentity: false });
+        router.push(result.redirect);
+      } else
         setError(
           result.error || (isNewAccount ? "ምዝገባው አልተሳካም።" : "የተሳሳተ የይለፍ ቃል ነው።")
         );

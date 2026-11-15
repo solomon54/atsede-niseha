@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getPusherClient } from "@/services/pusher";
+
 import { loadKey } from "../crypto/keyManager";
 import {
   ChannelID,
@@ -15,6 +16,7 @@ import {
   ConversationSummary,
   FamilyID,
   MemberDisplay,
+  Message,
   Session,
   UID,
 } from "../types/messaging.types";
@@ -57,46 +59,165 @@ const MessagingClient: FC<MessagingClientProps> = ({
 
   const streamRef = useRef<MessageStreamHandle>(null);
 
+  // Track the open room without re-subscribing every time it changes.
+  const activeChannelIdRef = useRef<ChannelID | undefined>(activeChannelId);
+  useEffect(() => {
+    activeChannelIdRef.current = activeChannelId;
+  }, [activeChannelId]);
+
+  // Opening a room counts as reading it; the server read receipt still runs
+  // from MessageStream. This keeps the local badge in sync without waiting
+  // for the next conversation snapshot.
+  useEffect(() => {
+    if (!activeChannelId) return;
+
+    setConversations((prev) => {
+      let changed = false;
+      const next = prev.map((conversation) => {
+        if (
+          conversation.channel.id !== activeChannelId ||
+          (conversation.unreadCount || 0) === 0
+        ) {
+          return conversation;
+        }
+        changed = true;
+        return { ...conversation, unreadCount: 0 };
+      });
+      return changed ? next : prev;
+    });
+  }, [activeChannelId]);
+
+  const conversationChannelIds = useMemo(
+    () => conversations.map((c) => c.channel.id).join("|"),
+    [conversations]
+  );
+
   // Real-time Incoming Call Listener via Pusher
   useEffect(() => {
-    if (!conversations.length) return;
+    if (!conversationChannelIds) return;
+
     try {
       const pusher = getPusherClient();
-      const subscribedChannels: string[] = [];
+      const channelIds = conversationChannelIds.split("|");
 
-      conversations.forEach((c) => {
-        const chName = `private-chat-${c.id}`;
-        subscribedChannels.push(chName);
-        const channel = pusher.subscribe(chName);
+      const cleanups = channelIds.map((channelId) => {
+        const channel = pusher.subscribe(`private-chat-${channelId}`);
 
-        channel.bind(
-          "incoming-call",
-          (data: { channelId: string; callerName: string; callerUid: string }) => {
-            if (data.callerUid !== currentUserId) {
-              setIncomingCall({
-                channelId: data.channelId,
-                callerName: data.callerName || "ተጠቃሚ",
-              });
-            }
+        const handleIncomingCall = (data: {
+          channelId: string;
+          callerName: string;
+          callerUid: string;
+        }) => {
+          if (data.callerUid !== currentUserId) {
+            setIncomingCall({
+              channelId: data.channelId,
+              callerName: data.callerName || "ተጠቃሚ",
+            });
           }
-        );
+        };
 
-        channel.bind("call-declined", () => {
-          setIncomingCall(null);
-        });
+        const handleDeclined = () => setIncomingCall(null);
+
+        channel.bind("incoming-call", handleIncomingCall);
+        channel.bind("call-declined", handleDeclined);
+
+        return () => {
+          channel.unbind("incoming-call", handleIncomingCall);
+          channel.unbind("call-declined", handleDeclined);
+        };
       });
 
       return () => {
-        subscribedChannels.forEach((chName) => {
-          try {
-            pusher.unsubscribe(chName);
-          } catch {}
-        });
+        cleanups.forEach((cleanup) => cleanup());
       };
     } catch (e) {
       console.warn("Pusher subscription error:", e);
     }
-  }, [conversations, currentUserId]);
+  }, [conversationChannelIds, currentUserId]);
+
+  // Keep conversation snippets and unread badges correct for rooms that are
+  // not currently open. The open room is already marked read by MessageStream,
+  // so it must not accumulate an unread badge while it is on screen.
+  useEffect(() => {
+    if (!conversationChannelIds) return;
+
+    try {
+      const pusher = getPusherClient();
+      const channelIds = conversationChannelIds.split("|");
+
+      const cleanups = channelIds.map((channelId) => {
+        const channel = pusher.subscribe(`private-chat-${channelId}`);
+
+        const handleNewMessage = (payload: Message) => {
+          if (!payload?.id) return;
+
+          const isActive = activeChannelIdRef.current === channelId;
+          const isOwn = payload.senderId === currentUserId;
+
+          setConversations((prev) =>
+            prev.map((conversation) => {
+              if (conversation.channel.id !== channelId) return conversation;
+
+              // Pusher can redeliver the same event; never double-count it.
+              if (conversation.lastMessage?.id === payload.id) {
+                return conversation;
+              }
+
+              const previousAt =
+                conversation.lastMessage?.createdAt ||
+                conversation.channel.lastMessageAt ||
+                0;
+
+              // Ignore out-of-order events that are older than the snapshot.
+              if (payload.createdAt && payload.createdAt < previousAt) {
+                return conversation;
+              }
+
+              return {
+                ...conversation,
+                lastMessage: payload,
+                unreadCount:
+                  isOwn || isActive
+                    ? conversation.unreadCount || 0
+                    : (conversation.unreadCount || 0) + 1,
+                channel: {
+                  ...conversation.channel,
+                  lastMessageId: payload.id,
+                  lastMessageAt: payload.createdAt,
+                },
+              };
+            })
+          );
+        };
+
+        channel.bind("new-message", handleNewMessage);
+
+        return () => {
+          channel.unbind("new-message", handleNewMessage);
+        };
+      });
+
+      return () => {
+        cleanups.forEach((cleanup) => cleanup());
+      };
+    } catch (e) {
+      console.warn("Pusher conversation subscription error:", e);
+    }
+  }, [conversationChannelIds, currentUserId]);
+
+  // Persist realtime snippet changes so an offline reload does not show stale
+  // unread/last-message metadata for this account.
+  useEffect(() => {
+    if (!session?.uid || conversations.length === 0) return;
+    try {
+      localStorage.setItem(
+        `sacred_convos_${session.uid}`,
+        JSON.stringify(conversations)
+      );
+    } catch {
+      // Storage can be full or unavailable; the server remains authoritative.
+    }
+  }, [conversations, session?.uid]);
 
   // ─────────────────────────────────────────────
   // BOOT SANCTUARY

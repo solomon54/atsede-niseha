@@ -13,6 +13,7 @@ import { useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle, Users, XCircle } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
+import { getActiveChatChannel } from "../../src/lib/active-chat";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { useAuth } from "../../src/lib/auth-context";
@@ -76,10 +77,10 @@ export default function ChatScreen() {
 
   // Initialize Pusher realtime connection & auto-recovery
   useEffect(() => {
-    mobileSyncService.initRealtimeRecovery();
-    // Reconcile outbox and sync in background
-    mobileSyncService.sync().catch(() => {});
-  }, []);
+    mobileSyncService.initRealtimeRecovery(uid || undefined);
+    // Reconcile outbox and sync in background (account-scoped)
+    mobileSyncService.sync(undefined, uid || undefined).catch(() => {});
+  }, [uid]);
 
   // Subscribe to realtime room updates via Pusher
   useEffect(() => {
@@ -102,6 +103,7 @@ export default function ChatScreen() {
             return old.map((room) => {
               if (room.id === c.id) {
                 const isCurrentMe = msg.senderId === uid;
+                const isOpen = getActiveChatChannel() === c.id;
                 return {
                   ...room,
                   lastMessage: {
@@ -113,9 +115,10 @@ export default function ChatScreen() {
                     media: msg.media,
                     isEncrypted: msg.isEncrypted,
                   },
-                  unreadCount: isCurrentMe
-                    ? room.unreadCount
-                    : (room.unreadCount || 0) + 1,
+                  unreadCount:
+                    isCurrentMe || isOpen
+                      ? room.unreadCount
+                      : (room.unreadCount || 0) + 1,
                 };
               }
               return room;

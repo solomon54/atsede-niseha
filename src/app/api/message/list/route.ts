@@ -50,6 +50,7 @@ export async function GET(req: NextRequest) {
 
     // 2. FETCH MESSAGES: Supports delta sync via ?since= and initial limit via ?limit=
     const sinceParam = searchParams.get("since");
+    const afterId = searchParams.get("afterId");
     const limitParam = searchParams.get("limit");
     const limitNum = Math.min(Math.max(parseInt(limitParam || "30", 10) || 30, 1), 100);
 
@@ -58,37 +59,61 @@ export async function GET(req: NextRequest) {
     if (sinceParam) {
       const sinceNum = parseInt(sinceParam, 10);
       if (!isNaN(sinceNum) && sinceNum > 0) {
-        // Delta sync: fetch messages updated since 'sinceNum'
-        const deltaSnapshot = await adminDb
+        const messagesRef = adminDb
           .collection("Channels")
           .doc(channelId)
-          .collection("Messages")
-          .where("updatedAt", ">", sinceNum)
-          .orderBy("updatedAt", "asc")
-          .limit(limitNum)
-          .get();
+          .collection("Messages");
 
-        if (!deltaSnapshot.empty) {
-          rawMessages = deltaSnapshot.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          })) as Message[];
+        // A document-snapshot cursor lets Firestore use its implicit document
+        // ID tiebreaker for records that share the same updatedAt value, so a
+        // page boundary can never skip a same-timestamp record. It also avoids
+        // requiring a composite (updatedAt, __name__) index.
+        const requestedCursor = afterId
+          ? await messagesRef.doc(afterId).get()
+          : null;
+
+        const hasUpdatedAt =
+          requestedCursor?.exists && requestedCursor.get("updatedAt") != null;
+        const hasCreatedAt =
+          requestedCursor?.exists && requestedCursor.get("createdAt") != null;
+        const cursorDoc =
+          requestedCursor?.exists && (hasUpdatedAt || hasCreatedAt)
+            ? requestedCursor
+            : null;
+
+        // Messages missing updatedAt use createdAt ordering (legacy rows).
+        const cursorField =
+          cursorDoc && !hasUpdatedAt ? "createdAt" : "updatedAt";
+
+        let deltaQuery = messagesRef.orderBy(cursorField, "asc");
+
+        if (cursorDoc) {
+          deltaQuery = deltaQuery.startAfter(cursorDoc);
         } else {
-          // Fallback for older records where updatedAt was not yet set
-          const createdDeltaSnap = await adminDb
-            .collection("Channels")
-            .doc(channelId)
-            .collection("Messages")
-            .where("createdAt", ">", sinceNum)
-            .orderBy("createdAt", "asc")
+          // Inclusive when there is no usable document cursor. Re-reading the
+          // boundary timestamp is safe (idempotent) and prevents skips.
+          deltaQuery = deltaQuery.where(cursorField, ">=", sinceNum);
+        }
+
+        let deltaSnapshot = await deltaQuery.limit(limitNum).get();
+
+        // Legacy fallback: old records without the primary ordering field.
+        // Only used when there is no afterId cursor to misinterpret.
+        if (deltaSnapshot.empty && !afterId) {
+          const fallbackField =
+            cursorField === "updatedAt" ? "createdAt" : "updatedAt";
+
+          deltaSnapshot = await messagesRef
+            .orderBy(fallbackField, "asc")
+            .where(fallbackField, ">=", sinceNum)
             .limit(limitNum)
             .get();
-
-          rawMessages = createdDeltaSnap.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          })) as Message[];
         }
+
+        rawMessages = deltaSnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as Message[];
       }
     }
 

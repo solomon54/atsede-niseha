@@ -5,7 +5,6 @@ import {
   Calendar,
   Church,
   Fingerprint,
-  LogOut,
   Mail,
   MapPin,
   Phone,
@@ -16,6 +15,7 @@ import {
 import { redirect } from "next/navigation";
 
 import { getSession } from "@/core/auth/session.service";
+import LogoutButton from "@/features/settings/components/LogoutButton";
 import { adminDb } from "@/services/firebase/admin";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
@@ -353,24 +353,6 @@ export default async function ProfilePage() {
         </div>
       </div>
     </main>
-  );
-}
-
-/* ─────────────────────────────────────────────
-   LOGOUT BUTTON (client component)
-───────────────────────────────────────────── */
-function LogoutButton() {
-  // Server component renders a form so it works without JS
-  return (
-    <form action="/api/auth/logout" method="POST">
-      <button type="submit"
-        className="w-full flex items-center justify-center gap-2 px-4 py-3
-          rounded-2xl border border-red-200 bg-white text-red-600 text-xs
-          font-black uppercase tracking-widest hover:bg-red-50 transition-colors">
-        <LogOut className="w-4 h-4" />
-        ወጣ / Logout
-      </button>
-    </form>
   );
 }
 

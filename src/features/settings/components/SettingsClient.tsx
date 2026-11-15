@@ -9,6 +9,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
+import { clearWebAccountCache } from "@/features/messaging/services/clientAccount.service";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
 import { cn } from "@/shared/utils/utils";
@@ -136,11 +137,20 @@ export default function SettingsClient({ role, uid, email }: Props) {
 
   async function handleLogout() {
     setLoggingOut(true);
-    localStorage.removeItem("sacred_ledger_session");
-    localStorage.removeItem("atsede_niseha_uid");
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-    router.push("/");
-    router.refresh();
+    try {
+      // Clear this account's cached reads/cursors, but keep account-scoped
+      // outbox operations so pending offline work is never destroyed.
+      await clearWebAccountCache();
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch (err) {
+      console.warn("Logout cleanup failed:", err);
+    } finally {
+      router.push("/");
+      router.refresh();
+    }
   }
 
   if (loadingSettings) {

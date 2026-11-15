@@ -72,6 +72,7 @@ export function useSendMessage(senderId: UID) {
       // Queue in outbox immediately for persistent offline guarantee
       await db.outbox.put({
         operationId: `op_${clientMessageId}`,
+        userId: senderId,
         channelId: options.channelId,
         type: "SEND_MESSAGE",
         payload: {
@@ -81,6 +82,7 @@ export function useSendMessage(senderId: UID) {
           media: optimisticMessage.media,
           clientMessageId,
           isEncrypted: options.isEncrypted,
+          senderId,
         },
         status: "pending",
         retryCount: 0,
@@ -116,6 +118,19 @@ export function useSendMessage(senderId: UID) {
         ) {
           finalMedia.sizeBytes = fileSize;
         }
+
+        // Persist media upload result into outbox row immediately so a crash will not re-upload
+        await db.outbox.update(`op_${clientMessageId}`, {
+          payload: {
+            channelId: options.channelId,
+            content: options.content,
+            type: options.type,
+            media: finalMedia,
+            clientMessageId,
+            isEncrypted: options.isEncrypted,
+            senderId,
+          },
+        });
       }
 
       // 3. ENCRYPTION

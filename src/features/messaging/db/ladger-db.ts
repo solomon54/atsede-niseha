@@ -75,6 +75,7 @@ export interface LocalAppointment {
 
 export interface OutboxOperation {
   operationId: string;
+  userId?: string; // Account ownership
   channelId: string;
   type: "SEND_MESSAGE" | "EDIT_MESSAGE" | "DELETE_MESSAGE" | "MARK_READ";
   payload: any;
@@ -87,6 +88,7 @@ export interface OutboxOperation {
 export interface SyncMeta {
   key: string; // e.g. "channel_{channelId}" or "conversations" or "appointments"
   lastSyncAt: number;
+  afterId?: string; // Document ID tiebreaker for identical timestamps
 }
 
 export class SacredLedgerDB extends Dexie {
@@ -117,6 +119,44 @@ export class SacredLedgerDB extends Dexie {
       outbox: "operationId, channelId, type, status, createdAt",
       syncMeta: "key",
     });
+
+    // Version 5: Account Isolation & Tiebreaker Index
+    this.version(5)
+      .stores({
+        messages:
+          "id, clientMessageId, channelId, createdAt, updatedAt, status, [channelId+createdAt], [channelId+updatedAt]",
+        members: "id, role",
+        conversations: "id, role, updatedAt, lastMessageAt",
+        appointments: "id, familyId, scheduledAt, updatedAt, status",
+        outbox:
+          "operationId, userId, channelId, type, status, createdAt, [userId+status]",
+        syncMeta: "key",
+      })
+      .upgrade(async (tx) => {
+        // Existing installations may have outbox rows created before account
+        // ownership existed. Attach them to their sender when that evidence
+        // exists; otherwise quarantine (never delete) so they can never run
+        // under a different account's session.
+        const table = tx.table<OutboxOperation, string>("outbox");
+        const legacy = await table.filter((op) => !op.userId).toArray();
+
+        for (const op of legacy) {
+          const owner =
+            typeof op.payload?.senderId === "string"
+              ? op.payload.senderId
+              : undefined;
+
+          if (owner) {
+            await table.update(op.operationId, { userId: owner });
+          } else {
+            await table.update(op.operationId, {
+              status: "failed",
+              errorMessage:
+                "Legacy outbox operation has no account owner; preserved but not executed.",
+            });
+          }
+        }
+      });
   }
 
   // Helper to save a file locally after download
@@ -139,7 +179,70 @@ export class SacredLedgerDB extends Dexie {
   }
 
   /**
-   * Account Isolation: Purge all local data on logout or account switch.
+   * Account Isolation: Purge cached messages, conversations, and appointments on logout,
+   * while PRESERVING unsent outbox operations (scoped by userId) so pending work is never destroyed.
+   */
+  async clearCachedAccountData() {
+    return this.transaction(
+      "rw",
+      [
+        this.messages,
+        this.members,
+        this.conversations,
+        this.appointments,
+        this.syncMeta,
+      ],
+      async () => {
+        await this.messages.clear();
+        await this.members.clear();
+        await this.conversations.clear();
+        await this.appointments.clear();
+        await this.syncMeta.clear();
+      }
+    );
+  }
+
+  async getPendingOutboxCount(userId?: string): Promise<number> {
+    if (!userId) return 0;
+
+    return this.outbox
+      .where("userId")
+      .equals(userId)
+      .and((op) => op.status === "pending")
+      .count();
+  }
+
+  /**
+   * Runtime safety net for databases that were already opened at schema v5
+   * before ownership backfill ran (e.g. an interrupted earlier release).
+   * Unowned rows are never executed; they are preserved and quarantined.
+   */
+  async migrateLegacyOutboxOwnership(): Promise<void> {
+    const legacy = await this.outbox.filter((op) => !op.userId).toArray();
+    if (legacy.length === 0) return;
+
+    await this.transaction("rw", this.outbox, async () => {
+      for (const op of legacy) {
+        const owner =
+          typeof op.payload?.senderId === "string"
+            ? op.payload.senderId
+            : undefined;
+
+        if (owner) {
+          await this.outbox.update(op.operationId, { userId: owner });
+        } else {
+          await this.outbox.update(op.operationId, {
+            status: "failed",
+            errorMessage:
+              "Legacy outbox operation has no account owner; preserved but not executed.",
+          });
+        }
+      }
+    });
+  }
+
+  /**
+   * Complete Purge: Deletes all stores including outbox.
    */
   async clearAll() {
     return this.transaction(

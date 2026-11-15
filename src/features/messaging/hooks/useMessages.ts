@@ -6,9 +6,11 @@ import Dexie from "dexie";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect } from "react";
 
-import { CachedMember, db, LocalLedgerMessage } from "../db/ladger-db";
-import { syncService } from "../services/sync.service";
+import { getPusherClient } from "@/services/pusher";
+
+import { CachedMember, db } from "../db/ladger-db";
 import { encryptionService } from "../services/encryption.service";
+import { syncService } from "../services/sync.service";
 import { ChannelID, ChannelRole, Message } from "../types/messaging.types";
 
 export interface EnrichedMessage extends Message {
@@ -36,6 +38,37 @@ export function useMessages(channelId: ChannelID) {
   // Trigger delta sync on mount or channel change only
   useEffect(() => {
     if (channelId) syncLedger();
+  }, [channelId, syncLedger]);
+
+  // Heal gaps after the socket dropped or the tab was offline/backgrounded.
+  // Pulling the delta is idempotent and uses the persisted server cursor.
+  useEffect(() => {
+    if (!channelId) return;
+
+    const handleRecovery = () => syncLedger();
+
+    window.addEventListener("online", handleRecovery);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") handleRecovery();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    let unbindPusher: (() => void) | undefined;
+    try {
+      const pusher = getPusherClient();
+      pusher.connection.bind("connected", handleRecovery);
+      unbindPusher = () =>
+        pusher.connection.unbind("connected", handleRecovery);
+    } catch {
+      // Pusher may not be configured in this environment.
+    }
+
+    return () => {
+      window.removeEventListener("online", handleRecovery);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      unbindPusher?.();
+    };
   }, [channelId, syncLedger]);
 
   /**
@@ -73,7 +106,7 @@ export function useMessages(channelId: ChannelID) {
               msg.content,
               msg.encryption
             );
-          } catch (err) {
+          } catch {
             // If we can't decrypt, show the locked placeholder
             displayContent = "[የተቆለፈ መልእክት]";
           }

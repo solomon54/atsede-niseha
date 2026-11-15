@@ -18,6 +18,7 @@ if (typeof (global as any).FinalizationRegistry === "undefined") {
 }
 
 import React, { useEffect } from "react";
+import { AppState } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -68,14 +69,25 @@ function NotificationBridge() {
 }
 
 function SyncBridge() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, uid } = useAuth();
 
   useEffect(() => {
-    if (isLoading || !isAuthenticated) return;
+    if (isLoading || !isAuthenticated || !uid) return;
 
-    mobileSyncService.initRealtimeRecovery();
-    mobileSyncService.sync().catch(() => {});
-  }, [isAuthenticated, isLoading]);
+    mobileSyncService.initRealtimeRecovery(uid);
+    mobileSyncService.sync(undefined, uid).catch(() => {});
+
+    // Foreground resume listener: trigger sync when app returns from background
+    const subscription = AppState.addEventListener("change", (nextAppState) => {
+      if (nextAppState === "active") {
+        mobileSyncService.sync(undefined, uid).catch(() => {});
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [isAuthenticated, isLoading, uid]);
 
   return null;
 }

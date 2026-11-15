@@ -272,6 +272,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await authStorage.saveToken(res.token);
     await authStorage.saveUserMeta(res.role, formattedUid, res.uid);
 
+    // A login can switch accounts without an explicit logout. Cached reads and
+    // cursors belong to the previous account; the outbox is account-scoped and
+    // is deliberately preserved.
+    await offlineCache.clearAll().catch(() => {});
+
     setIsAuthenticated(true);
     setRole(res.role);
     setEotcUid(formattedUid);
@@ -318,6 +323,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     await authStorage.saveToken(res.token);
     await authStorage.saveUserMeta(userRole, formattedUid, res.uid);
+
+    // See login(): isolate the newly authenticated account while keeping its
+    // previous pending outbox operations available for replay.
+    await offlineCache.clearAll().catch(() => {});
 
     setIsAuthenticated(true);
     setRole(userRole);
