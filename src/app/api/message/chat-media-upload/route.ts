@@ -2,8 +2,6 @@
 
 import { UploadApiResponse, v2 as cloudinary } from "cloudinary";
 import { NextRequest, NextResponse } from "next/server";
-import { Readable } from "stream";
-import { ReadableStream as NodeReadableStream } from "stream/web";
 
 import { requireSession } from "@/core/auth/requireSession";
 
@@ -57,14 +55,6 @@ const ALLOWED_MIME_TYPES = [
 ];
 
 /* ============================================================
-   STREAM BRIDGE
-============================================================ */
-
-function webStreamToNodeStream(stream: ReadableStream<Uint8Array>): Readable {
-  return Readable.fromWeb(stream as unknown as NodeReadableStream<Uint8Array>);
-}
-
-/* ============================================================
    ROUTE HANDLER
 ============================================================ */
 
@@ -79,22 +69,23 @@ export async function POST(req: NextRequest) {
       (formData.get("channelId") as string | null) ?? "unknown_ledger";
 
     // 2. VALIDATION
-
-    if (!(file instanceof File)) {
+    if (!file || typeof file === "string" || !("arrayBuffer" in file)) {
       return NextResponse.json(
         { error: "ፋይል አልተገኘም (File not found)" },
         { status: 400 }
       );
     }
 
-    if (file.size === 0) {
+    const safeFile = file as File;
+
+    if (safeFile.size === 0) {
       return NextResponse.json(
         { error: "ባዶ ፋይል አይቀበልም (Empty file rejected)" },
         { status: 400 }
       );
     }
 
-    if (file.size > MAX_FILE_SIZE) {
+    if (safeFile.size > MAX_FILE_SIZE) {
       return NextResponse.json(
         { error: `ፋይሉ በጣም ትልቅ ነው (Max ${MAX_FILE_SIZE / (1024 * 1024)}MB)` },
         { status: 413 }
@@ -102,18 +93,18 @@ export async function POST(req: NextRequest) {
     }
 
     // Normalize MIME — browsers sometimes send empty string for some types
-    const mimeType = file.type || "application/octet-stream";
+    const mimeType = safeFile.type || "application/octet-stream";
     if (!ALLOWED_MIME_TYPES.includes(mimeType) && mimeType !== "application/octet-stream") {
       console.warn(`[UPLOAD] Non-standard MIME: ${mimeType} — allowing through`);
     }
 
     console.log(
-      `[UPLOAD] User=${session.uid} Channel=${channelId} File=${file.name} Size=${file.size} MIME=${mimeType}`
+      `[UPLOAD] User=${session.uid} Channel=${channelId} File=${safeFile.name} Size=${safeFile.size} MIME=${mimeType}`
     );
 
-    // 3. STREAM UPLOAD TO CLOUDINARY
-
-    const nodeStream = webStreamToNodeStream(file.stream());
+    // 3. BUFFER UPLOAD TO CLOUDINARY (Bulletproof across Node and Mobile clients)
+    const arrayBuffer = await safeFile.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
     // Determine resource_type based on MIME
     let resourceType: "image" | "video" | "raw" | "auto" = "auto";
@@ -121,13 +112,16 @@ export async function POST(req: NextRequest) {
     else if (mimeType.startsWith("video/") || mimeType.startsWith("audio/")) resourceType = "video";
     else resourceType = "raw"; // PDFs, docs, etc.
 
+    const rawName = safeFile.name || `file_${Date.now()}`;
+    const cleanPublicId = `${Date.now()}-${rawName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+
     const uploadResult = await new Promise<UploadApiResponse>(
       (resolve, reject) => {
         const uploadStream = cloudinary.uploader.upload_stream(
           {
             folder: `atsede_niseha/${channelId}`,
             resource_type: resourceType,
-            public_id: `${Date.now()}-${file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+            public_id: cleanPublicId,
             use_filename: true,
             unique_filename: false,
             // Only transform images
@@ -144,7 +138,7 @@ export async function POST(req: NextRequest) {
           }
         );
 
-        nodeStream.on("error", reject).pipe(uploadStream);
+        uploadStream.end(buffer);
       }
     );
 
@@ -170,8 +164,8 @@ export async function POST(req: NextRequest) {
           mimeType: mimeType,
           // Preserve original filename in the URL via a custom field
           // so resolveFilename() can use it on the client
-          originalName: file.name,
-          sizeBytes: uploadResult.bytes || file.size,
+          originalName: safeFile.name || rawName,
+          sizeBytes: uploadResult.bytes || safeFile.size,
           width: uploadResult.width ?? null,
           height: uploadResult.height ?? null,
           durationSeconds:

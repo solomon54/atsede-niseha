@@ -74,7 +74,8 @@ function mapMedia(
   return {
     url,
     mimeType: inferredMime,
-    sizeBytes: uploadRes?.bytes || media?.size || 0,
+    originalName: media?.originalName || undefined,
+    sizeBytes: uploadRes?.bytes || media?.sizeBytes || media?.size || 0,
     width: uploadRes?.width || media?.width || null,
     height: uploadRes?.height || media?.height || null,
     durationSeconds: uploadRes?.duration || media?.durationSeconds || null,

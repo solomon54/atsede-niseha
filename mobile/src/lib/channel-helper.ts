@@ -47,7 +47,7 @@ export async function resolveChildDirectChannel(child: {
     }
 
     // 2. Fallback: repair channels to ensure DIRECT channel is created
-    await apiRequest("/api/message/repair-channels", { method: "POST" }).catch(() => {});
+    await apiRequest("/api/message/repair-channels", { method: "POST" }).catch(() => { });
 
     // 3. Re-query conversations after repair
     const refreshed = await apiRequest<ConversationItem[]>("/api/message/conversation");

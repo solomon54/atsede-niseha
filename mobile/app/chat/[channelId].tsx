@@ -22,10 +22,12 @@ import {
   Camera,
   Check,
   Clock,
+  Download,
   FileText,
   Image as ImageIcon,
   Lock,
   Paperclip,
+  Play,
   Send,
   Shield,
   Video,
@@ -53,6 +55,19 @@ export interface MediaDescriptor {
   width?: number | null;
   height?: number | null;
   durationSeconds?: number | null;
+}
+
+export interface StagedAttachment {
+  uri: string;
+  name: string;
+  type: string;
+  size?: number;
+  width?: number;
+  height?: number;
+  durationSeconds?: number;
+  isVideo?: boolean;
+  isImage?: boolean;
+  isDocument?: boolean;
 }
 
 interface MessageItem {
@@ -153,6 +168,63 @@ function inferMime(filename: string, fallbackMime?: string): string {
   }
 }
 
+function formatFileSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function resolveFilename(media?: MediaDescriptor | null): string {
+  if (media?.originalName) return media.originalName;
+  if (media?.url) {
+    try {
+      const parts = media.url.split("/");
+      const last = parts[parts.length - 1];
+      const clean = decodeURIComponent(last).split("?")[0];
+      if (clean && clean.length > 3) return clean;
+    } catch {}
+  }
+  return "የተላከ ፋይል";
+}
+
+function getFileBadge(filename: string, mime?: string) {
+  const ext = filename.split(".").pop()?.toUpperCase() || "";
+  if (ext === "PDF" || mime?.includes("pdf")) {
+    return { label: "PDF", bg: "#FEE2E2", text: "#DC2626" };
+  }
+  if (["DOC", "DOCX"].includes(ext) || mime?.includes("word")) {
+    return { label: "DOC", bg: "#DBEAFE", text: "#2563EB" };
+  }
+  if (
+    ["XLS", "XLSX"].includes(ext) ||
+    mime?.includes("excel") ||
+    mime?.includes("sheet")
+  ) {
+    return { label: "XLS", bg: "#DCFCE7", text: "#16A34A" };
+  }
+  if (
+    ["PPT", "PPTX"].includes(ext) ||
+    mime?.includes("powerpoint") ||
+    mime?.includes("presentation")
+  ) {
+    return { label: "PPT", bg: "#FFEDD5", text: "#EA580C" };
+  }
+  if (
+    ["MP3", "M4A", "WAV", "AAC", "OGG"].includes(ext) ||
+    mime?.startsWith("audio/")
+  ) {
+    return { label: "AUDIO", bg: "#F3E8FF", text: "#9333EA" };
+  }
+  if (
+    ["MP4", "MOV", "AVI", "WEBM"].includes(ext) ||
+    mime?.startsWith("video/")
+  ) {
+    return { label: "VIDEO", bg: "#E0E7FF", text: "#4F46E5" };
+  }
+  return { label: ext || "FILE", bg: "#F1F5F9", text: "#475569" };
+}
+
 export default function ChannelChatScreen() {
   const { channelId } = useLocalSearchParams<{ channelId: string }>();
   const navigation = useNavigation();
@@ -161,6 +233,7 @@ export default function ChannelChatScreen() {
   const queryClient = useQueryClient();
 
   const [inputText, setInputText] = useState("");
+  const [stagedAttachment, setStagedAttachment] = useState<StagedAttachment | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [decryptedContent, setDecryptedContent] = useState<Record<string, string>>({});
   const [showAttachModal, setShowAttachModal] = useState(false);
@@ -218,8 +291,6 @@ export default function ChannelChatScreen() {
       (m) =>
         m.isEncrypted &&
         m.encryption?.keyId &&
-        m.encryption?.iv &&
-        m.content &&
         !attemptedDecrypt.current.has(m.id)
     );
 
@@ -228,7 +299,6 @@ export default function ChannelChatScreen() {
     pending.forEach((m) => attemptedDecrypt.current.add(m.id));
 
     let cancelled = false;
-
     (async () => {
       const updates: Record<string, string> = {};
 
@@ -342,6 +412,8 @@ export default function ChannelChatScreen() {
         (payload.media
           ? payload.media.mimeType.startsWith("image/")
             ? "IMAGE"
+            : payload.media.mimeType.startsWith("video/")
+            ? "VIDEO"
             : "FILE"
           : "TEXT");
 
@@ -409,34 +481,24 @@ export default function ChannelChatScreen() {
     }, 100);
   };
 
-  // 7. Media Upload and Send Helper
-  const uploadAndSendMedia = async (file: {
-    uri: string;
-    name: string;
-    type: string;
-    size?: number;
-    width?: number;
-    height?: number;
-  }) => {
-    if (!channelId) return;
-
-    if (file.size && file.size > MAX_UPLOAD_BYTES) {
-      Alert.alert(
-        "የፋይል መጠን ማሳሰቢያ",
-        `የተመረጠው ፋይል መጠን ${(file.size / (1024 * 1024)).toFixed(1)}MB ነው። የሚፈቀደው ከፍተኛ መጠን 25MB ነው።`
-      );
-      return;
-    }
+  // 7. Staged Media Upload and Send Helper
+  const handleSendWithAttachment = async () => {
+    if (!stagedAttachment || !channelId) return;
+    const attachment = stagedAttachment;
+    const caption = inputText.trim();
 
     setIsUploading(true);
     setUploadStatusText("ፋይሉን በመጫን ላይ…");
     try {
-      const safeName = (file.name || `file_${Date.now()}`).replace(/\s+/g, "_");
-      const safeType = inferMime(safeName, file.type);
+      const safeName = (attachment.name || `file_${Date.now()}`).replace(
+        /\s+/g,
+        "_"
+      );
+      const safeType = inferMime(safeName, attachment.type);
 
       const formData = new FormData();
       formData.append("file", {
-        uri: file.uri,
+        uri: attachment.uri,
         name: safeName,
         type: safeType,
       } as any);
@@ -455,24 +517,31 @@ export default function ChannelChatScreen() {
         const isVid = res.media.mimeType.startsWith("video/");
         const msgType = isImg ? "IMAGE" : isVid ? "VIDEO" : "FILE";
 
+        const finalMedia: MediaDescriptor = {
+          ...res.media,
+          originalName: attachment.name,
+        };
+
         const newMsg: MessageItem = {
           id: clientId,
           channelId: channelId,
           senderId: uid || "me",
           senderRole: role as MessageItem["senderRole"],
-          content: res.media.originalName || "",
-          media: res.media,
+          content: caption,
+          media: finalMedia,
           type: msgType,
           createdAt: Date.now(),
           status: "PENDING",
         };
 
         setOptimisticMessages((prev) => [...prev, newMsg]);
+        setStagedAttachment(null);
+        setInputText("");
 
         sendMutation.mutate({
-          content: res.media.originalName || "",
+          content: caption,
           type: msgType,
-          media: res.media,
+          media: finalMedia,
           clientMessageId: clientId,
         });
 
@@ -491,12 +560,52 @@ export default function ChannelChatScreen() {
     }
   };
 
+  const handlePressSend = () => {
+    if (stagedAttachment) {
+      handleSendWithAttachment();
+    } else {
+      handleSendText();
+    }
+  };
+
+  // 8. Picker Handlers (With Staging & Cancellation)
+  const handleTakePhoto = async () => {
+    setShowAttachModal(false);
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("ፍቃድ ያስፈልጋል", "ካሜራ ለመጠቀም ፍቃድ ይስጡ");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        setStagedAttachment({
+          uri: asset.uri,
+          name: asset.fileName || `photo_${Date.now()}.jpg`,
+          type: asset.mimeType || "image/jpeg",
+          width: asset.width,
+          height: asset.height,
+          size: asset.fileSize,
+          isImage: true,
+          isVideo: false,
+          isDocument: false,
+        });
+      }
+    } catch (err: any) {
+      Alert.alert("ስህተት", "ፎቶ ማንሳት አልተቻለም፡ " + err.message);
+    }
+  };
+
   const handlePickMedia = async () => {
     setShowAttachModal(false);
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        quality: 0.8,
+        mediaTypes: ["images", "videos"],
+        quality: 0.85,
         allowsEditing: false,
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
@@ -517,44 +626,23 @@ export default function ChannelChatScreen() {
           return;
         }
 
-        await uploadAndSendMedia({
+        setStagedAttachment({
           uri: asset.uri,
           name: fileName,
           type: mimeType,
           size: asset.fileSize,
           width: asset.width,
           height: asset.height,
+          durationSeconds: asset.duration
+            ? Math.round(asset.duration / 1000)
+            : undefined,
+          isImage: !isVideo,
+          isVideo: isVideo,
+          isDocument: false,
         });
       }
     } catch (err: any) {
       Alert.alert("ስህተት", "ምስል ወይም ቪዲዮ መምረጥ አልተቻለም፡ " + err.message);
-    }
-  };
-
-  const handleTakePhoto = async () => {
-    setShowAttachModal(false);
-    try {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert("ፍቃድ ያስፈልጋል", "ካሜራ ለመጠቀም ፍቃድ ይስጡ");
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.8,
-      });
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        await uploadAndSendMedia({
-          uri: asset.uri,
-          name: asset.fileName || `photo_${Date.now()}.jpg`,
-          type: asset.mimeType || "image/jpeg",
-          width: asset.width,
-          height: asset.height,
-        });
-      }
-    } catch (err: any) {
-      Alert.alert("ስህተት", "ፎቶ ማንሳት አልተቻለም፡ " + err.message);
     }
   };
 
@@ -569,7 +657,6 @@ export default function ChannelChatScreen() {
         const asset = result.assets[0];
         const ext = asset.name.split(".").pop()?.toLowerCase();
 
-        // Check against allowed formats
         if (ext && !ALLOWED_EXTENSIONS.has(ext)) {
           Alert.alert(
             "ያልተፈቀደ የፋይል ዓይነት",
@@ -588,11 +675,15 @@ export default function ChannelChatScreen() {
 
         const safeMime = inferMime(asset.name, asset.mimeType);
 
-        await uploadAndSendMedia({
+        setStagedAttachment({
           uri: asset.uri,
           name: asset.name,
           type: safeMime,
           size: asset.size,
+          isImage: safeMime.startsWith("image/"),
+          isVideo: safeMime.startsWith("video/"),
+          isDocument:
+            !safeMime.startsWith("image/") && !safeMime.startsWith("video/"),
         });
       }
     } catch (err: any) {
@@ -670,6 +761,9 @@ export default function ChannelChatScreen() {
             const isImg =
               item.media?.mimeType?.startsWith("image/") ||
               item.type === "IMAGE";
+            const isVid =
+              item.media?.mimeType?.startsWith("video/") ||
+              item.type === "VIDEO";
 
             return (
               <View
@@ -718,6 +812,39 @@ export default function ChannelChatScreen() {
                             resizeMode="cover"
                           />
                         </TouchableOpacity>
+                      ) : isVid ? (
+                        <TouchableOpacity
+                          activeOpacity={0.9}
+                          onPress={() =>
+                            item.media?.url && Linking.openURL(item.media.url)
+                          }
+                          style={styles.videoCard}
+                        >
+                          {item.media.thumbnailUrl ? (
+                            <Image
+                              source={{ uri: item.media.thumbnailUrl }}
+                              style={styles.msgImage}
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <View style={styles.videoPlaceholder}>
+                              <Video color="#FFFFFF" size={32} />
+                            </View>
+                          )}
+                          <View style={styles.playIconOverlay}>
+                            <Play color="#FFFFFF" size={24} fill="#FFFFFF" />
+                          </View>
+                          {item.media.durationSeconds ? (
+                            <View style={styles.durationBadge}>
+                              <Text style={styles.durationText}>
+                                {Math.floor(item.media.durationSeconds / 60)}:
+                                {String(
+                                  item.media.durationSeconds % 60
+                                ).padStart(2, "0")}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </TouchableOpacity>
                       ) : (
                         <TouchableOpacity
                           activeOpacity={0.8}
@@ -729,52 +856,77 @@ export default function ChannelChatScreen() {
                             isMe ? styles.myDocCard : styles.otherDocCard,
                           ]}
                         >
-                          <View
-                            style={[
-                              styles.docIconBox,
-                              isMe && styles.myDocIconBox,
-                            ]}
-                          >
-                            <FileText
-                              color={
-                                isMe ? "#FFFFFF" : THEME.colors.sacredCrimson
-                              }
-                              size={20}
-                            />
-                          </View>
-                          <View style={styles.docInfo}>
-                            <Text
-                              numberOfLines={1}
-                              style={[
-                                styles.docName,
-                                isMe ? styles.myDocName : styles.otherDocName,
-                              ]}
-                            >
-                              {item.media.originalName || "የተላከ ሰነድ"}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.docSize,
-                                isMe && { color: "rgba(255,255,255,0.7)" },
-                              ]}
-                            >
-                              {item.media.sizeBytes
-                                ? `${(item.media.sizeBytes / 1024).toFixed(0)} KB`
-                                : "ሰነድ"}
-                            </Text>
-                          </View>
+                          {(() => {
+                            const fileName = resolveFilename(item.media);
+                            const badge = getFileBadge(
+                              fileName,
+                              item.media.mimeType
+                            );
+                            return (
+                              <>
+                                <View
+                                  style={[
+                                    styles.docBadgeBox,
+                                    { backgroundColor: badge.bg },
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.docBadgeText,
+                                      { color: badge.text },
+                                    ]}
+                                  >
+                                    {badge.label}
+                                  </Text>
+                                </View>
+                                <View style={styles.docInfo}>
+                                  <Text
+                                    numberOfLines={2}
+                                    style={[
+                                      styles.docName,
+                                      isMe
+                                        ? styles.myDocName
+                                        : styles.otherDocName,
+                                    ]}
+                                  >
+                                    {fileName}
+                                  </Text>
+                                  <Text
+                                    style={[
+                                      styles.docSize,
+                                      isMe && {
+                                        color: "rgba(255,255,255,0.7)",
+                                      },
+                                    ]}
+                                  >
+                                    {item.media.sizeBytes
+                                      ? formatFileSize(item.media.sizeBytes)
+                                      : "ፋይል"}
+                                  </Text>
+                                </View>
+                                <Download
+                                  color={
+                                    isMe ? "#FFFFFF" : THEME.colors.inkMuted
+                                  }
+                                  size={16}
+                                />
+                              </>
+                            );
+                          })()}
                         </TouchableOpacity>
                       )}
                     </View>
                   )}
 
-                  {/* Text Content */}
-                  {item.content && (!hasMedia || item.content !== item.media?.originalName) ? (
+                  {/* Caption / Text Content */}
+                  {item.content ? (
                     <View style={styles.contentRow}>
                       {locked && (
                         <Lock
                           color={
-                            isMe ? "rgba(255,255,255,0.7)" : THEME.colors.inkSubtle
+                            isMe
+                              ? "rgba(255,255,255,0.7)"
+                              : THEME.colors.inkSubtle
                           }
                           size={12}
                         />
@@ -825,43 +977,110 @@ export default function ChannelChatScreen() {
         </View>
       )}
 
-      {/* Input Bar */}
-      <View style={styles.inputContainer}>
-        <TouchableOpacity
-          style={styles.attachBtn}
-          onPress={() => setShowAttachModal(true)}
-          disabled={isUploading || sendMutation.isPending}
-          hitSlop={8}
-          activeOpacity={0.7}
-        >
-          <Paperclip color={THEME.colors.sacredAmber} size={20} />
-        </TouchableOpacity>
+      {/* Modern Composer Bar with Staged Attachment Preview */}
+      <View style={styles.composerContainer}>
+        {/* Staged Attachment Preview Card with Cancel/Delete Button */}
+        {stagedAttachment && (
+          <View style={styles.stagedCard}>
+            {stagedAttachment.isImage ? (
+              <Image
+                source={{ uri: stagedAttachment.uri }}
+                style={styles.stagedThumb}
+              />
+            ) : stagedAttachment.isVideo ? (
+              <View
+                style={[
+                  styles.stagedIconBox,
+                  { backgroundColor: "#E0E7FF" },
+                ]}
+              >
+                <Video color="#4F46E5" size={20} />
+              </View>
+            ) : (
+              <View
+                style={[
+                  styles.stagedIconBox,
+                  { backgroundColor: "#FEE2E2" },
+                ]}
+              >
+                <FileText color="#DC2626" size={20} />
+              </View>
+            )}
 
-        <TextInput
-          style={styles.textInput}
-          placeholder="መልእክት ይጻፉ... (ምክርና መመሪያ)"
-          placeholderTextColor={THEME.colors.inkSubtle}
-          value={inputText}
-          onChangeText={setInputText}
-          multiline
-          maxLength={1000}
-        />
+            <View style={styles.stagedInfo}>
+              <Text numberOfLines={1} style={styles.stagedName}>
+                {stagedAttachment.name}
+              </Text>
+              <Text style={styles.stagedSize}>
+                {stagedAttachment.size
+                  ? formatFileSize(stagedAttachment.size)
+                  : "ተመርጧል"}
+                {stagedAttachment.isVideo
+                  ? " • ቪዲዮ"
+                  : stagedAttachment.isImage
+                  ? " • ምስል"
+                  : " • ሰነድ"}
+              </Text>
+            </View>
 
-        <TouchableOpacity
-          style={[
-            styles.sendBtn,
-            !inputText.trim() && styles.sendBtnDisabled,
-          ]}
-          onPress={handleSendText}
-          disabled={!inputText.trim() || sendMutation.isPending}
-          activeOpacity={0.8}
-        >
-          {sendMutation.isPending ? (
-            <ActivityIndicator color="#FFFFFF" size="small" />
-          ) : (
-            <Send color="#FFFFFF" size={17} />
-          )}
-        </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.stagedRemoveBtn}
+              onPress={() => setStagedAttachment(null)}
+              hitSlop={8}
+            >
+              <XCircle color={THEME.colors.inkMuted} size={20} />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Input Row: Attachment Paperclip inside the input bar */}
+        <View style={styles.inputRow}>
+          <TouchableOpacity
+            style={styles.attachInsideBtn}
+            onPress={() => setShowAttachModal(true)}
+            disabled={isUploading || sendMutation.isPending}
+            hitSlop={8}
+            activeOpacity={0.7}
+          >
+            <Paperclip color={THEME.colors.sacredAmber} size={20} />
+          </TouchableOpacity>
+
+          <TextInput
+            style={styles.textInput}
+            placeholder={
+              stagedAttachment
+                ? "መግለጫ ይጻፉ... (አማራጭ)"
+                : "መልእክት ይጻፉ... (ምክርና መመሪያ)"
+            }
+            placeholderTextColor={THEME.colors.inkSubtle}
+            value={inputText}
+            onChangeText={setInputText}
+            multiline
+            maxLength={1000}
+          />
+
+          <TouchableOpacity
+            style={[
+              styles.sendBtn,
+              !inputText.trim() &&
+                !stagedAttachment &&
+                styles.sendBtnDisabled,
+            ]}
+            onPress={handlePressSend}
+            disabled={
+              (!inputText.trim() && !stagedAttachment) ||
+              isUploading ||
+              sendMutation.isPending
+            }
+            activeOpacity={0.8}
+          >
+            {isUploading || sendMutation.isPending ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <Send color="#FFFFFF" size={16} />
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Attachment Bottom Sheet Modal */}
@@ -902,7 +1121,9 @@ export default function ChannelChatScreen() {
               </View>
               <View style={styles.modalOptionText}>
                 <Text style={styles.modalOptionLabel}>ካሜራ (Camera)</Text>
-                <Text style={styles.modalOptionSub}>በቀጥታ ፎቶ አንስተው ወዲያውኑ ይላኩ</Text>
+                <Text style={styles.modalOptionSub}>
+                  በቀጥታ ፎቶ አንስተው ያጋሩ
+                </Text>
               </View>
             </TouchableOpacity>
 
@@ -1040,7 +1261,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
   },
   bubble: {
-    maxWidth: "82%",
+    maxWidth: "84%",
     borderRadius: THEME.radii.lg,
     paddingHorizontal: 12,
     paddingVertical: 9,
@@ -1091,9 +1312,45 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   msgImage: {
-    width: 220,
+    width: 230,
     height: 160,
     borderRadius: 10,
+  },
+  videoCard: {
+    width: 230,
+    height: 160,
+    borderRadius: 10,
+    overflow: "hidden",
+    position: "relative",
+    backgroundColor: "#000000",
+  },
+  videoPlaceholder: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1E293B",
+  },
+  playIconOverlay: {
+    position: "absolute",
+    inset: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.3)",
+  },
+  durationBadge: {
+    position: "absolute",
+    bottom: 6,
+    right: 6,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  durationText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "700",
   },
   docCard: {
     flexDirection: "row",
@@ -1101,7 +1358,7 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 10,
     gap: 10,
-    minWidth: 200,
+    minWidth: 210,
   },
   myDocCard: {
     backgroundColor: "rgba(255, 255, 255, 0.12)",
@@ -1111,16 +1368,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
-  docIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: "#FEE2E2",
+  docBadgeBox: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
+    minWidth: 42,
   },
-  myDocIconBox: {
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
+  docBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.5,
   },
   docInfo: {
     flex: 1,
@@ -1189,18 +1448,61 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
-  inputContainer: {
-    flexDirection: "row",
-    alignItems: "center",
+
+  /* Modern Composer Styles */
+  composerContainer: {
     backgroundColor: THEME.colors.navigationBg,
     borderTopWidth: 1,
     borderTopColor: THEME.colors.sacredCrimsonBorder,
     paddingHorizontal: 10,
     paddingVertical: 8,
+  },
+  stagedCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: THEME.colors.surface,
+    borderRadius: 12,
+    padding: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    gap: 10,
+  },
+  stagedThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+  },
+  stagedIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stagedInfo: {
+    flex: 1,
+  },
+  stagedName: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: THEME.colors.inkPrimary,
+  },
+  stagedSize: {
+    fontSize: 10.5,
+    color: THEME.colors.inkMuted,
+    marginTop: 2,
+  },
+  stagedRemoveBtn: {
+    padding: 4,
+  },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
-  attachBtn: {
-    padding: 6,
+  attachInsideBtn: {
+    padding: 8,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1211,7 +1513,7 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     borderWidth: 1,
     borderColor: THEME.colors.border,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 9,
     maxHeight: 100,
     fontSize: 14,
@@ -1226,8 +1528,10 @@ const styles = StyleSheet.create({
     ...THEME.shadows.button,
   },
   sendBtnDisabled: {
-    opacity: 0.4,
+    opacity: 0.35,
   },
+
+  /* Attachment Modal Styles */
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.45)",
@@ -1280,20 +1584,19 @@ const styles = StyleSheet.create({
   },
   modalOptionSub: {
     fontSize: 11,
-    color: THEME.colors.inkSubtle,
+    color: THEME.colors.inkMuted,
     marginTop: 2,
   },
   modalCancelBtn: {
-    alignItems: "center",
-    justifyContent: "center",
     paddingVertical: 12,
-    marginTop: 4,
     borderRadius: 12,
     backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    marginTop: 4,
   },
   modalCancelText: {
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "800",
     color: THEME.colors.inkMuted,
   },
 });

@@ -17,7 +17,9 @@ import {
 export interface RequestMedia {
   url: string;
   mimeType: string;
+  originalName?: string;
   size?: number;
+  sizeBytes?: number;
   width?: number | null;
   height?: number | null;
   durationSeconds?: number | null;
