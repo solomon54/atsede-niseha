@@ -1,9 +1,27 @@
 // mobile/app/children/register.tsx
-import React, { useCallback, useEffect, useState } from "react";
+/**
+ * EOTC Sacred Ledger — Spiritual Child Registration (Mobile)
+ * Full Web Parity Build:
+ * ✔ Photo upload via Camera/Library with Cloudinary (/api/upload)
+ * ✔ Cascading Region ➜ Zone selection from ETHIOPIAN_GEOGRAPHY
+ * ✔ Cascading University ➜ College ➜ Department selection from UNIVERSITY_MASTER_MAP
+ * ✔ Language selection from ETHIOPIAN_LANGUAGES
+ * ✔ Ecclesiastical Spiritual Title selection (ምዕመን፣ ዲያቆን፣ ዘማሪ፣ ሰባኪ)
+ * ✔ High-precision Ethiopian Date selection (Year, Month, Day) with Pagume leap year rules
+ * ✔ Real-time dynamic Academic Progress preview (academicProgressFromEntry)
+ * ✔ Covenant Token generation matching EOTC mixer (EOTC-...)
+ * ✔ Real-time debounced email deliverability verification (/api/email/verify)
+ * ✔ Clean generic placeholder: "የልጁን ሙሉ ስም እዚህ ያስገቡ"
+ */
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
+  Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -13,112 +31,96 @@ import {
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { copyToClipboard } from "../../src/lib/clipboard";
+import * as ImagePicker from "expo-image-picker";
 import {
   ArrowLeft,
+  Camera,
+  Check,
   CheckCircle2,
+  ChevronDown,
   Copy,
   GraduationCap,
   Key,
+  Languages,
   MapPin,
   Phone,
   RefreshCcw,
+  Search,
   Sparkles,
+  Trash2,
   User,
+  X,
   XCircle,
 } from "lucide-react-native";
 
-import { apiRequest } from "../../src/lib/api";
+import { apiRequest, apiUpload } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import { THEME } from "../../src/constants/theme";
+import { copyToClipboard } from "../../src/lib/clipboard";
+import {
+  ETHIOPIAN_GEOGRAPHY,
+  ETHIOPIAN_LANGUAGES,
+  UNIVERSITY_MASTER_MAP,
+} from "@shared/constants/ethiopianData";
+import {
+  academicProgressFromEntry,
+  ETHIOPIAN_MONTHS,
+  getEthiopianMonthDays,
+  getTodayEthiopian,
+  isFutureEthiopianDate,
+  isValidEthiopianDate,
+} from "@shared/utils/calendar/ethiopianCalendar";
 
-const ETHIOPIAN_MONTHS = [
-  "መስከረም",
-  "ጥቅምት",
-  "ኅዳር",
-  "ታኅሣሥ",
-  "ጥር",
-  "የካቲት",
-  "መጋቢት",
-  "ሚያዝያ",
-  "ግንቦት",
-  "ሰኔ",
-  "ሐምሌ",
-  "ነሐሴ",
-  "ጳጉሜ",
-];
+const SPIRITUAL_TITLES = ["ምዕመን", "ዲያቆን", "ዘማሪ", "ሰባኪ"];
+const PROGRAM_DURATIONS = [2, 3, 4, 5, 6, 7, 8];
 
-const SPIRITUAL_TITLES = [
-  "ምዕመን / ምዕመናት",
-  "ዲያቆን",
-  "ቀሲስ",
-  "መሪጌታ",
-  "ዘማሪ / ዘማሪት",
-  "መምህር",
-];
-
-const COMMON_LANGUAGES = [
-  "አማርኛ",
-  "አፋን ኦሮሞ",
-  "ትግርኛ",
-  "ወላይትኛ",
-  "ሲዳምኛ",
-  "ጉራጊኛ",
-  "ሃዲይኛ",
-  "ጋሞኛ",
-  "ሶማሊኛ",
-  "አፋርኛ",
-  "እንግሊዝኛ",
-];
-
-const ETHIOPIAN_REGIONS = [
-  "አዲስ አበባ",
-  "ድሬዳዋ",
-  "ኦሮሚያ",
-  "አማራ",
-  "ትግራይ",
-  "ሲዳማ",
-  "ደቡብ ኢትዮጵያ",
-  "ማዕከላዊ ኢትዮጵያ",
-  "ደቡብ ምዕራብ ኢትዮጵያ",
-  "ሶማሌ",
-  "ቤንሻንጉል ጉሙዝ",
-  "አፋር",
-  "ጋምቤላ",
-  "ሐረሪ",
-];
+interface PickerModalConfig {
+  title: string;
+  options: { label: string; value: string | number }[];
+  selectedValue: string | number;
+  onSelect: (value: any) => void;
+  searchable?: boolean;
+}
 
 export default function RegisterChildScreen() {
   const router = useRouter();
   const { eotcUid, uid } = useAuth();
+  const todayEC = useMemo(() => getTodayEthiopian(), []);
 
-  // Form State
+  // ─────────────────────────────────────────────
+  // FORM STATE
+  // ─────────────────────────────────────────────
   const [token, setToken] = useState("");
   const [secularName, setSecularName] = useState("");
   const [christianName, setChristianName] = useState("");
   const [gender, setGender] = useState<"MALE" | "FEMALE">("MALE");
-  const [birthYear, setBirthYear] = useState("1996");
-  const [birthMonth, setBirthMonth] = useState("1");
-  const [birthDay, setBirthDay] = useState("1");
 
-  const [region, setRegion] = useState("አዲስ አበባ");
-  const [zone, setZone] = useState("አዲስ አበባ");
-  const [city, setCity] = useState("አዲስ አበባ");
+  // Ethiopian Birth Date
+  const [birthYear, setBirthYear] = useState<number>(todayEC.year - 20);
+  const [birthMonth, setBirthMonth] = useState<number>(1);
+  const [birthDay, setBirthDay] = useState<number>(1);
 
-  const [spiritualTitle, setSpiritualTitle] = useState("ምዕመን / ምዕመናት");
-  const [language, setLanguage] = useState("አማርኛ");
+  // Ecclesiastical & Geography
+  const [spiritualTitle, setSpiritualTitle] = useState("ምዕመን");
+  const [region, setRegion] = useState("");
+  const [zone, setZone] = useState("");
+  const [city, setCity] = useState("");
+  const [language, setLanguage] = useState(" አማርኛ (Amharic)");
 
-  const [university, setUniversity] = useState("አዲስ አበባ ዩኒቨርሲቲ");
-  const [college, setCollege] = useState("ቴክኖሎጂ ኢንስቲትዩት");
-  const [department, setDepartment] = useState("ሶፍትዌር ምህንድስና");
-  const [entryYear, setEntryYear] = useState("2014");
-  const [programDuration, setProgramDuration] = useState("4");
+  // Academic (Cascading)
+  const [university, setUniversity] = useState("");
+  const [college, setCollege] = useState("");
+  const [department, setDepartment] = useState("");
+  const [entryYear, setEntryYear] = useState<number>(todayEC.year);
+  const [programDuration, setProgramDuration] = useState<number>(4);
 
-  const [phone, setPhone] = useState("");
+  // Contact & Portrait
+  const [phone, setPhone] = useState("+2519");
   const [email, setEmail] = useState("");
-  const [photoUrl, setPhotoUrl] = useState(
-    "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=400"
-  );
+  const [photoUrl, setPhotoUrl] = useState<string>("");
+  const [localPhotoUri, setLocalPhotoUri] = useState<string | null>(null);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
+  const [showPhotoOptions, setShowPhotoOptions] = useState(false);
 
   // Email verification state
   const [emailStatus, setEmailStatus] = useState<
@@ -126,31 +128,149 @@ export default function RegisterChildScreen() {
   >("idle");
   const [emailMessage, setEmailMessage] = useState("");
 
+  // Submitting & Completion
   const [submitting, setSubmitting] = useState(false);
   const [successToken, setSuccessToken] = useState<string | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
 
-  // 1. Generate Holy Covenant Token
-  const generateToken = useCallback(() => {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    const randPart = (len: number) => {
-      let res = "";
-      for (let i = 0; i < len; i++) {
-        res += chars.charAt(Math.floor(Math.random() * chars.length));
-      }
-      return res;
-    };
+  // Reusable Picker Modal State
+  const [pickerModal, setPickerModal] = useState<PickerModalConfig | null>(null);
+  const [pickerSearchQuery, setPickerSearchQuery] = useState("");
 
-    const prefix = eotcUid ? eotcUid.replace(/[^A-Za-z0-9]/g, "").slice(0, 5) : "AN";
-    const generated = `${prefix}-${randPart(4)}-${randPart(4)}`.toUpperCase();
-    setToken(generated);
+  // ─────────────────────────────────────────────
+  // 1. TOKEN GENERATION (Matching Web Covenant Mixer)
+  // ─────────────────────────────────────────────
+  const generateToken = useCallback(() => {
+    const fCore = (eotcUid || "FATH").replace("EOTC-", "").toUpperCase();
+    const cSeed = Math.random().toString(16).slice(2, 6).toUpperCase();
+
+    let mixed = "";
+    let fIdx = 0;
+    let cIdx = 0;
+
+    for (let i = 0; i < 4; i++) {
+      mixed +=
+        (fCore[fIdx++] || "X") +
+        (fCore[fIdx++] || "X") +
+        (cSeed[cIdx++] || "Z");
+    }
+
+    setToken(`EOTC-${mixed}`);
   }, [eotcUid]);
 
   useEffect(() => {
     generateToken();
   }, [generateToken]);
 
-  // 2. Debounced real-time email verification
+  // ─────────────────────────────────────────────
+  // 2. DYNAMIC CASCADING OPTIONS
+  // ─────────────────────────────────────────────
+
+  // Region options
+  const regionOptions = useMemo(
+    () => Object.keys(ETHIOPIAN_GEOGRAPHY).map((r) => ({ label: r, value: r })),
+    []
+  );
+
+  // Zone options based on selected region
+  const zoneOptions = useMemo(() => {
+    if (!region || !ETHIOPIAN_GEOGRAPHY[region]) return [];
+    return (ETHIOPIAN_GEOGRAPHY[region] as string[]).map((z: string) => ({
+      label: z,
+      value: z,
+    }));
+  }, [region]);
+
+  // University options
+  const universityOptions = useMemo(
+    () =>
+      Object.keys(UNIVERSITY_MASTER_MAP).map((u: string) => ({
+        label: u,
+        value: u,
+      })),
+    []
+  );
+
+  // College options based on selected university
+  const collegeOptions = useMemo(() => {
+    if (!university) return [];
+    const univData =
+      UNIVERSITY_MASTER_MAP[university as keyof typeof UNIVERSITY_MASTER_MAP];
+    if (!univData) return [];
+    return Object.keys(univData).map((c: string) => ({ label: c, value: c }));
+  }, [university]);
+
+  // Department options based on selected college
+  const departmentOptions = useMemo(() => {
+    if (!university || !college) return [];
+    const univData =
+      UNIVERSITY_MASTER_MAP[university as keyof typeof UNIVERSITY_MASTER_MAP];
+    const depts = (univData as any)?.[college];
+    if (!Array.isArray(depts)) return [];
+    return (depts as string[]).map((d: string) => ({ label: d, value: d }));
+  }, [university, college]);
+
+  // Language options
+  const languageOptions = useMemo(
+    () => (ETHIOPIAN_LANGUAGES as string[]).map((l: string) => ({ label: l, value: l })),
+    []
+  );
+
+  // Entry year options (last 30 Ethiopian years)
+  const entryYearOptions = useMemo(() => {
+    return Array.from({ length: 30 }, (_, i: number) => todayEC.year - i).map((y: number) => ({
+      label: `${y} ዓ.ም`,
+      value: y,
+    }));
+  }, [todayEC.year]);
+
+  // Birth year options (1900 to current year)
+  const birthYearOptions = useMemo(() => {
+    return Array.from(
+      { length: todayEC.year - 1900 + 1 },
+      (_, i: number) => todayEC.year - i
+    ).map((y: number) => ({ label: `${y} ዓ.ም`, value: y }));
+  }, [todayEC.year]);
+
+  // Birth month options (13 Ethiopian months)
+  const birthMonthOptions = useMemo(() => {
+    return (ETHIOPIAN_MONTHS as string[]).map((m: string, idx: number) => ({
+      label: `${idx + 1}. ${m}`,
+      value: idx + 1,
+    }));
+  }, []);
+
+  // Birth day options based on month/year (handles Pagume leap years)
+  const maxBirthDays = useMemo(() => {
+    if (!birthYear || !birthMonth) return 30;
+    return getEthiopianMonthDays(birthYear, birthMonth);
+  }, [birthYear, birthMonth]);
+
+  const birthDayOptions = useMemo(() => {
+    return Array.from({ length: maxBirthDays }, (_, i) => i + 1).map((d) => ({
+      label: `${d}`,
+      value: d,
+    }));
+  }, [maxBirthDays]);
+
+  // Adjust day if month changed to Pagume
+  useEffect(() => {
+    if (birthDay > maxBirthDays) {
+      setBirthDay(maxBirthDays);
+    }
+  }, [birthDay, maxBirthDays]);
+
+  // ─────────────────────────────────────────────
+  // 3. COMPUTED ACADEMIC PROGRESS
+  // ─────────────────────────────────────────────
+  const academicProgress = useMemo(() => {
+    if (!entryYear || !programDuration) return null;
+    return academicProgressFromEntry(entryYear, programDuration, gender);
+  }, [entryYear, programDuration, gender]);
+
+  // ─────────────────────────────────────────────
+  // 4. DEBOUNCED EMAIL VERIFICATION
+  // ─────────────────────────────────────────────
   useEffect(() => {
     const trimmed = email.trim();
     if (!trimmed) {
@@ -195,13 +315,138 @@ export default function RegisterChildScreen() {
     return () => clearTimeout(timer);
   }, [email]);
 
+  // ─────────────────────────────────────────────
+  // 5. PHOTO SELECTION & UPLOAD
+  // ─────────────────────────────────────────────
+  const uploadPhotoFile = async (uri: string, name: string, type: string) => {
+    try {
+      setIsUploadingPhoto(true);
+      const formData = new FormData();
+      formData.append("file", {
+        uri,
+        name,
+        type,
+      } as any);
+      formData.append("type", "student-portrait");
+
+      const res = await apiUpload<{ ok: boolean; url: string }>(
+        "/api/upload",
+        formData
+      );
+
+      if (res?.url) {
+        setPhotoUrl(res.url);
+        setLocalPhotoUri(uri);
+      } else {
+        throw new Error("ስዕሉን መጫን አልተቻለም");
+      }
+    } catch (err: any) {
+      Alert.alert("ስህተት", err.message || "የልጁን ፎቶ ወደ ሰርቨር መጫን አልተቻለም።");
+      setLocalPhotoUri(null);
+      setPhotoUrl("");
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    setShowPhotoOptions(false);
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("ፍቃድ ያስፈልጋል", "ካሜራ ለመጠቀም ፍቃድ ይስጡ");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        setLocalPhotoUri(asset.uri);
+        await uploadPhotoFile(
+          asset.uri,
+          asset.fileName || `portrait_${Date.now()}.jpg`,
+          asset.mimeType || "image/jpeg"
+        );
+      }
+    } catch (e: any) {
+      Alert.alert("ስህተት", "ፎቶ ማንሳት አልተቻለም፡ " + e.message);
+    }
+  };
+
+  const handlePickPhoto = async () => {
+    setShowPhotoOptions(false);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        setLocalPhotoUri(asset.uri);
+        await uploadPhotoFile(
+          asset.uri,
+          asset.fileName || `portrait_${Date.now()}.jpg`,
+          asset.mimeType || "image/jpeg"
+        );
+      }
+    } catch (e: any) {
+      Alert.alert("ስህተት", "ፎቶ መምረጥ አልተቻለም፡ " + e.message);
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    setLocalPhotoUri(null);
+    setPhotoUrl("");
+  };
+
+  // ─────────────────────────────────────────────
+  // 6. FORM VALIDATION & SUBMISSION
+  // ─────────────────────────────────────────────
   const handleSubmit = async () => {
+    if (!photoUrl) {
+      Alert.alert("ፎቶ ያስፈልጋል", "ፎቶ መምረጥ አለብዎት — የልጁን ምስል ያክሉ (Photo is required)");
+      return;
+    }
     if (!secularName.trim()) {
       Alert.alert("ስህተት", "እባክዎ የልጁን ሙሉ የዓለም ስም ያስገቡ።");
       return;
     }
     if (!christianName.trim()) {
       Alert.alert("ስህተት", "እባክዎ የልጁን የክርስትና ስም ያስገቡ።");
+      return;
+    }
+    if (!region) {
+      Alert.alert("ስህተት", "እባክዎ ክልል ይምረጡ።");
+      return;
+    }
+    if (!zone) {
+      Alert.alert("ስህተት", "እባክዎ ዞን / ክፍለ ከተማ ይምረጡ።");
+      return;
+    }
+    if (!city.trim()) {
+      Alert.alert("ስህተት", "እባክዎ የሚኖሩበትን ከተማ / ገጠር ያስገቡ።");
+      return;
+    }
+    if (!university) {
+      Alert.alert("ስህተት", "እባክዎ የሚማሩበትን ዩኒቨርሲቲ ይምረጡ።");
+      return;
+    }
+    if (!college) {
+      Alert.alert("ስህተት", "እባክዎ ኮሌጅ / ፋኩልቲ ይምረጡ።");
+      return;
+    }
+    if (!department) {
+      Alert.alert("ስህተት", "እባክዎ የትምህርት ክፍል (ዲፓርትመንት) ይምረጡ።");
+      return;
+    }
+    if (!language) {
+      Alert.alert("ስህተት", "እባክዎ የአፍ መፍቻ ቋንቋ ይምረጡ።");
       return;
     }
     if (!phone.trim()) {
@@ -216,6 +461,17 @@ export default function RegisterChildScreen() {
       return;
     }
 
+    const birthDateObj = {
+      year: birthYear,
+      month: birthMonth,
+      day: birthDay,
+    };
+
+    if (!isValidEthiopianDate(birthDateObj) || isFutureEthiopianDate(birthDateObj)) {
+      Alert.alert("የተሳሳተ ቀን", "የተሳሳተ የልደት ቀን ተመርጧል። እባክዎ እንደገና ያረጋግጡ።");
+      return;
+    }
+
     try {
       setSubmitting(true);
 
@@ -226,11 +482,7 @@ export default function RegisterChildScreen() {
           secularName: secularName.trim(),
           christianName: christianName.trim(),
           gender,
-          birthDate: {
-            day: Number(birthDay) || 1,
-            month: Number(birthMonth) || 1,
-            year: Number(birthYear) || 1996,
-          },
+          birthDate: birthDateObj,
           region,
           zone,
           city: city.trim(),
@@ -239,9 +491,9 @@ export default function RegisterChildScreen() {
           language,
           university,
           college,
-          department: department.trim(),
-          entryYear: Number(entryYear) || 2014,
-          programDuration: Number(programDuration) || 4,
+          department,
+          entryYear: Number(entryYear),
+          programDuration: Number(programDuration),
           phone: phone.trim(),
           email: email.trim().toLowerCase(),
           photoUrl,
@@ -283,7 +535,25 @@ export default function RegisterChildScreen() {
     router.replace("/(tabs)/children" as any);
   };
 
-  // Success Modal / Screen
+  // Open modal helper
+  const openPicker = (config: PickerModalConfig) => {
+    setPickerSearchQuery("");
+    setPickerModal(config);
+  };
+
+  // Filtered modal options
+  const filteredPickerOptions = useMemo(() => {
+    if (!pickerModal) return [];
+    if (!pickerSearchQuery.trim()) return pickerModal.options;
+    const q = pickerSearchQuery.toLowerCase().trim();
+    return pickerModal.options.filter((o) =>
+      o.label.toLowerCase().includes(q)
+    );
+  }, [pickerModal, pickerSearchQuery]);
+
+  // ─────────────────────────────────────────────
+  // SUCCESS CELEBRATION SCREEN
+  // ─────────────────────────────────────────────
   if (successToken) {
     return (
       <View style={styles.successScreen}>
@@ -305,12 +575,11 @@ export default function RegisterChildScreen() {
           <TouchableOpacity
             style={styles.copyTokenBtn}
             onPress={handleCopySuccessToken}
+            activeOpacity={0.8}
           >
             <Copy
               color={
-                tokenCopied
-                  ? THEME.colors.success
-                  : THEME.colors.sacredAmber
+                tokenCopied ? THEME.colors.success : THEME.colors.sacredAmber
               }
               size={18}
             />
@@ -324,7 +593,11 @@ export default function RegisterChildScreen() {
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.finishBtn} onPress={handleDone}>
+          <TouchableOpacity
+            style={styles.finishBtn}
+            onPress={handleDone}
+            activeOpacity={0.8}
+          >
             <Text style={styles.finishBtnText}>ወደ መንጋዬ ተመለስ</Text>
           </TouchableOpacity>
         </View>
@@ -337,7 +610,7 @@ export default function RegisterChildScreen() {
       style={styles.screen}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      {/* Top Navbar */}
+      {/* Top Navigation */}
       <View style={styles.navBar}>
         <TouchableOpacity
           style={styles.navBackBtn}
@@ -351,13 +624,65 @@ export default function RegisterChildScreen() {
         <View style={{ width: 60 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Token Sanctuary Card */}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* ── PORTRAIT PICKER ── */}
+        <View style={styles.portraitSection}>
+          <TouchableOpacity
+            style={[
+              styles.avatarContainer,
+              !localPhotoUri && !photoUrl && styles.avatarEmpty,
+            ]}
+            onPress={() => setShowPhotoOptions(true)}
+            activeOpacity={0.8}
+          >
+            {localPhotoUri || photoUrl ? (
+              <Image
+                source={{ uri: localPhotoUri || photoUrl }}
+                style={styles.avatarImage}
+              />
+            ) : (
+              <View style={styles.cameraPlaceholder}>
+                <Camera color={THEME.colors.sacredAmber} size={32} />
+                <Text style={styles.avatarEmptyLabel}>ምስል ያክሉ</Text>
+              </View>
+            )}
+
+            {isUploadingPhoto && (
+              <View style={styles.uploadingOverlay}>
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {(localPhotoUri || photoUrl) && (
+            <TouchableOpacity
+              style={styles.removePhotoBtn}
+              onPress={handleRemovePhoto}
+              activeOpacity={0.7}
+            >
+              <Trash2 color="#EF4444" size={14} />
+              <Text style={styles.removePhotoText}>ምስሉን አስወግድ</Text>
+            </TouchableOpacity>
+          )}
+
+          <Text style={styles.portraitHint}>
+            የልጁን የፊት ገጽታ የሚያሳይ ጥርት ያለ ምስል ይምረጡ *
+          </Text>
+        </View>
+
+        {/* ── COVENANT TOKEN SANCTUARY ── */}
         <View style={styles.tokenSection}>
           <View style={styles.tokenHeader}>
-            <Key color={THEME.colors.sacredAmber} size={18} />
+            <Key color={THEME.colors.sacredAmber} size={16} />
             <Text style={styles.tokenSectionTitle}>የቃል ኪዳን ቁልፍ (COVENANT TOKEN)</Text>
-            <TouchableOpacity onPress={generateToken} style={styles.tokenRefreshBtn}>
+            <TouchableOpacity
+              onPress={generateToken}
+              style={styles.tokenRefreshBtn}
+              hitSlop={8}
+            >
               <RefreshCcw color={THEME.colors.sacredAmber} size={14} />
             </TouchableOpacity>
           </View>
@@ -367,35 +692,38 @@ export default function RegisterChildScreen() {
           </Text>
         </View>
 
-        {/* Section 1: የማንነት መረጃ */}
+        {/* ── SECTION 1: የማንነት መረጃ (IDENTITY) ── */}
         <View style={styles.formSection}>
           <View style={styles.sectionHeader}>
             <User color={THEME.colors.sacredCrimson} size={16} />
             <Text style={styles.sectionTitle}>የማንነት መረጃ (IDENTITY)</Text>
           </View>
 
+          {/* Full Secular Name */}
           <View style={styles.fieldGroup}>
             <Text style={styles.fieldLabel}>የዓለም መጠሪያ ስም (ሙሉ ስም) *</Text>
             <TextInput
               style={styles.input}
-              placeholder="ለምሳሌ፡ ሰሎሞን ፀሐይ"
+              placeholder="የልጁን ሙሉ ስም እዚህ ያስገቡ"
               placeholderTextColor={THEME.colors.inkSubtle}
               value={secularName}
               onChangeText={setSecularName}
             />
           </View>
 
+          {/* Christian Name */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>የክርስትና ስም *</Text>
+            <Text style={styles.fieldLabel}>ስመ ክርስትና (የመጽሐፍ ስም) *</Text>
             <TextInput
               style={[styles.input, styles.holyInput]}
-              placeholder="ለምሳሌ፡ ወልደ ማርያም"
+              placeholder="ስመ ክርስትና (ለምሳሌ፡ ወልደ ማርያም)"
               placeholderTextColor={THEME.colors.sacredAmber}
               value={christianName}
               onChangeText={setChristianName}
             />
           </View>
 
+          {/* Gender */}
           <View style={styles.fieldGroup}>
             <Text style={styles.fieldLabel}>ጾታ *</Text>
             <View style={styles.toggleRow}>
@@ -405,6 +733,7 @@ export default function RegisterChildScreen() {
                   gender === "MALE" && styles.toggleBtnActive,
                 ]}
                 onPress={() => setGender("MALE")}
+                activeOpacity={0.8}
               >
                 <Text
                   style={[
@@ -412,7 +741,7 @@ export default function RegisterChildScreen() {
                     gender === "MALE" && styles.toggleBtnTextActive,
                   ]}
                 >
-                  ወንድ (MALE)
+                  ወንድ
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
@@ -421,6 +750,7 @@ export default function RegisterChildScreen() {
                   gender === "FEMALE" && styles.toggleBtnActive,
                 ]}
                 onPress={() => setGender("FEMALE")}
+                activeOpacity={0.8}
               >
                 <Text
                   style={[
@@ -428,165 +758,458 @@ export default function RegisterChildScreen() {
                     gender === "FEMALE" && styles.toggleBtnTextActive,
                   ]}
                 >
-                  ሴት (FEMALE)
+                  ሴት
                 </Text>
               </TouchableOpacity>
             </View>
           </View>
 
+          {/* Ethiopian Birth Date */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>የተወለዱበት ዓመት (በኢትዮጵያ ዓ.ም)</Text>
-            <View style={styles.dateRow}>
-              <TextInput
-                style={[styles.input, styles.dateInput]}
-                placeholder="ዓመት"
-                keyboardType="numeric"
-                value={birthYear}
-                onChangeText={setBirthYear}
-              />
-              <TextInput
-                style={[styles.input, styles.dateInput]}
-                placeholder="ወር"
-                keyboardType="numeric"
-                value={birthMonth}
-                onChangeText={setBirthMonth}
-              />
-              <TextInput
-                style={[styles.input, styles.dateInput]}
-                placeholder="ቀን"
-                keyboardType="numeric"
-                value={birthDay}
-                onChangeText={setBirthDay}
-              />
+            <Text style={styles.fieldLabel}>
+              የትውልድ ቀን (በኢትዮጵያ የዘመን አቆጣጠር) *
+            </Text>
+            <View style={styles.dateSelectorsRow}>
+              {/* Year */}
+              <TouchableOpacity
+                style={styles.dateSelectorBtn}
+                onPress={() =>
+                  openPicker({
+                    title: "የትውልድ ዓመት ይምረጡ",
+                    options: birthYearOptions,
+                    selectedValue: birthYear,
+                    onSelect: (val) => setBirthYear(Number(val)),
+                    searchable: true,
+                  })
+                }
+              >
+                <Text style={styles.dateSelectorText}>{birthYear} ዓ.ም</Text>
+                <ChevronDown size={14} color={THEME.colors.inkSubtle} />
+              </TouchableOpacity>
+
+              {/* Month */}
+              <TouchableOpacity
+                style={styles.dateSelectorBtn}
+                onPress={() =>
+                  openPicker({
+                    title: "የትውልድ ወር ይምረጡ",
+                    options: birthMonthOptions,
+                    selectedValue: birthMonth,
+                    onSelect: (val) => setBirthMonth(Number(val)),
+                  })
+                }
+              >
+                <Text style={styles.dateSelectorText}>
+                  {ETHIOPIAN_MONTHS[birthMonth - 1]}
+                </Text>
+                <ChevronDown size={14} color={THEME.colors.inkSubtle} />
+              </TouchableOpacity>
+
+              {/* Day */}
+              <TouchableOpacity
+                style={styles.dateSelectorBtn}
+                onPress={() =>
+                  openPicker({
+                    title: "የትውልድ ቀን ይምረጡ",
+                    options: birthDayOptions,
+                    selectedValue: birthDay,
+                    onSelect: (val) => setBirthDay(Number(val)),
+                  })
+                }
+              >
+                <Text style={styles.dateSelectorText}>{birthDay} ቀን</Text>
+                <ChevronDown size={14} color={THEME.colors.inkSubtle} />
+              </TouchableOpacity>
             </View>
+          </View>
+
+          {/* Spiritual Title */}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>መንፈሳዊ ማዕረግ *</Text>
+            <TouchableOpacity
+              style={styles.selectTrigger}
+              onPress={() =>
+                openPicker({
+                  title: "መንፈሳዊ ማዕረግ ይምረጡ",
+                  options: SPIRITUAL_TITLES.map((t) => ({
+                    label: t,
+                    value: t,
+                  })),
+                  selectedValue: spiritualTitle,
+                  onSelect: (val) => setSpiritualTitle(val),
+                })
+              }
+              activeOpacity={0.8}
+            >
+              <Text style={styles.selectTriggerText}>{spiritualTitle}</Text>
+              <ChevronDown size={16} color={THEME.colors.sacredAmber} />
+            </TouchableOpacity>
           </View>
         </View>
 
-        {/* Section 2: የትምህርትና መንፈሳዊ መረጃ */}
+        {/* ── SECTION 2: የመኖሪያ አድራሻ (GEOGRAPHY) ── */}
         <View style={styles.formSection}>
           <View style={styles.sectionHeader}>
-            <GraduationCap color={THEME.colors.sacredAmber} size={16} />
-            <Text style={styles.sectionTitle}>የትምህርትና መንፈሳዊ መረጃ</Text>
+            <MapPin color={THEME.colors.sacredCrimson} size={16} />
+            <Text style={styles.sectionTitle}>የመኖሪያ አድራሻ (GEOGRAPHY)</Text>
           </View>
 
+          {/* Region */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>መንፈሳዊ ማዕረግ</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="ምዕመን / ዲያቆን"
-              value={spiritualTitle}
-              onChangeText={setSpiritualTitle}
-            />
+            <Text style={styles.fieldLabel}>ክልል *</Text>
+            <TouchableOpacity
+              style={styles.selectTrigger}
+              onPress={() =>
+                openPicker({
+                  title: "ክልል ይምረጡ",
+                  options: regionOptions,
+                  selectedValue: region,
+                  onSelect: (val) => {
+                    setRegion(val);
+                    setZone(""); // Clear cascading zone
+                  },
+                  searchable: true,
+                })
+              }
+              activeOpacity={0.8}
+            >
+              <Text
+                style={[
+                  styles.selectTriggerText,
+                  !region && styles.selectTriggerPlaceholder,
+                ]}
+                numberOfLines={1}
+              >
+                {region || "ክልል ይምረጡ..."}
+              </Text>
+              <ChevronDown size={16} color={THEME.colors.sacredAmber} />
+            </TouchableOpacity>
           </View>
 
+          {/* Zone (Cascading) */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>ዩኒቨርሲቲ / ተቋም</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="የሚማሩበት ዩኒቨርሲቲ"
-              value={university}
-              onChangeText={setUniversity}
-            />
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>ኮሌጅ / ኢንስቲትዩት</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="ኮሌጅ"
-              value={college}
-              onChangeText={setCollege}
-            />
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>የትምህርት ክፍል (ዲፓርትመንት)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="የትምህርት ክፍል"
-              value={department}
-              onChangeText={setDepartment}
-            />
-          </View>
-
-          <View style={styles.fieldRow}>
-            <View style={[styles.fieldGroup, { flex: 1 }]}>
-              <Text style={styles.fieldLabel}>የመግቢያ ዓ.ም</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="2014"
-                keyboardType="numeric"
-                value={entryYear}
-                onChangeText={setEntryYear}
+            <Text style={styles.fieldLabel}>ዞን / ክፍለ ከተማ *</Text>
+            <TouchableOpacity
+              style={[
+                styles.selectTrigger,
+                !region && styles.selectTriggerDisabled,
+              ]}
+              disabled={!region}
+              onPress={() =>
+                openPicker({
+                  title: "ዞን / ክፍለ ከተማ ይምረጡ",
+                  options: zoneOptions,
+                  selectedValue: zone,
+                  onSelect: (val) => setZone(val),
+                  searchable: true,
+                })
+              }
+              activeOpacity={0.8}
+            >
+              <Text
+                style={[
+                  styles.selectTriggerText,
+                  !zone && styles.selectTriggerPlaceholder,
+                  !region && styles.selectTriggerDisabledText,
+                ]}
+                numberOfLines={1}
+              >
+                {zone || (region ? "ዞን ይምረጡ..." : "በመጀመሪያ ክልል ይምረጡ")}
+              </Text>
+              <ChevronDown
+                size={16}
+                color={!region ? THEME.colors.border : THEME.colors.sacredAmber}
               />
-            </View>
-            <View style={[styles.fieldGroup, { flex: 1 }]}>
-              <Text style={styles.fieldLabel}>ቆይታ (ዓመታት)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="4"
-                keyboardType="numeric"
-                value={programDuration}
-                onChangeText={setProgramDuration}
-              />
-            </View>
+            </TouchableOpacity>
+          </View>
+
+          {/* City */}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>የሚኖሩበት ከተማ / ገጠር *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="ከተማ/ የመኖሪያ አድራሻ"
+              placeholderTextColor={THEME.colors.inkSubtle}
+              value={city}
+              onChangeText={setCity}
+            />
           </View>
         </View>
 
-        {/* Section 3: የመገናኛና የመኖሪያ አድራሻ */}
+        {/* ── SECTION 3: የትምህርት መረጃ (ACADEMIC) ── */}
         <View style={styles.formSection}>
           <View style={styles.sectionHeader}>
-            <Phone color={THEME.colors.success} size={16} />
-            <Text style={styles.sectionTitle}>የመገናኛና የመኖሪያ አድራሻ</Text>
+            <GraduationCap color={THEME.colors.sacredCrimson} size={16} />
+            <Text style={styles.sectionTitle}>የትምህርት መረጃ (ACADEMIC)</Text>
           </View>
 
+          {/* University */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>ስልክ ቁጥር *</Text>
+            <Text style={styles.fieldLabel}>
+              የሚማሩበት ከፍተኛ ትምህርት ተቋም / ዩኒቨርሲቲ *
+            </Text>
+            <TouchableOpacity
+              style={styles.selectTrigger}
+              onPress={() =>
+                openPicker({
+                  title: "ዩኒቨርሲቲ ይምረጡ",
+                  options: universityOptions,
+                  selectedValue: university,
+                  onSelect: (val) => {
+                    setUniversity(val);
+                    setCollege(""); // Reset cascade
+                    setDepartment("");
+                  },
+                  searchable: true,
+                })
+              }
+              activeOpacity={0.8}
+            >
+              <Text
+                style={[
+                  styles.selectTriggerText,
+                  !university && styles.selectTriggerPlaceholder,
+                ]}
+                numberOfLines={1}
+              >
+                {university || "ተቋም ይምረጡ..."}
+              </Text>
+              <ChevronDown size={16} color={THEME.colors.sacredAmber} />
+            </TouchableOpacity>
+          </View>
+
+          {/* College (Cascading) */}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>ኮሌጅ / ፋኩልቲ *</Text>
+            <TouchableOpacity
+              style={[
+                styles.selectTrigger,
+                !university && styles.selectTriggerDisabled,
+              ]}
+              disabled={!university}
+              onPress={() =>
+                openPicker({
+                  title: "ኮሌጅ / ፋኩልቲ ይምረጡ",
+                  options: collegeOptions,
+                  selectedValue: college,
+                  onSelect: (val) => {
+                    setCollege(val);
+                    setDepartment(""); // Reset cascade
+                  },
+                  searchable: true,
+                })
+              }
+              activeOpacity={0.8}
+            >
+              <Text
+                style={[
+                  styles.selectTriggerText,
+                  !college && styles.selectTriggerPlaceholder,
+                  !university && styles.selectTriggerDisabledText,
+                ]}
+                numberOfLines={1}
+              >
+                {college ||
+                  (university ? "ኮሌጅ ይምረጡ..." : "በመጀመሪያ ዩኒቨርሲቲ ይምረጡ")}
+              </Text>
+              <ChevronDown
+                size={16}
+                color={
+                  !university ? THEME.colors.border : THEME.colors.sacredAmber
+                }
+              />
+            </TouchableOpacity>
+          </View>
+
+          {/* Department (Cascading) */}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>የትምህርት ክፍል (ዲፓርትመንት) *</Text>
+            <TouchableOpacity
+              style={[
+                styles.selectTrigger,
+                !college && styles.selectTriggerDisabled,
+              ]}
+              disabled={!college}
+              onPress={() =>
+                openPicker({
+                  title: "የትምህርት ክፍል ይምረጡ",
+                  options: departmentOptions,
+                  selectedValue: department,
+                  onSelect: (val) => setDepartment(val),
+                  searchable: true,
+                })
+              }
+              activeOpacity={0.8}
+            >
+              <Text
+                style={[
+                  styles.selectTriggerText,
+                  !department && styles.selectTriggerPlaceholder,
+                  !college && styles.selectTriggerDisabledText,
+                ]}
+                numberOfLines={1}
+              >
+                {department ||
+                  (college ? "ዲፓርትመንት ይምረጡ..." : "በመጀመሪያ ኮሌጅ ይምረጡ")}
+              </Text>
+              <ChevronDown
+                size={16}
+                color={!college ? THEME.colors.border : THEME.colors.sacredAmber}
+              />
+            </TouchableOpacity>
+          </View>
+
+          {/* Entry Year & Program Duration */}
+          <View style={styles.twoColRow}>
+            <View style={[styles.fieldGroup, { flex: 1 }]}>
+              <Text style={styles.fieldLabel}>የገቡበት ዓመት *</Text>
+              <TouchableOpacity
+                style={styles.selectTrigger}
+                onPress={() =>
+                  openPicker({
+                    title: "ወደ ግቢ የገቡበት ዓመት ይምረጡ",
+                    options: entryYearOptions,
+                    selectedValue: entryYear,
+                    onSelect: (val) => setEntryYear(Number(val)),
+                    searchable: true,
+                  })
+                }
+                activeOpacity={0.8}
+              >
+                <Text style={styles.selectTriggerText}>{entryYear} ዓ.ም</Text>
+                <ChevronDown size={14} color={THEME.colors.sacredAmber} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.fieldGroup, { flex: 1 }]}>
+              <Text style={styles.fieldLabel}>የፕሮግራሙ ዓመታት *</Text>
+              <TouchableOpacity
+                style={styles.selectTrigger}
+                onPress={() =>
+                  openPicker({
+                    title: "የፕሮግራሙ ዓመታት ይምረጡ",
+                    options: PROGRAM_DURATIONS.map((d) => ({
+                      label: `${d} ዓመት`,
+                      value: d,
+                    })),
+                    selectedValue: programDuration,
+                    onSelect: (val) => setProgramDuration(Number(val)),
+                  })
+                }
+                activeOpacity={0.8}
+              >
+                <Text style={styles.selectTriggerText}>
+                  {programDuration} ዓመት
+                </Text>
+                <ChevronDown size={14} color={THEME.colors.sacredAmber} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Academic Progress Preview Card */}
+          {academicProgress && (
+            <View
+              style={[
+                styles.academicPreviewCard,
+                academicProgress.graduated
+                  ? styles.academicGraduatedCard
+                  : academicProgress.onBreak
+                  ? styles.academicBreakCard
+                  : styles.academicActiveCard,
+              ]}
+            >
+              <Text style={styles.academicPreviewIcon}>
+                {academicProgress.graduated
+                  ? "🎓"
+                  : academicProgress.onBreak
+                  ? "☀️"
+                  : "📚"}
+              </Text>
+              <View style={styles.academicPreviewContent}>
+                <Text
+                  style={[
+                    styles.academicPreviewTitle,
+                    academicProgress.graduated
+                      ? styles.academicGraduatedTitle
+                      : styles.academicActiveTitle,
+                  ]}
+                >
+                  {academicProgress.label}
+                </Text>
+                <Text style={styles.academicPreviewSub}>
+                  {academicProgress.graduated
+                    ? "ፕሮግራሙ ተጠናቋል"
+                    : academicProgress.onBreak
+                    ? "ሴሚስተሮች መካከል — ቀጣዩ ዓመት ሲጀምር ይዘምናል"
+                    : "ከመዝገቡ ቀን ተነስቶ ራሱ በራሱ ይሰላል"}
+                </Text>
+              </View>
+            </View>
+          )}
+        </View>
+
+        {/* ── SECTION 4: የመገናኛ እና ቋንቋ መረጃ (CONNECTIVITY) ── */}
+        <View style={styles.formSection}>
+          <View style={styles.sectionHeader}>
+            <Phone color={THEME.colors.sacredCrimson} size={16} />
+            <Text style={styles.sectionTitle}>የመገናኛ እና ቋንቋ መረጃ</Text>
+          </View>
+
+          {/* Phone */}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>የስልክ ቁጥር *</Text>
             <TextInput
               style={styles.input}
-              placeholder="0911234567"
+              placeholder="09..."
+              placeholderTextColor={THEME.colors.inkSubtle}
               keyboardType="phone-pad"
               value={phone}
               onChangeText={setPhone}
             />
           </View>
 
-          {/* Email with Live Deliverability Verification */}
+          {/* Email */}
           <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>ኢሜይል አድራሻ (የሚሰራ ኢሜይል) *</Text>
-            <View style={styles.emailInputWrapper}>
+            <Text style={styles.fieldLabel}>ኢሜል *</Text>
+            <View style={styles.inputWithIcon}>
               <TextInput
                 style={[
                   styles.input,
-                  styles.emailInput,
+                  { flex: 1 },
                   emailStatus === "valid" && styles.inputSuccess,
                   emailStatus === "invalid" && styles.inputError,
                 ]}
-                placeholder="ለምሳሌ፡ user@gmail.com"
+                placeholder="ለምሳሌ፡ atsedenis@gmail.com"
+                placeholderTextColor={THEME.colors.inkSubtle}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 value={email}
                 onChangeText={setEmail}
               />
-              <View style={styles.emailIconWrapper}>
+              <View style={styles.inputTrailingIcon}>
                 {emailStatus === "checking" && (
-                  <ActivityIndicator size="small" color={THEME.colors.sacredAmber} />
+                  <ActivityIndicator
+                    color={THEME.colors.sacredAmber}
+                    size="small"
+                  />
                 )}
                 {emailStatus === "valid" && (
                   <CheckCircle2 color={THEME.colors.success} size={18} />
                 )}
                 {emailStatus === "invalid" && (
-                  <XCircle color={THEME.colors.sacredCrimson} size={18} />
+                  <XCircle color={THEME.colors.error} size={18} />
                 )}
               </View>
             </View>
             {emailMessage ? (
               <Text
                 style={[
-                  styles.emailFeedback,
+                  styles.fieldHelperText,
                   emailStatus === "valid"
-                    ? styles.feedbackSuccess
-                    : styles.feedbackError,
+                    ? { color: THEME.colors.success }
+                    : emailStatus === "checking"
+                    ? { color: THEME.colors.sacredAmber }
+                    : { color: THEME.colors.error },
                 ]}
               >
                 {emailMessage}
@@ -594,48 +1217,208 @@ export default function RegisterChildScreen() {
             ) : null}
           </View>
 
-          <View style={styles.fieldRow}>
-            <View style={[styles.fieldGroup, { flex: 1 }]}>
-              <Text style={styles.fieldLabel}>ክልል</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="ክልል"
-                value={region}
-                onChangeText={setRegion}
-              />
-            </View>
-            <View style={[styles.fieldGroup, { flex: 1 }]}>
-              <Text style={styles.fieldLabel}>ከተማ</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="ከተማ"
-                value={city}
-                onChangeText={setCity}
-              />
-            </View>
+          {/* Language Selection */}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>የአፍ መፍቻ ቋንቋ *</Text>
+            <TouchableOpacity
+              style={styles.selectTrigger}
+              onPress={() =>
+                openPicker({
+                  title: "የአፍ መፍቻ ቋንቋ ይምረጡ",
+                  options: languageOptions,
+                  selectedValue: language,
+                  onSelect: (val) => setLanguage(val),
+                  searchable: true,
+                })
+              }
+              activeOpacity={0.8}
+            >
+              <Text
+                style={[
+                  styles.selectTriggerText,
+                  !language && styles.selectTriggerPlaceholder,
+                ]}
+                numberOfLines={1}
+              >
+                {language || "ቋንቋ ይምረጡ..."}
+              </Text>
+              <ChevronDown size={16} color={THEME.colors.sacredAmber} />
+            </TouchableOpacity>
           </View>
         </View>
 
         {/* Submit Button */}
         <TouchableOpacity
-          style={[
-            styles.submitBtn,
-            (submitting || emailStatus !== "valid") && styles.submitBtnDisabled,
-          ]}
+          style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
           onPress={handleSubmit}
-          disabled={submitting || emailStatus !== "valid"}
-          activeOpacity={0.85}
+          disabled={submitting}
+          activeOpacity={0.8}
         >
           {submitting ? (
             <ActivityIndicator color="#FFFFFF" size="small" />
           ) : (
-            <>
+            <View style={styles.submitBtnContent}>
               <Sparkles color="#FFFFFF" size={18} />
-              <Text style={styles.submitBtnText}>መንፈሳዊ ልጁን መዝግብ</Text>
-            </>
+              <Text style={styles.submitBtnText}>ልጁን ወደ መዝገብ አስገባ</Text>
+            </View>
           )}
         </TouchableOpacity>
+
+        <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* ── PHOTO SELECTION MODAL ── */}
+      <Modal
+        visible={showPhotoOptions}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPhotoOptions(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowPhotoOptions(false)}
+        >
+          <View style={styles.photoOptionsCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalHeaderTitle}>የልጁን ፎቶ ይምረጡ</Text>
+              <TouchableOpacity
+                onPress={() => setShowPhotoOptions(false)}
+                hitSlop={8}
+              >
+                <X color={THEME.colors.inkSubtle} size={20} />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.photoOptionBtn}
+              onPress={handleTakePhoto}
+              activeOpacity={0.7}
+            >
+              <View
+                style={[
+                  styles.photoOptionIcon,
+                  { backgroundColor: "#FEF3C7" },
+                ]}
+              >
+                <Camera color="#B45309" size={20} />
+              </View>
+              <View style={styles.photoOptionText}>
+                <Text style={styles.photoOptionLabel}>ካሜራ</Text>
+                <Text style={styles.photoOptionSub}>በቀጥታ ፎቶ አንስተው ያያይዙ</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.photoOptionBtn}
+              onPress={handlePickPhoto}
+              activeOpacity={0.7}
+            >
+              <View
+                style={[
+                  styles.photoOptionIcon,
+                  { backgroundColor: "#DBEAFE" },
+                ]}
+              >
+                <Sparkles color="#1D4ED8" size={20} />
+              </View>
+              <View style={styles.photoOptionText}>
+                <Text style={styles.photoOptionLabel}>ከፎቶ ማዕከል ምረጥ</Text>
+                <Text style={styles.photoOptionSub}>
+                  ከስልክዎ ጋለሪ ውስጥ ፎቶ ይምረጡ
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── GENERIC SEARCHABLE SELECT MODAL ── */}
+      <Modal
+        visible={Boolean(pickerModal)}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPickerModal(null)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.modalBackdrop}
+        >
+          <View style={styles.pickerModalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalHeaderTitle}>{pickerModal?.title}</Text>
+              <TouchableOpacity
+                onPress={() => setPickerModal(null)}
+                hitSlop={8}
+              >
+                <X color={THEME.colors.inkSubtle} size={20} />
+              </TouchableOpacity>
+            </View>
+
+            {pickerModal?.searchable && (
+              <View style={styles.modalSearchRow}>
+                <Search color={THEME.colors.inkSubtle} size={16} />
+                <TextInput
+                  style={styles.modalSearchInput}
+                  placeholder="ፈልግ..."
+                  placeholderTextColor={THEME.colors.inkSubtle}
+                  value={pickerSearchQuery}
+                  onChangeText={setPickerSearchQuery}
+                  autoCorrect={false}
+                />
+                {pickerSearchQuery ? (
+                  <TouchableOpacity
+                    onPress={() => setPickerSearchQuery("")}
+                    hitSlop={6}
+                  >
+                    <X color={THEME.colors.inkSubtle} size={14} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            )}
+
+            <FlatList
+              data={filteredPickerOptions}
+              keyExtractor={(item, idx) => `${item.value}_${idx}`}
+              contentContainerStyle={styles.pickerListContent}
+              renderItem={({ item }) => {
+                const isSelected = item.value === pickerModal?.selectedValue;
+                return (
+                  <TouchableOpacity
+                    style={[
+                      styles.pickerItemRow,
+                      isSelected && styles.pickerItemRowSelected,
+                    ]}
+                    onPress={() => {
+                      pickerModal?.onSelect(item.value);
+                      setPickerModal(null);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text
+                      style={[
+                        styles.pickerItemLabel,
+                        isSelected && styles.pickerItemLabelSelected,
+                      ]}
+                      numberOfLines={2}
+                    >
+                      {item.label}
+                    </Text>
+                    {isSelected && (
+                      <Check color={THEME.colors.sacredAmber} size={18} />
+                    )}
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                <View style={styles.emptyList}>
+                  <Text style={styles.emptyListText}>ምንም አማራጭ አልተገኘም</Text>
+                </View>
+              }
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -649,9 +1432,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    paddingTop: Platform.OS === "ios" ? 54 : 16,
+    paddingBottom: 12,
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: THEME.colors.navigationBg,
+    backgroundColor: THEME.colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: THEME.colors.border,
   },
@@ -659,111 +1443,181 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    paddingVertical: 4,
   },
   navBackText: {
-    fontSize: 13,
-    fontWeight: "800",
+    fontSize: 14,
+    fontWeight: "700",
     color: THEME.colors.sacredCrimson,
   },
   navTitle: {
-    fontSize: 15,
-    fontWeight: "900",
+    fontSize: 16,
+    fontWeight: "800",
     color: THEME.colors.inkPrimary,
   },
   scrollContent: {
     padding: 16,
-    paddingBottom: 40,
+    gap: 16,
+  },
+  portraitSection: {
+    alignItems: "center",
+    paddingVertical: 12,
+    gap: 8,
+  },
+  avatarContainer: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    borderWidth: 2.5,
+    borderColor: THEME.colors.sacredAmber,
+    backgroundColor: THEME.colors.surface,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    ...THEME.shadows.card,
+  },
+  avatarEmpty: {
+    borderStyle: "dashed",
+    borderColor: "#FCD34D",
+    backgroundColor: "#FFFBEB",
+  },
+  cameraPlaceholder: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  avatarEmptyLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: THEME.colors.sacredAmber,
+  },
+  avatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  uploadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  removePhotoBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  removePhotoText: {
+    color: "#EF4444",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  portraitHint: {
+    fontSize: 11,
+    color: THEME.colors.inkSubtle,
+    textAlign: "center",
   },
   tokenSection: {
-    backgroundColor: THEME.colors.buttonDark,
-    borderRadius: THEME.radii.xl,
-    padding: 18,
-    marginBottom: 16,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: THEME.colors.amberBorder,
+    padding: 16,
+    gap: 8,
+    ...THEME.shadows.card,
   },
   tokenHeader: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 8,
+    gap: 6,
   },
   tokenSectionTitle: {
-    fontSize: 10,
+    flex: 1,
+    fontSize: 11,
     fontWeight: "800",
     color: THEME.colors.sacredAmber,
-    letterSpacing: 1,
-    flex: 1,
-    marginLeft: 6,
+    letterSpacing: 0.5,
   },
   tokenRefreshBtn: {
     padding: 4,
   },
   tokenDisplay: {
-    fontSize: 22,
-    fontWeight: "900",
-    fontFamily: "monospace",
-    color: "#FFFFFF",
-    letterSpacing: 3,
-    textAlign: "center",
-    marginVertical: 6,
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+    fontSize: 18,
+    fontWeight: "800",
+    color: THEME.colors.inkPrimary,
+    letterSpacing: 1.5,
   },
   tokenHint: {
-    fontSize: 10,
-    color: "rgba(255,255,255,0.7)",
-    textAlign: "center",
-    lineHeight: 14,
+    fontSize: 11,
+    color: THEME.colors.inkSubtle,
+    lineHeight: 16,
   },
   formSection: {
     backgroundColor: THEME.colors.surface,
-    borderRadius: THEME.radii.xl,
-    padding: 18,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: THEME.colors.border,
-    marginBottom: 16,
+    padding: 16,
+    gap: 14,
+    ...THEME.shadows.card,
   },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingBottom: 12,
+    gap: 6,
     borderBottomWidth: 1,
     borderBottomColor: THEME.colors.border,
-    marginBottom: 14,
+    paddingBottom: 8,
   },
   sectionTitle: {
     fontSize: 12,
-    fontWeight: "900",
-    color: THEME.colors.inkPrimary,
+    fontWeight: "800",
+    color: THEME.colors.sacredCrimson,
     letterSpacing: 0.5,
   },
   fieldGroup: {
-    marginBottom: 14,
-  },
-  fieldRow: {
-    flexDirection: "row",
-    gap: 12,
+    gap: 6,
   },
   fieldLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: THEME.colors.inkPrimary,
-    marginBottom: 6,
-    letterSpacing: 0.2,
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: THEME.colors.inkMuted,
   },
   input: {
-    backgroundColor: THEME.colors.surfaceAlt,
+    backgroundColor: THEME.colors.sanctuaryBg,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: THEME.colors.border,
-    borderRadius: THEME.radii.lg,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    fontSize: 13,
+    fontSize: 14,
     color: THEME.colors.inkPrimary,
-    fontWeight: "600",
   },
   holyInput: {
-    color: THEME.colors.sacredAmber,
-    fontWeight: "800",
+    borderColor: THEME.colors.amberBorder,
+    color: THEME.colors.inkPrimary,
+  },
+  inputWithIcon: {
+    flexDirection: "row",
+    alignItems: "center",
+    position: "relative",
+  },
+  inputTrailingIcon: {
+    position: "absolute",
+    right: 12,
+  },
+  inputSuccess: {
+    borderColor: "#A7F3D0",
+  },
+  inputError: {
+    borderColor: "#FECACA",
+  },
+  fieldHelperText: {
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 2,
+    marginLeft: 4,
   },
   toggleRow: {
     flexDirection: "row",
@@ -772,117 +1626,282 @@ const styles = StyleSheet.create({
   toggleBtn: {
     flex: 1,
     paddingVertical: 10,
-    borderRadius: THEME.radii.lg,
-    backgroundColor: THEME.colors.surfaceAlt,
-    alignItems: "center",
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: THEME.colors.border,
+    backgroundColor: THEME.colors.sanctuaryBg,
+    alignItems: "center",
   },
   toggleBtnActive: {
-    backgroundColor: THEME.colors.sacredCrimsonLight,
-    borderColor: THEME.colors.sacredCrimson,
+    borderColor: THEME.colors.sacredAmber,
+    backgroundColor: "#FEF3C7",
   },
   toggleBtnText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: "700",
     color: THEME.colors.inkMuted,
   },
   toggleBtnTextActive: {
-    color: THEME.colors.sacredCrimson,
-    fontWeight: "900",
+    color: "#92400E",
   },
-  dateRow: {
+  dateSelectorsRow: {
     flexDirection: "row",
     gap: 8,
   },
-  dateInput: {
+  dateSelectorBtn: {
     flex: 1,
-    textAlign: "center",
-    fontFamily: "monospace",
-  },
-  emailInputWrapper: {
-    position: "relative",
-  },
-  emailInput: {
-    paddingRight: 40,
-  },
-  emailIconWrapper: {
-    position: "absolute",
-    right: 12,
-    top: 12,
-  },
-  inputSuccess: {
-    borderColor: THEME.colors.success,
-  },
-  inputError: {
-    borderColor: THEME.colors.sacredCrimson,
-  },
-  emailFeedback: {
-    fontSize: 10,
-    fontWeight: "700",
-    marginTop: 4,
-  },
-  feedbackSuccess: {
-    color: THEME.colors.success,
-  },
-  feedbackError: {
-    color: THEME.colors.sacredCrimson,
-  },
-  submitBtn: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
+    justifyContent: "space-between",
+    backgroundColor: THEME.colors.sanctuaryBg,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  dateSelectorText: {
+    fontSize: 12.5,
+    fontWeight: "700",
+    color: THEME.colors.inkPrimary,
+  },
+  selectTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: THEME.colors.sanctuaryBg,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  selectTriggerDisabled: {
+    backgroundColor: "#F3F4F6",
+    borderColor: "#E5E7EB",
+  },
+  selectTriggerText: {
+    fontSize: 13.5,
+    fontWeight: "700",
+    color: THEME.colors.inkPrimary,
+    flex: 1,
+    marginRight: 6,
+  },
+  selectTriggerPlaceholder: {
+    color: THEME.colors.inkSubtle,
+    fontWeight: "500",
+  },
+  selectTriggerDisabledText: {
+    color: "#9CA3AF",
+  },
+  twoColRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  academicPreviewCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 10,
+  },
+  academicActiveCard: {
+    backgroundColor: "#FEF3C7",
+    borderColor: "#FDE68A",
+  },
+  academicBreakCard: {
+    backgroundColor: "#E0F2FE",
+    borderColor: "#BAE6FD",
+  },
+  academicGraduatedCard: {
+    backgroundColor: "#D1FAE5",
+    borderColor: "#A7F3D0",
+  },
+  academicPreviewIcon: {
+    fontSize: 22,
+  },
+  academicPreviewContent: {
+    flex: 1,
+  },
+  academicPreviewTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  academicActiveTitle: {
+    color: "#92400E",
+  },
+  academicGraduatedTitle: {
+    color: "#065F46",
+  },
+  academicPreviewSub: {
+    fontSize: 10,
+    color: THEME.colors.inkSubtle,
+    marginTop: 2,
+  },
+  submitBtn: {
     backgroundColor: THEME.colors.sacredCrimson,
-    paddingVertical: 16,
-    borderRadius: THEME.radii.pill,
-    marginTop: 8,
-    elevation: 3,
-    shadowColor: THEME.colors.sacredCrimson,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    ...THEME.shadows.button,
   },
   submitBtnDisabled: {
-    backgroundColor: THEME.colors.inkSubtle,
-    elevation: 0,
-    shadowOpacity: 0,
+    opacity: 0.6,
+  },
+  submitBtnContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   submitBtnText: {
     color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  photoOptionsCard: {
+    backgroundColor: THEME.colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: Platform.OS === "ios" ? 36 : 24,
+    gap: 12,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  modalHeaderTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: THEME.colors.inkPrimary,
+  },
+  photoOptionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: "#F9FAFB",
+    gap: 12,
+  },
+  photoOptionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  photoOptionText: {
+    flex: 1,
+  },
+  photoOptionLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: THEME.colors.inkPrimary,
+  },
+  photoOptionSub: {
+    fontSize: 11,
+    color: THEME.colors.inkSubtle,
+    marginTop: 2,
+  },
+  pickerModalCard: {
+    maxHeight: "80%",
+    backgroundColor: THEME.colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 18,
+    paddingHorizontal: 20,
+    paddingBottom: Platform.OS === "ios" ? 36 : 20,
+  },
+  modalSearchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: THEME.colors.sanctuaryBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+    gap: 8,
+  },
+  modalSearchInput: {
+    flex: 1,
+    fontSize: 13.5,
+    color: THEME.colors.inkPrimary,
+    padding: 0,
+  },
+  pickerListContent: {
+    paddingBottom: 20,
+  },
+  pickerItemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#F3F4F6",
+  },
+  pickerItemRowSelected: {
+    backgroundColor: "#FEF3C7",
+  },
+  pickerItemLabel: {
+    fontSize: 13.5,
+    color: THEME.colors.inkPrimary,
+    fontWeight: "600",
+    flex: 1,
+    marginRight: 8,
+  },
+  pickerItemLabelSelected: {
+    color: "#92400E",
+    fontWeight: "800",
+  },
+  emptyList: {
+    paddingVertical: 30,
+    alignItems: "center",
+  },
+  emptyListText: {
+    color: THEME.colors.inkSubtle,
     fontSize: 13,
-    fontWeight: "900",
-    letterSpacing: 0.5,
   },
   successScreen: {
     flex: 1,
     backgroundColor: THEME.colors.sanctuaryBg,
     alignItems: "center",
     justifyContent: "center",
-    padding: 24,
+    padding: 20,
   },
   successCard: {
-    backgroundColor: THEME.colors.surface,
-    borderRadius: THEME.radii.xl,
-    padding: 24,
-    alignItems: "center",
     width: "100%",
+    maxWidth: 380,
+    backgroundColor: THEME.colors.surface,
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: THEME.colors.border,
-    elevation: 4,
-    shadowColor: THEME.colors.inkPrimary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
+    padding: 24,
+    alignItems: "center",
+    gap: 14,
+    ...THEME.shadows.card,
   },
   successIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: "#DCFCE7",
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#D1FAE5",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
   },
   successTitle: {
     fontSize: 20,
@@ -890,62 +1909,56 @@ const styles = StyleSheet.create({
     color: THEME.colors.inkPrimary,
   },
   successSubtitle: {
-    fontSize: 12,
-    color: THEME.colors.inkMuted,
+    fontSize: 12.5,
+    color: THEME.colors.inkSubtle,
     textAlign: "center",
     lineHeight: 18,
-    marginVertical: 10,
   },
   tokenBox: {
-    backgroundColor: THEME.colors.buttonDark,
-    borderRadius: THEME.radii.lg,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
     width: "100%",
+    backgroundColor: THEME.colors.sanctuaryBg,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: THEME.colors.amberBorder,
+    padding: 14,
     alignItems: "center",
-    marginVertical: 14,
+    gap: 6,
   },
   tokenBoxLabel: {
-    fontSize: 8,
+    fontSize: 10,
     fontWeight: "800",
     color: THEME.colors.sacredAmber,
-    letterSpacing: 1.5,
-    textTransform: "uppercase",
   },
   tokenBoxValue: {
-    fontSize: 20,
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+    fontSize: 18,
     fontWeight: "900",
-    fontFamily: "monospace",
-    color: "#FFFFFF",
-    letterSpacing: 3,
-    marginTop: 6,
+    color: THEME.colors.inkPrimary,
+    letterSpacing: 1.5,
   },
   copyTokenBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: THEME.colors.surfaceAlt,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: THEME.radii.pill,
-    marginBottom: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
   },
   copyTokenBtnText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: THEME.colors.inkPrimary,
+    fontSize: 13,
+    fontWeight: "700",
+    color: THEME.colors.sacredAmber,
   },
   finishBtn: {
-    backgroundColor: THEME.colors.buttonDark,
-    paddingVertical: 14,
     width: "100%",
-    borderRadius: THEME.radii.pill,
+    backgroundColor: THEME.colors.buttonDark,
+    borderRadius: 14,
+    paddingVertical: 12,
     alignItems: "center",
+    justifyContent: "center",
   },
   finishBtnText: {
     color: "#FFFFFF",
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "800",
   },
 });
-
