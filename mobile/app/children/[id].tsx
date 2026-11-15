@@ -1,37 +1,53 @@
 // mobile/app/children/[id].tsx
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  BackHandler,
   Image,
   Linking,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  BookOpen,
   Calendar,
   CheckCircle2,
   Clock,
+  Compass,
   Copy,
+  Edit3,
   GraduationCap,
+  Landmark,
   MapPin,
   MessageSquare,
   Phone,
   Shield,
   User,
   Video,
+  X,
+  Zap,
 } from "lucide-react-native";
 
 import { apiRequest } from "../../src/lib/api";
+import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
+import {
+  resolveChildDirectChannel,
+  showUnclaimedAccountNotice,
+} from "../../src/lib/channel-helper";
 import { copyToClipboard } from "../../src/lib/clipboard";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { THEME } from "../../src/constants/theme";
+import { academicProgressFromEntry } from "@shared/utils/calendar/ethiopianCalendar";
 
 export interface StudentDetail {
   id: string;
@@ -55,6 +71,7 @@ export interface StudentDetail {
   region?: string;
   zone?: string;
   city?: string;
+  diocese?: string;
   accountClaimed?: boolean;
   status?: string;
   createdAt?: string;
@@ -68,8 +85,31 @@ export interface StudentDetail {
 export default function ChildProfileDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { role } = useAuth();
+  const isFather = role === "FATHER";
+  const queryClient = useQueryClient();
 
   const [copied, setCopied] = useState(false);
+  const [isResolvingChannel, setIsResolvingChannel] = useState(false);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+
+  // Edit form state
+  const [editSecularName, setEditSecularName] = useState("");
+  const [editChristianName, setEditChristianName] = useState("");
+  const [editSpiritualTitle, setEditSpiritualTitle] = useState("");
+  const [editGender, setEditGender] = useState<"MALE" | "FEMALE">("MALE");
+  const [editLanguage, setEditLanguage] = useState("");
+  const [editUniversity, setEditUniversity] = useState("");
+  const [editCollege, setEditCollege] = useState("");
+  const [editDepartment, setEditDepartment] = useState("");
+  const [editEntryYear, setEditEntryYear] = useState("");
+  const [editProgramDuration, setEditProgramDuration] = useState("");
+  const [editRegion, setEditRegion] = useState("");
+  const [editZone, setEditZone] = useState("");
+  const [editCity, setEditCity] = useState("");
+  const [editDiocese, setEditDiocese] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editEmail, setEditEmail] = useState("");
 
   // 1. Fetch Student Details
   const { data, isLoading, error } = useQuery<{
@@ -96,6 +136,100 @@ export default function ChildProfileDetailScreen() {
 
   const student = data?.student;
 
+  // Safe hardware back handling on Android
+  useEffect(() => {
+    const onBackPress = () => {
+      handleBack();
+      return true;
+    };
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      onBackPress
+    );
+    return () => subscription.remove();
+  }, []);
+
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/(tabs)/children" as any);
+    }
+  };
+
+  // Populate edit state when opening edit modal
+  const openEditModal = () => {
+    if (!student) return;
+    setEditSecularName(student.secularName || student.fullName || "");
+    setEditChristianName(student.christianName || "");
+    setEditSpiritualTitle(student.spiritualTitle || "");
+    setEditGender(student.gender || "MALE");
+    setEditLanguage(student.language || "አማርኛ");
+    setEditUniversity(student.university || "");
+    setEditCollege(student.college || "");
+    setEditDepartment(student.department || "");
+    setEditEntryYear(student.entryYear ? String(student.entryYear) : "");
+    setEditProgramDuration(
+      student.programDuration ? String(student.programDuration) : "4"
+    );
+    setEditRegion(student.region || "");
+    setEditZone(student.zone || "");
+    setEditCity(student.city || "");
+    setEditDiocese(student.diocese || "");
+    setEditPhone(student.phone || "");
+    setEditEmail(student.email || "");
+    setEditModalVisible(true);
+  };
+
+  // Profile Edit Mutation
+  const editMutation = useMutation({
+    mutationFn: async (payload: Partial<StudentDetail>) => {
+      return await apiRequest(`/api/father/children/${student?.eotcUid || id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: (res) => {
+      Alert.alert("ተሳክቷል", "የልጁ መረጃ በተሳካ ሁኔታ ተሻሽሏል");
+      setEditModalVisible(false);
+      queryClient.invalidateQueries({ queryKey: ["child-detail", id] });
+      queryClient.invalidateQueries({ queryKey: ["father-children"] });
+    },
+    onError: (err: any) => {
+      Alert.alert("ስህተት", err.message || "መረጃውን ማሻሻል አልተቻለም");
+    },
+  });
+
+  const handleSaveEdit = () => {
+    if (!editSecularName.trim()) {
+      Alert.alert("ማሳሰቢያ", "እባክዎ የዓለም መጠሪያ ስም ያስገቡ");
+      return;
+    }
+
+    const payload: any = {
+      secularName: editSecularName.trim(),
+      christianName: editChristianName.trim() || undefined,
+      spiritualTitle: editSpiritualTitle.trim() || undefined,
+      gender: editGender,
+      language: editLanguage.trim() || undefined,
+      university: editUniversity.trim() || undefined,
+      college: editCollege.trim() || undefined,
+      department: editDepartment.trim() || undefined,
+      entryYear: editEntryYear ? parseInt(editEntryYear, 10) : undefined,
+      programDuration: editProgramDuration
+        ? parseInt(editProgramDuration, 10)
+        : 4,
+      region: editRegion.trim() || undefined,
+      zone: editZone.trim() || undefined,
+      city: editCity.trim() || undefined,
+      diocese: editDiocese.trim() || undefined,
+      phone: editPhone.trim() || undefined,
+      email: editEmail.trim() || undefined,
+    };
+
+    editMutation.mutate(payload);
+  };
+
   const handleCopyId = async () => {
     if (!student?.eotcUid) return;
     await copyToClipboard(student.eotcUid, "የልጁ መለያ ቁጥር");
@@ -115,12 +249,67 @@ export default function ChildProfileDetailScreen() {
     }
   };
 
-  const handleBack = () => {
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace("/(tabs)/children" as any);
+  // Direct Message targeting this exact child
+  const handleMessage = async () => {
+    if (!student) return;
+    if (!student.accountClaimed || !student.uid) {
+      showUnclaimedAccountNotice(student);
+      return;
     }
+    setIsResolvingChannel(true);
+    try {
+      const channelId = await resolveChildDirectChannel(student);
+      if (channelId) {
+        router.push(`/chat/${channelId}` as any);
+      } else {
+        Alert.alert(
+          "መልዕክት መክፈት አልተቻለም",
+          "ከዚህ መንፈሳዊ ልጅ ጋር ቀጥታ የውይይት መስመር አልተገኘም። እባክዎ ጥቂት ቆይተው እንደገና ይሞክሩ።"
+        );
+      }
+    } finally {
+      setIsResolvingChannel(false);
+    }
+  };
+
+  // Direct Video Call targeting this exact child
+  const handleVideoCall = async () => {
+    if (!student) return;
+    if (!student.accountClaimed || !student.uid) {
+      showUnclaimedAccountNotice(student);
+      return;
+    }
+    setIsResolvingChannel(true);
+    try {
+      const channelId = await resolveChildDirectChannel(student);
+      if (channelId) {
+        router.push(`/call/${channelId}` as any);
+      } else {
+        Alert.alert(
+          "ቪዲዮ ጥሪ መጀመር አልተቻለም",
+          "ከዚህ መንፈሳዊ ልጅ ጋር የቪዲዮ ጥሪ መስመር አልተገኘም። እባክዎ ጥቂት ቆይተው እንደገና ይሞክሩ።"
+        );
+      }
+    } finally {
+      setIsResolvingChannel(false);
+    }
+  };
+
+  // Direct Appointment targeting this exact child
+  const handleAppointment = () => {
+    if (!student) return;
+    if (!student.accountClaimed || !student.uid) {
+      showUnclaimedAccountNotice(student);
+      return;
+    }
+    router.push({
+      pathname: "/(tabs)/appointments" as any,
+      params: {
+        childUid: student.uid,
+        childEotcUid: student.eotcUid,
+        openModal: "true",
+      },
+    });
   };
 
   if (isLoading && !student) {
@@ -152,6 +341,30 @@ export default function ChildProfileDetailScreen() {
     ? `${student.birthDate.day}/${student.birthDate.month}/${student.birthDate.year} ዓ.ም`
     : "ያልተገለጸ";
 
+  // Academic Progress Calculation (100% Web Parity)
+  const progress = academicProgressFromEntry(
+    student.entryYear ?? 0,
+    student.programDuration ?? 4,
+    student.gender ?? "MALE"
+  );
+
+  // Graduation Year Calculation (100% Web Parity)
+  const graduationYear =
+    student.entryYear && student.programDuration
+      ? student.entryYear + student.programDuration
+      : student.entryYear
+      ? student.entryYear + 4
+      : null;
+
+  // Joined Date Formatted
+  const joinedDateStr = student.createdAt
+    ? new Date(student.createdAt).toLocaleDateString("am-ET", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      })
+    : null;
+
   return (
     <View style={styles.screen}>
       {/* Top Navigation Bar */}
@@ -161,17 +374,28 @@ export default function ChildProfileDetailScreen() {
           onPress={handleBack}
           activeOpacity={0.7}
         >
-          <ArrowLeft color={THEME.colors.sacredCrimson} size={20} />
+          <ArrowLeft color={THEME.colors.sacredCrimson} size={18} />
           <Text style={styles.navBackText}>ተመለስ</Text>
         </TouchableOpacity>
         <Text style={styles.navTitle}>የልጁ መረጃ</Text>
-        <View style={{ width: 60 }} />
+        {isFather ? (
+          <TouchableOpacity
+            style={styles.navEditBtn}
+            onPress={openEditModal}
+            activeOpacity={0.7}
+          >
+            <Edit3 color={THEME.colors.sacredAmber} size={15} />
+            <Text style={styles.navEditText}>አርትዕ</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={{ width: 60 }} />
+        )}
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Sacred Header Card */}
         <View style={styles.headerCard}>
-          {/* Avatar with Golden Halo Ring */}
+          {/* Avatar with Halo Ring */}
           <View style={styles.avatarHalo}>
             <View style={styles.avatarInner}>
               {student.photoUrl ? (
@@ -180,7 +404,7 @@ export default function ChildProfileDetailScreen() {
                   style={styles.avatarImg}
                 />
               ) : (
-                <User color={THEME.colors.sacredAmber} size={42} />
+                <User color={THEME.colors.sacredAmber} size={40} />
               )}
             </View>
           </View>
@@ -244,7 +468,7 @@ export default function ChildProfileDetailScreen() {
                     ? THEME.colors.success
                     : THEME.colors.sacredAmber
                 }
-                size={16}
+                size={14}
               />
               <Text
                 style={[
@@ -258,42 +482,55 @@ export default function ChildProfileDetailScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Quick Pastoral Action Bar */}
+        {/* Quick Pastoral Action Bar — Exact Child Targeted */}
         <View style={styles.actionsBar}>
           <TouchableOpacity
-            style={styles.actionItem}
-            onPress={() => router.push("/(tabs)/chat" as any)}
+            style={[styles.actionItem, isResolvingChannel && { opacity: 0.7 }]}
+            onPress={handleMessage}
+            disabled={isResolvingChannel}
+            activeOpacity={0.7}
           >
             <View style={[styles.actionIconBox, { backgroundColor: "#FEF2F2" }]}>
-              <MessageSquare color={THEME.colors.sacredCrimson} size={20} />
+              {isResolvingChannel ? (
+                <ActivityIndicator size="small" color={THEME.colors.sacredCrimson} />
+              ) : (
+                <MessageSquare color={THEME.colors.sacredCrimson} size={18} />
+              )}
             </View>
             <Text style={styles.actionLabel}>መልዕክት</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.actionItem}
-            onPress={() => router.push("/(tabs)/appointments" as any)}
+            onPress={handleAppointment}
+            activeOpacity={0.7}
           >
             <View style={[styles.actionIconBox, { backgroundColor: "#FFFBEB" }]}>
-              <Calendar color={THEME.colors.sacredAmber} size={20} />
+              <Calendar color={THEME.colors.sacredAmber} size={18} />
             </View>
             <Text style={styles.actionLabel}>ቀጠሮ</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.actionItem}
-            onPress={() => router.push("/(tabs)/chat" as any)}
+            style={[styles.actionItem, isResolvingChannel && { opacity: 0.7 }]}
+            onPress={handleVideoCall}
+            disabled={isResolvingChannel}
+            activeOpacity={0.7}
           >
             <View style={[styles.actionIconBox, { backgroundColor: "#EFF6FF" }]}>
-              <Video color="#2563EB" size={20} />
+              <Video color="#2563EB" size={18} />
             </View>
-            <Text style={styles.actionLabel}>ቪዲዮ ጥሪ</Text>
+            <Text style={[styles.actionLabel, { color: "#2563EB" }]}>ቪዲዮ ጥሪ</Text>
           </TouchableOpacity>
 
           {student.phone ? (
-            <TouchableOpacity style={styles.actionItem} onPress={handleCallPhone}>
+            <TouchableOpacity
+              style={styles.actionItem}
+              onPress={handleCallPhone}
+              activeOpacity={0.7}
+            >
               <View style={[styles.actionIconBox, { backgroundColor: "#F0FDF4" }]}>
-                <Phone color={THEME.colors.success} size={20} />
+                <Phone color={THEME.colors.success} size={18} />
               </View>
               <Text style={styles.actionLabel}>ስልክ</Text>
             </TouchableOpacity>
@@ -342,7 +579,7 @@ export default function ChildProfileDetailScreen() {
           </View>
         </View>
 
-        {/* Section 2: የትምህርት መረጃ */}
+        {/* Section 2: የትምህርት መረጃ (Includes Graduation Year & Live Standing) */}
         <View style={styles.sectionCard}>
           <View style={styles.sectionHeader}>
             <GraduationCap color={THEME.colors.sacredAmber} size={16} />
@@ -356,11 +593,11 @@ export default function ChildProfileDetailScreen() {
               </Text>
             </View>
             <View style={styles.dataPoint}>
-              <Text style={styles.dataLabel}>ኮሌጅ / ኢንስቲትዩት</Text>
+              <Text style={styles.dataLabel}>ኮሌጅ / ፋኩልቲ</Text>
               <Text style={styles.dataValue}>{student.college || "—"}</Text>
             </View>
             <View style={styles.dataPoint}>
-              <Text style={styles.dataLabel}>የትምህርት ክፍል</Text>
+              <Text style={styles.dataLabel}>የትምህርት ክፍል (ዲፓርትመንት)</Text>
               <Text style={styles.dataValue}>{student.department || "—"}</Text>
             </View>
             <View style={styles.dataPoint}>
@@ -377,16 +614,57 @@ export default function ChildProfileDetailScreen() {
                   : "4 ዓመታት"}
               </Text>
             </View>
+            {graduationYear ? (
+              <View style={styles.dataPoint}>
+                <Text style={styles.dataLabel}>የምረቃ ዓመት</Text>
+                <Text style={[styles.dataValue, { color: THEME.colors.success }]}>
+                  {`${graduationYear} ዓ.ም`}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Current Academic Standing Banner (Web Parity) */}
+            {student.entryYear ? (
+              <View
+                style={[
+                  styles.standingBanner,
+                  progress.graduated
+                    ? styles.standingGraduated
+                    : progress.onBreak
+                    ? styles.standingBreak
+                    : styles.standingActive,
+                ]}
+              >
+                <Text style={styles.standingIcon}>
+                  {progress.graduated ? "🎓" : progress.onBreak ? "☀️" : "📚"}
+                </Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.standingTitle}>{progress.label}</Text>
+                  <Text style={styles.standingSub}>
+                    ወቅታዊ ደረጃ — ከመዝገቡ ቀን ራሱ ይሰላል
+                  </Text>
+                </View>
+              </View>
+            ) : null}
           </View>
         </View>
 
-        {/* Section 3: የመገናኛና የመኖሪያ አድራሻ */}
+        {/* Section 3: የመገናኛና የመኖሪያ አድራሻ (Includes Diocese) */}
         <View style={styles.sectionCard}>
           <View style={styles.sectionHeader}>
             <MapPin color={THEME.colors.success} size={16} />
             <Text style={styles.sectionTitle}>የመገናኛና የመኖሪያ አድራሻ</Text>
           </View>
           <View style={styles.detailGrid}>
+            {student.diocese ? (
+              <View style={styles.dataPointFull}>
+                <Text style={styles.dataLabel}>ሀገረ ስብከት</Text>
+                <Text style={[styles.dataValue, { color: THEME.colors.sacredCrimson }]}>
+                  {student.diocese}
+                </Text>
+              </View>
+            ) : null}
+
             {student.phone ? (
               <TouchableOpacity
                 style={styles.dataPointFull}
@@ -423,9 +701,266 @@ export default function ChildProfileDetailScreen() {
               <Text style={styles.dataLabel}>ከተማ</Text>
               <Text style={styles.dataValue}>{student.city || "—"}</Text>
             </View>
+            {joinedDateStr ? (
+              <View style={styles.dataPoint}>
+                <Text style={styles.dataLabel}>የተመዘገቡበት ቀን</Text>
+                <Text style={styles.dataValue}>{joinedDateStr}</Text>
+              </View>
+            ) : null}
           </View>
         </View>
       </ScrollView>
+
+      {/* Edit Profile Modal (Father-Only, 100% Web Parity) */}
+      <Modal
+        visible={editModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setEditModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.editModalContainer}>
+            {/* Modal Header */}
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>የልጁን መረጃ አርትዕ</Text>
+                <Text style={styles.modalSubTitle}>
+                  {student.secularName || student.fullName} ({student.eotcUid})
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setEditModalVisible(false)}
+                hitSlop={8}
+              >
+                <X color={THEME.colors.inkMuted} size={22} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.editModalScroll}>
+              {/* Identity Section */}
+              <Text style={styles.formSectionHeader}>1. የማንነት መረጃ</Text>
+              <Text style={styles.inputLabel}>የዓለም መጠሪያ ስም *</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editSecularName}
+                onChangeText={setEditSecularName}
+                placeholder="ሙሉ ስም ያስገቡ"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <Text style={styles.inputLabel}>የክርስትና ስም</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editChristianName}
+                onChangeText={setEditChristianName}
+                placeholder="የክርስትና ስም"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <Text style={styles.inputLabel}>መንፈሳዊ ማዕረግ</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editSpiritualTitle}
+                onChangeText={setEditSpiritualTitle}
+                placeholder="ምሳሌ፡ ዲያቆን፣ መሪጌታ፣ ምዕመን"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              {/* Gender selector */}
+              <Text style={styles.inputLabel}>ጾታ</Text>
+              <View style={styles.genderRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.genderBtn,
+                    editGender === "MALE" && styles.genderBtnActive,
+                  ]}
+                  onPress={() => setEditGender("MALE")}
+                >
+                  <Text
+                    style={[
+                      styles.genderBtnText,
+                      editGender === "MALE" && styles.genderBtnTextActive,
+                    ]}
+                  >
+                    ወንድ
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.genderBtn,
+                    editGender === "FEMALE" && styles.genderBtnActive,
+                  ]}
+                  onPress={() => setEditGender("FEMALE")}
+                >
+                  <Text
+                    style={[
+                      styles.genderBtnText,
+                      editGender === "FEMALE" && styles.genderBtnTextActive,
+                    ]}
+                  >
+                    ሴት
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.inputLabel}>የአፍ መፍቻ ቋንቋ</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editLanguage}
+                onChangeText={setEditLanguage}
+                placeholder="ምሳሌ፡ አማርኛ፣ ኦሮምኛ፣ ትግርኛ"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              {/* Academic Section */}
+              <Text style={styles.formSectionHeader}>2. የትምህርት መረጃ</Text>
+              <Text style={styles.inputLabel}>ዩኒቨርሲቲ</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editUniversity}
+                onChangeText={setEditUniversity}
+                placeholder="ዩኒቨርሲቲ ያስገቡ"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <Text style={styles.inputLabel}>ኮሌጅ / ፋኩልቲ</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editCollege}
+                onChangeText={setEditCollege}
+                placeholder="ኮሌጅ"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <Text style={styles.inputLabel}>የትምህርት ክፍል (ዲፓርትመንት)</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editDepartment}
+                onChangeText={setEditDepartment}
+                placeholder="ዲፓርትመንት"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <View style={styles.inputRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>የመግቢያ ዓ.ም</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={editEntryYear}
+                    onChangeText={setEditEntryYear}
+                    placeholder="ምሳሌ፡ 2014"
+                    keyboardType="numeric"
+                    placeholderTextColor={THEME.colors.inkSubtle}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>የቆይታ ዓመታት</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={editProgramDuration}
+                    onChangeText={setEditProgramDuration}
+                    placeholder="ምሳሌ፡ 4 ወይም 5"
+                    keyboardType="numeric"
+                    placeholderTextColor={THEME.colors.inkSubtle}
+                  />
+                </View>
+              </View>
+
+              {/* Geography Section */}
+              <Text style={styles.formSectionHeader}>3. አድራሻና ሀገረ ስብከት</Text>
+              <Text style={styles.inputLabel}>ሀገረ ስብከት</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editDiocese}
+                onChangeText={setEditDiocese}
+                placeholder="ምሳሌ፡ አዲስ አበባ ሀገረ ስብከት"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <View style={styles.inputRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>ክልል</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={editRegion}
+                    onChangeText={setEditRegion}
+                    placeholder="ክልል"
+                    placeholderTextColor={THEME.colors.inkSubtle}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>ዞን</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={editZone}
+                    onChangeText={setEditZone}
+                    placeholder="ዞን"
+                    placeholderTextColor={THEME.colors.inkSubtle}
+                  />
+                </View>
+              </View>
+
+              <Text style={styles.inputLabel}>ከተማ</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editCity}
+                onChangeText={setEditCity}
+                placeholder="ከተማ"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              {/* Contact Section */}
+              <Text style={styles.formSectionHeader}>4. የመገናኛ መረጃ</Text>
+              <Text style={styles.inputLabel}>ስልክ ቁጥር</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editPhone}
+                onChangeText={setEditPhone}
+                placeholder="0911223344"
+                keyboardType="phone-pad"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <Text style={styles.inputLabel}>ኢሜይል አድራሻ</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editEmail}
+                onChangeText={setEditEmail}
+                placeholder="student@example.com"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                placeholderTextColor={THEME.colors.inkSubtle}
+              />
+
+              <View style={{ height: 30 }} />
+            </ScrollView>
+
+            {/* Modal Actions */}
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setEditModalVisible(false)}
+              >
+                <Text style={styles.modalCancelText}>ሰርዝ</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalSaveBtn,
+                  editMutation.isPending && { opacity: 0.7 },
+                ]}
+                onPress={handleSaveEdit}
+                disabled={editMutation.isPending}
+              >
+                {editMutation.isPending ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalSaveText}>አስቀምጥ</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -498,6 +1033,20 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: THEME.colors.inkPrimary,
   },
+  navEditBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: THEME.colors.surfaceAlt,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: THEME.radii.pill,
+  },
+  navEditText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: THEME.colors.inkPrimary,
+  },
   scrollContent: {
     padding: 16,
     paddingBottom: 40,
@@ -510,34 +1059,29 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: THEME.colors.border,
     marginBottom: 16,
-    elevation: 2,
-    shadowColor: THEME.colors.inkPrimary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
   },
   avatarHalo: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    borderWidth: 2.5,
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    borderWidth: 2,
     borderColor: THEME.colors.sacredAmber,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
+    marginBottom: 10,
   },
   avatarInner: {
-    width: 78,
-    height: 78,
-    borderRadius: 39,
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     backgroundColor: THEME.colors.surfaceAlt,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
   },
   avatarImg: {
-    width: 78,
-    height: 78,
+    width: 76,
+    height: 76,
   },
   secularName: {
     fontSize: 18,
@@ -546,7 +1090,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   christianName: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "800",
     color: THEME.colors.sacredAmber,
     marginTop: 2,
@@ -556,7 +1100,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginTop: 10,
+    marginTop: 8,
   },
   titleBadge: {
     backgroundColor: THEME.colors.surfaceAlt,
@@ -584,7 +1128,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEF08A",
   },
   statusText: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: "800",
   },
   statusTextActive: {
@@ -602,7 +1146,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: THEME.radii.lg,
-    marginTop: 16,
+    marginTop: 14,
   },
   eotcLabel: {
     fontSize: 8,
@@ -612,11 +1156,11 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   eotcValue: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: "900",
     fontFamily: "monospace",
     color: "#FFFFFF",
-    letterSpacing: 2,
+    letterSpacing: 1.5,
     marginTop: 2,
   },
   copyBtn: {
@@ -624,68 +1168,68 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     backgroundColor: "rgba(255,255,255,0.1)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
     borderRadius: THEME.radii.md,
   },
   copyText: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: "800",
     color: THEME.colors.sacredAmber,
   },
   actionsBar: {
     flexDirection: "row",
     gap: 8,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   actionItem: {
     flex: 1,
     backgroundColor: THEME.colors.surface,
     borderRadius: THEME.radii.lg,
-    paddingVertical: 12,
+    paddingVertical: 10,
     alignItems: "center",
     borderWidth: 1,
     borderColor: THEME.colors.border,
   },
   actionIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 4,
+    marginBottom: 3,
   },
   actionLabel: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: "800",
     color: THEME.colors.inkPrimary,
   },
   sectionCard: {
     backgroundColor: THEME.colors.surface,
     borderRadius: THEME.radii.xl,
-    padding: 18,
+    padding: 16,
     borderWidth: 1,
     borderColor: THEME.colors.border,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingBottom: 12,
+    gap: 6,
+    paddingBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: THEME.colors.border,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   sectionTitle: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: "900",
     color: THEME.colors.inkPrimary,
   },
   detailGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    rowGap: 12,
+    rowGap: 10,
   },
   dataPoint: {
     width: "50%",
@@ -694,16 +1238,177 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   dataLabel: {
-    fontSize: 9,
+    fontSize: 8.5,
     fontWeight: "800",
     color: THEME.colors.inkMuted,
     textTransform: "uppercase",
-    letterSpacing: 0.4,
+    letterSpacing: 0.3,
   },
   dataValue: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: "700",
     color: THEME.colors.inkPrimary,
     marginTop: 2,
+  },
+  standingBanner: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: 10,
+    marginTop: 6,
+    borderWidth: 1,
+  },
+  standingGraduated: {
+    backgroundColor: "#F0FDF4",
+    borderColor: "#DCFCE7",
+  },
+  standingBreak: {
+    backgroundColor: "#F0F9FF",
+    borderColor: "#E0F2FE",
+  },
+  standingActive: {
+    backgroundColor: "#FEFCE8",
+    borderColor: "#FEF08A",
+  },
+  standingIcon: {
+    fontSize: 22,
+  },
+  standingTitle: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: THEME.colors.inkPrimary,
+  },
+  standingSub: {
+    fontSize: 9,
+    color: THEME.colors.inkMuted,
+    marginTop: 1,
+  },
+
+  /* Edit Modal Styles */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  editModalContainer: {
+    backgroundColor: THEME.colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "90%",
+    paddingTop: 16,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.border,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: THEME.colors.inkPrimary,
+  },
+  modalSubTitle: {
+    fontSize: 11,
+    color: THEME.colors.inkMuted,
+    marginTop: 2,
+  },
+  editModalScroll: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+  },
+  formSectionHeader: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: THEME.colors.sacredCrimson,
+    marginTop: 10,
+    marginBottom: 8,
+    textTransform: "uppercase",
+  },
+  inputLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: THEME.colors.inkMuted,
+    marginBottom: 4,
+    marginTop: 6,
+  },
+  modalInput: {
+    backgroundColor: THEME.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 13,
+    color: THEME.colors.inkPrimary,
+    fontWeight: "600",
+  },
+  inputRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  genderRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 4,
+  },
+  genderBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    alignItems: "center",
+    backgroundColor: THEME.colors.surfaceAlt,
+  },
+  genderBtnActive: {
+    backgroundColor: THEME.colors.sacredCrimsonLight,
+    borderColor: THEME.colors.sacredCrimson,
+  },
+  genderBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: THEME.colors.inkMuted,
+  },
+  genderBtnTextActive: {
+    color: THEME.colors.sacredCrimson,
+    fontWeight: "900",
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 10,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: THEME.colors.border,
+    backgroundColor: THEME.colors.surface,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    backgroundColor: THEME.colors.surfaceAlt,
+  },
+  modalCancelText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: THEME.colors.inkMuted,
+  },
+  modalSaveBtn: {
+    flex: 2,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    backgroundColor: THEME.colors.sacredCrimson,
+  },
+  modalSaveText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#FFFFFF",
   },
 });

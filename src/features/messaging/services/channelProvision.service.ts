@@ -73,23 +73,76 @@ export async function provisionFamilyChannels(
         `[provisionFamilyChannels] Starting for father ${fatherId} with ${students.length} students`
       );
 
+      // ⚠️ Firestore transactions require EVERY read before ANY write.
+      // The previous implementation interleaved tx.get / tx.set inside the
+      // student loop, which threw as soon as a family had more than one child
+      // and left families without DIRECT channels. Read everything first.
+
       // ────────────────────────────────────────────────
-      //  1. Ensure / create COMMON_HOUSE family channel
+      //  READ PHASE
+      //  1. COMMON_HOUSE family channel + its members
       // ────────────────────────────────────────────────
-      const familyChannelQuery = adminDb
-        .collection("Channels")
-        .where("familyId", "==", familyId)
-        .where("type", "==", "COMMON_HOUSE" as ChannelType)
-        .limit(1);
+      const familySnap = await tx.get(
+        adminDb
+          .collection("Channels")
+          .where("familyId", "==", familyId)
+          .where("type", "==", "COMMON_HOUSE" as ChannelType)
+          .limit(1)
+      );
 
-      const familySnap = await tx.get(familyChannelQuery);
+      let familyChannel: Channel | null = null;
+      const familyMemberIds = new Set<string>();
 
-      let familyChannel: Channel;
-      let familyChannelRef;
+      if (!familySnap.empty) {
+        familyChannel = familySnap.docs[0].data() as Channel;
 
-      if (familySnap.empty) {
+        const membersSnap = await tx.get(
+          adminDb
+            .collection("ChannelMembers")
+            .where("channelId", "==", familyChannel.id)
+        );
+        membersSnap.docs.forEach((doc) =>
+          familyMemberIds.add(doc.data().userId as string)
+        );
+      }
+
+      // Governors are only added to an existing family channel.
+      const governorSnap = familyChannel
+        ? await tx.get(
+            adminDb.collection("Governors").where("isActive", "==", true)
+          )
+        : null;
+
+      // ────────────────────────────────────────────────
+      //  2. Existing DIRECT channels + their members
+      // ────────────────────────────────────────────────
+      const directSnap = await tx.get(
+        adminDb
+          .collection("Channels")
+          .where("type", "==", "DIRECT" as ChannelType)
+          .where("familyId", "==", familyId)
+          .limit(50)
+      );
+
+      const directMemberIds = new Map<string, Set<string>>();
+      for (const doc of directSnap.docs) {
+        const memberSnap = await tx.get(
+          adminDb
+            .collection("ChannelMembers")
+            .where("channelId", "==", doc.id)
+        );
+        directMemberIds.set(
+          doc.id,
+          new Set(memberSnap.docs.map((m) => m.data().userId as string))
+        );
+      }
+
+      // ────────────────────────────────────────────────
+      //  WRITE PHASE — never read after this point
+      // ────────────────────────────────────────────────
+      if (!familyChannel) {
         const channelId = generateId() as ChannelID;
-        familyChannelRef = adminDb.collection("Channels").doc(channelId);
+        const familyChannelRef = adminDb.collection("Channels").doc(channelId);
 
         familyChannel = {
           id: channelId,
@@ -102,7 +155,105 @@ export async function provisionFamilyChannels(
 
         tx.set(familyChannelRef, familyChannel);
 
-        // Father → OWNER / FATHER role
+        const fatherMemberRef = adminDb.collection("ChannelMembers").doc();
+        tx.set(fatherMemberRef, {
+          id: fatherMemberRef.id,
+          channelId,
+          userId: fatherId,
+          role: "FATHER" as ChannelRole,
+          joinedAt: now,
+          isActive: true,
+        } satisfies ChannelMember);
+        familyMemberIds.add(fatherId);
+
+        for (const studentId of students) {
+          const studentMemberRef = adminDb.collection("ChannelMembers").doc();
+          tx.set(studentMemberRef, {
+            id: studentMemberRef.id,
+            channelId,
+            userId: studentId,
+            role: "CHILD" as ChannelRole,
+            joinedAt: now,
+            isActive: true,
+          } satisfies ChannelMember);
+          familyMemberIds.add(studentId);
+        }
+      } else {
+        // Make sure the father is present even on older, partial channels.
+        if (!familyMemberIds.has(fatherId)) {
+          const fatherMemberRef = adminDb.collection("ChannelMembers").doc();
+          tx.set(fatherMemberRef, {
+            id: fatherMemberRef.id,
+            channelId: familyChannel.id,
+            userId: fatherId,
+            role: "FATHER" as ChannelRole,
+            joinedAt: now,
+            isActive: true,
+          } satisfies ChannelMember);
+          familyMemberIds.add(fatherId);
+        }
+
+        for (const studentId of students) {
+          if (familyMemberIds.has(studentId)) continue;
+          const memberRef = adminDb.collection("ChannelMembers").doc();
+          tx.set(memberRef, {
+            id: memberRef.id,
+            channelId: familyChannel.id,
+            userId: studentId,
+            role: "CHILD" as ChannelRole,
+            joinedAt: now,
+            isActive: true,
+          } satisfies ChannelMember);
+          familyMemberIds.add(studentId);
+        }
+
+        // Add Governors to family channel
+        for (const govDoc of governorSnap?.docs ?? []) {
+          const govId = govDoc.id as UID;
+          if (familyMemberIds.has(govId)) continue;
+          const govMemberRef = adminDb.collection("ChannelMembers").doc();
+          tx.set(govMemberRef, {
+            id: govMemberRef.id,
+            channelId: familyChannel.id,
+            userId: govId,
+            role: "READONLY" as ChannelRole,
+            joinedAt: now,
+            isActive: true,
+          } satisfies ChannelMember);
+          familyMemberIds.add(govId);
+        }
+      }
+
+      // ────────────────────────────────────────────────
+      //  3. Ensure one DIRECT father ↔ student channel per child
+      // ────────────────────────────────────────────────
+      const directChannels: Channel[] = [];
+
+      for (const studentId of students) {
+        // A valid DIRECT channel contains BOTH the father and this student.
+        // Matching on createdBy reused the first child's channel for every
+        // sibling, so it must not be used to resolve the pair.
+        const existing = directSnap.docs.find((doc) => {
+          const members = directMemberIds.get(doc.id);
+          return Boolean(
+            members && members.has(fatherId) && members.has(studentId)
+          );
+        });
+
+        if (existing) continue;
+
+        const channelId = generateId() as ChannelID;
+        const directChannel: Channel = {
+          id: channelId,
+          familyId,
+          type: "DIRECT",
+          createdBy: fatherId,
+          createdAt: now,
+        };
+
+        const channelRef = adminDb.collection("Channels").doc(channelId);
+        tx.set(channelRef, directChannel);
+
         const fatherMemberRef = adminDb.collection("ChannelMembers").doc();
         tx.set(fatherMemberRef, {
           id: fatherMemberRef.id,
@@ -113,120 +264,17 @@ export async function provisionFamilyChannels(
           isActive: true,
         } satisfies ChannelMember);
 
-        // Students → CHILD role (safe even if empty)
-        for (const studentId of students) {
-          const studentMemberRef = adminDb.collection("ChannelMembers").doc();
-          tx.set(studentMemberRef, {
-            id: studentMemberRef.id,
-            channelId,
-            userId: studentId,
-            role: "CHILD" as ChannelRole,
-            joinedAt: now,
-            isActive: true,
-          } satisfies ChannelMember);
-        }
-      } else {
-        // Already exists
-        familyChannel = familySnap.docs[0].data() as Channel;
-        familyChannelRef = familySnap.docs[0].ref;
+        const studentMemberRef = adminDb.collection("ChannelMembers").doc();
+        tx.set(studentMemberRef, {
+          id: studentMemberRef.id,
+          channelId,
+          userId: studentId,
+          role: "CHILD" as ChannelRole,
+          joinedAt: now,
+          isActive: true,
+        } satisfies ChannelMember);
 
-        const membersQuery = adminDb
-          .collection("ChannelMembers")
-          .where("channelId", "==", familyChannel.id);
-
-        const membersSnap = await tx.get(membersQuery);
-        const existingIds = new Set(
-          membersSnap.docs.map((doc) => doc.data().userId as UID)
-        );
-        const now = Date.now();
-
-        for (const studentId of students) {
-          if (!existingIds.has(studentId)) {
-            const memberRef = adminDb.collection("ChannelMembers").doc();
-            tx.set(memberRef, {
-              id: memberRef.id,
-              channelId: familyChannel.id,
-              userId: studentId,
-              role: "CHILD" as ChannelRole,
-              joinedAt: now,
-              isActive: true,
-            } satisfies ChannelMember);
-          }
-        }
-
-        // Add Governors to family channel
-        const governorSnap = await tx.get(
-          adminDb.collection("Governors").where("isActive", "==", true)
-        );
-
-        for (const govDoc of governorSnap.docs) {
-          const govId = govDoc.id as UID;
-          if (!existingIds.has(govId)) {
-            const govMemberRef = adminDb.collection("ChannelMembers").doc();
-            tx.set(govMemberRef, {
-              id: govMemberRef.id,
-              channelId: familyChannel.id,
-              userId: govId,
-              role: "READONLY" as ChannelRole,
-              joinedAt: now,
-              isActive: true,
-            } satisfies ChannelMember);
-          }
-        }
-      }
-
-      // ────────────────────────────────────────────────
-      //  2. Ensure direct father ↔ student channels
-      // ────────────────────────────────────────────────
-      const directChannels: Channel[] = [];
-
-      for (const studentId of students) {
-        const directQuery = adminDb
-          .collection("Channels")
-          .where("type", "==", "DIRECT" as ChannelType)
-          .where("familyId", "==", familyId)
-          .where("createdBy", "in", [fatherId, studentId])
-          .limit(1);
-
-        const directSnap = await tx.get(directQuery);
-
-        if (directSnap.empty) {
-          const channelId = generateId() as ChannelID;
-          const directChannel: Channel = {
-            id: channelId,
-            familyId,
-            type: "DIRECT",
-            createdBy: fatherId,
-            createdAt: now,
-          };
-
-          const channelRef = adminDb.collection("Channels").doc(channelId);
-          tx.set(channelRef, directChannel);
-
-          // Father member
-          const fatherMemberRef = adminDb.collection("ChannelMembers").doc();
-          tx.set(fatherMemberRef, {
-            id: fatherMemberRef.id,
-            channelId,
-            userId: fatherId,
-            role: "FATHER" as ChannelRole,
-            joinedAt: now,
-            isActive: true,
-          } satisfies ChannelMember);
-
-          // Student member
-          const studentMemberRef = adminDb.collection("ChannelMembers").doc();
-          tx.set(studentMemberRef, {
-            id: studentMemberRef.id,
-            channelId,
-            userId: studentId,
-            role: "CHILD" as ChannelRole,
-            joinedAt: now,
-            isActive: true,
-          } satisfies ChannelMember);
-
-          directChannels.push(directChannel);
-        }
+        directChannels.push(directChannel);
       }
 
       console.log(

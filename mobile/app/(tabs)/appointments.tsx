@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   ScrollView,
   Alert,
 } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Calendar,
@@ -73,6 +74,11 @@ function localDateInput(date = new Date()) {
 export default function AppointmentsScreen() {
   const { role } = useAuth();
   const queryClient = useQueryClient();
+  const params = useLocalSearchParams<{
+    childUid?: string;
+    childEotcUid?: string;
+    openModal?: string;
+  }>();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedType, setSelectedType] = useState<AppointmentType>("NISEHA");
@@ -82,6 +88,16 @@ export default function AppointmentsScreen() {
   const [location, setLocation] = useState("በአካል (በቤተክርስቲያን)");
   const [note, setNote] = useState("");
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+
+  // Auto-open modal and pre-select child if requested from Children list or Detail
+  useEffect(() => {
+    if (params.openModal === "true") {
+      if (params.childUid) {
+        setSelectedChildUid(params.childUid);
+      }
+      setModalVisible(true);
+    }
+  }, [params.openModal, params.childUid]);
 
   // 1. Query Appointments — cached snapshot renders first, network refreshes it.
   const { data, isLoading, isError, error, refetch, isRefetching } =
@@ -102,6 +118,15 @@ export default function AppointmentsScreen() {
     ["appointments"],
     () => offlineCache.getQuery<AppointmentsResponse>("appointments")
   );
+
+  useEffect(() => {
+    if (params.childEotcUid && data?.children && !selectedChildUid) {
+      const match = data.children.find((c) => c.eotcUid === params.childEotcUid);
+      if (match?.uid) {
+        setSelectedChildUid(match.uid);
+      }
+    }
+  }, [params.childEotcUid, data?.children, selectedChildUid]);
 
   // 2. Create Appointment Mutation
   const createMutation = useMutation({

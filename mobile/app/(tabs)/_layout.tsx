@@ -11,8 +11,16 @@ export default function TabsLayout() {
   const isFather = role === "FATHER";
   const isGovernor = role === "GOVERNOR";
 
+  const initialTabName = isGovernor
+    ? "governor"
+    : isFather
+    ? "children"
+    : "appointments";
+
   return (
     <Tabs
+      initialRouteName={initialTabName}
+      backBehavior="history"
       screenOptions={{
         headerStyle: {
           backgroundColor: THEME.colors.navigationBg,
@@ -51,6 +59,63 @@ export default function TabsLayout() {
         },
       }}
     >
+      {/* Father Flock Tab - Primary for Fathers */}
+      <Tabs.Screen
+        name="children"
+        options={{
+          title: "መንጋዬ",
+          href: isFather ? "/(tabs)/children" : null,
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <Users color={color} size={20} />
+            </View>
+          ),
+        }}
+      />
+
+      {/* Appointments Tab */}
+      <Tabs.Screen
+        name="appointments"
+        options={{
+          title: "ቀጠሮ",
+          href: isGovernor ? null : "/(tabs)/appointments",
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <Calendar color={color} size={20} />
+            </View>
+          ),
+        }}
+      />
+
+      {/* Messaging Tab */}
+      <Tabs.Screen
+        name="chat"
+        options={{
+          title: "መልዕክት",
+          href: isGovernor ? null : "/(tabs)/chat",
+          tabBarIcon: ({ color, focused }) => (
+            <View
+              style={[
+                styles.iconWrapper,
+                focused && styles.iconWrapperActive,
+              ]}
+            >
+              <MessageSquare color={color} size={20} />
+            </View>
+          ),
+        }}
+      />
+
       {/* Governor Command Center Tab */}
       <Tabs.Screen
         name="governor"
@@ -69,58 +134,8 @@ export default function TabsLayout() {
           ),
         }}
       />
-      {/* Father Flock Tab */}
-      <Tabs.Screen
-        name="children"
-        options={{
-          title: "መንጋዬ",
-          href: isFather ? "/(tabs)/children" : null,
-          tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconWrapper,
-                focused && styles.iconWrapperActive,
-              ]}
-            >
-              <Users color={color} size={20} />
-            </View>
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="appointments"
-        options={{
-          title: "ቀጠሮ",
-          href: isGovernor ? null : "/(tabs)/appointments",
-          tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconWrapper,
-                focused && styles.iconWrapperActive,
-              ]}
-            >
-              <Calendar color={color} size={20} />
-            </View>
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="chat"
-        options={{
-          title: "መልዕክት",
-          href: isGovernor ? null : "/(tabs)/chat",
-          tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconWrapper,
-                focused && styles.iconWrapperActive,
-              ]}
-            >
-              <MessageSquare color={color} size={20} />
-            </View>
-          ),
-        }}
-      />
+
+      {/* Profile Tab */}
       <Tabs.Screen
         name="profile"
         options={{

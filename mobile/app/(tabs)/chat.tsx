@@ -20,6 +20,12 @@ interface Conversation {
   id: string;
   fullName: string;
   role: "DIRECT" | "COMMON_HOUSE";
+  members?: Array<{
+    userId: string;
+    fullName?: string;
+    role?: string;
+    photoUrl?: string;
+  }>;
   lastMessage?: {
     id: string;
     content: string;

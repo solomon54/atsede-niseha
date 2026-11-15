@@ -70,6 +70,89 @@ interface MessageItem {
   encryption?: EncryptionEnvelope | null;
 }
 
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB
+
+const ALLOWED_EXTENSIONS = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+  "gif",
+  "heic",
+  "heif",
+  "mp4",
+  "mov",
+  "avi",
+  "webm",
+  "mp3",
+  "m4a",
+  "wav",
+  "ogg",
+  "aac",
+  "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "txt",
+]);
+
+function inferMime(filename: string, fallbackMime?: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "heic":
+    case "heif":
+      return "image/heic";
+    case "mp4":
+      return "video/mp4";
+    case "mov":
+      return "video/quicktime";
+    case "avi":
+      return "video/x-msvideo";
+    case "webm":
+      return "video/webm";
+    case "mp3":
+      return "audio/mp3";
+    case "m4a":
+      return "audio/m4a";
+    case "wav":
+      return "audio/wav";
+    case "ogg":
+      return "audio/ogg";
+    case "aac":
+      return "audio/aac";
+    case "pdf":
+      return "application/pdf";
+    case "doc":
+      return "application/msword";
+    case "docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "xls":
+      return "application/vnd.ms-excel";
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "ppt":
+      return "application/vnd.ms-powerpoint";
+    case "pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case "txt":
+      return "text/plain";
+    default:
+      return fallbackMime || "application/octet-stream";
+  }
+}
+
 export default function ChannelChatScreen() {
   const { channelId } = useLocalSearchParams<{ channelId: string }>();
   const navigation = useNavigation();
@@ -336,14 +419,26 @@ export default function ChannelChatScreen() {
     height?: number;
   }) => {
     if (!channelId) return;
+
+    if (file.size && file.size > MAX_UPLOAD_BYTES) {
+      Alert.alert(
+        "የፋይል መጠን ማሳሰቢያ",
+        `የተመረጠው ፋይል መጠን ${(file.size / (1024 * 1024)).toFixed(1)}MB ነው። የሚፈቀደው ከፍተኛ መጠን 25MB ነው።`
+      );
+      return;
+    }
+
     setIsUploading(true);
     setUploadStatusText("ፋይሉን በመጫን ላይ…");
     try {
+      const safeName = (file.name || `file_${Date.now()}`).replace(/\s+/g, "_");
+      const safeType = inferMime(safeName, file.type);
+
       const formData = new FormData();
       formData.append("file", {
         uri: file.uri,
-        name: file.name,
-        type: file.type,
+        name: safeName,
+        type: safeType,
       } as any);
       formData.append("channelId", channelId);
 
@@ -357,7 +452,8 @@ export default function ChannelChatScreen() {
           .toString(36)
           .substring(2, 7)}`;
         const isImg = res.media.mimeType.startsWith("image/");
-        const msgType = isImg ? "IMAGE" : "FILE";
+        const isVid = res.media.mimeType.startsWith("video/");
+        const msgType = isImg ? "IMAGE" : isVid ? "VIDEO" : "FILE";
 
         const newMsg: MessageItem = {
           id: clientId,
@@ -395,26 +491,43 @@ export default function ChannelChatScreen() {
     }
   };
 
-  const handlePickImage = async () => {
+  const handlePickMedia = async () => {
     setShowAttachModal(false);
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
         quality: 0.8,
         allowsEditing: false,
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
+        const isVideo = asset.type === "video";
+        const fallbackName = isVideo
+          ? `video_${Date.now()}.mp4`
+          : `image_${Date.now()}.jpg`;
+        const fileName = asset.fileName || fallbackName;
+        const mimeType =
+          asset.mimeType || (isVideo ? "video/mp4" : "image/jpeg");
+
+        if (asset.fileSize && asset.fileSize > MAX_UPLOAD_BYTES) {
+          Alert.alert(
+            "የፋይል መጠን ማሳሰቢያ",
+            `የተመረጠው ፋይል መጠን ${(asset.fileSize / (1024 * 1024)).toFixed(1)}MB ነው። የሚፈቀደው ከፍተኛ መጠን 25MB ነው።`
+          );
+          return;
+        }
+
         await uploadAndSendMedia({
           uri: asset.uri,
-          name: asset.fileName || `image_${Date.now()}.jpg`,
-          type: asset.mimeType || "image/jpeg",
+          name: fileName,
+          type: mimeType,
+          size: asset.fileSize,
           width: asset.width,
           height: asset.height,
         });
       }
     } catch (err: any) {
-      Alert.alert("ስህተት", "ምስሉን መምረጥ አልተቻለም፡ " + err.message);
+      Alert.alert("ስህተት", "ምስል ወይም ቪዲዮ መምረጥ አልተቻለም፡ " + err.message);
     }
   };
 
@@ -454,10 +567,31 @@ export default function ChannelChatScreen() {
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
+        const ext = asset.name.split(".").pop()?.toLowerCase();
+
+        // Check against allowed formats
+        if (ext && !ALLOWED_EXTENSIONS.has(ext)) {
+          Alert.alert(
+            "ያልተፈቀደ የፋይል ዓይነት",
+            `".${ext}" የፋይል ዓይነት በሲስተሙ ውስጥ አልተፈቀደም።\n\nየሚፈቀዱት፡ ፎቶ፣ ቪዲዮ፣ ድምፅ፣ PDF፣ Word (.doc, .docx)፣ Excel (.xls, .xlsx)፣ PowerPoint (.ppt, .pptx) እና Text (.txt) ፋይሎች ናቸው።`
+          );
+          return;
+        }
+
+        if (asset.size && asset.size > MAX_UPLOAD_BYTES) {
+          Alert.alert(
+            "የፋይል መጠን ማሳሰቢያ",
+            `የተመረጠው ፋይል መጠን ${(asset.size / (1024 * 1024)).toFixed(1)}MB ነው። የሚፈቀደው ከፍተኛ መጠን 25MB ነው።`
+          );
+          return;
+        }
+
+        const safeMime = inferMime(asset.name, asset.mimeType);
+
         await uploadAndSendMedia({
           uri: asset.uri,
           name: asset.name,
-          type: asset.mimeType || "application/octet-stream",
+          type: safeMime,
           size: asset.size,
         });
       }
@@ -767,14 +901,14 @@ export default function ChannelChatScreen() {
                 <Camera color="#B45309" size={20} />
               </View>
               <View style={styles.modalOptionText}>
-                <Text style={styles.modalOptionLabel}>ካሜራ</Text>
-                <Text style={styles.modalOptionSub}>በቀጥታ ፎቶ አንስተው ይላኩ</Text>
+                <Text style={styles.modalOptionLabel}>ካሜራ (Camera)</Text>
+                <Text style={styles.modalOptionSub}>በቀጥታ ፎቶ አንስተው ወዲያውኑ ይላኩ</Text>
               </View>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.modalOption}
-              onPress={handlePickImage}
+              onPress={handlePickMedia}
               activeOpacity={0.7}
             >
               <View
@@ -786,9 +920,9 @@ export default function ChannelChatScreen() {
                 <ImageIcon color="#1D4ED8" size={20} />
               </View>
               <View style={styles.modalOptionText}>
-                <Text style={styles.modalOptionLabel}>ምስል እና ቪዲዮ</Text>
+                <Text style={styles.modalOptionLabel}>ምስል እና ቪዲዮ (Gallery)</Text>
                 <Text style={styles.modalOptionSub}>
-                  ከስልክዎ ማዕከለ-ስዕላት ይምረጡ
+                  ከስልክዎ ማዕከለ-ስዕላት ፎቶ ወይም ቪዲዮ ይምረጡ
                 </Text>
               </View>
             </TouchableOpacity>
@@ -801,15 +935,15 @@ export default function ChannelChatScreen() {
               <View
                 style={[
                   styles.modalOptionIcon,
-                  { backgroundColor: "#FCE7F3" },
+                  { backgroundColor: "#D1FAE5" },
                 ]}
               >
-                <FileText color="#BE185D" size={20} />
+                <FileText color="#059669" size={20} />
               </View>
               <View style={styles.modalOptionText}>
-                <Text style={styles.modalOptionLabel}>ሰነድ / PDF</Text>
+                <Text style={styles.modalOptionLabel}>ፋይሎች እና ሰነዶች (Files)</Text>
                 <Text style={styles.modalOptionSub}>
-                  PDF፣ Word ወይም ሌላ ፋይል ያጋሩ
+                  PDF፣ Word፣ Excel፣ ድምፅና ሌሎች ሰነዶች (ከ25MB በታች)
                 </Text>
               </View>
             </TouchableOpacity>

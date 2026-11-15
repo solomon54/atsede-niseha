@@ -91,13 +91,23 @@ export default function GovernorScreen() {
     await copyToClipboard(id, label);
   };
 
+  React.useEffect(() => {
+    if (role && role !== "GOVERNOR") {
+      if (role === "FATHER") {
+        router.replace("/(tabs)/children" as any);
+      } else {
+        router.replace("/(tabs)/appointments" as any);
+      }
+    }
+  }, [role, router]);
+
   if (role !== "GOVERNOR") {
     return (
       <View style={styles.unauthContainer}>
         <ShieldAlert color={THEME.colors.sacredCrimson} size={48} />
         <Text style={styles.unauthTitle}>ያልተፈቀደ ገጽ</Text>
         <Text style={styles.unauthSub}>
-          ይህ ገጽ ለበላይ ተቆጣጣሪዎች (System Governors) ብቻ የተፈቀደ ነው።
+          ይህ ገጽ ለበላይ ተቆጣጣሪዎች (System Governors) ብቻ የተፈቀደ ነው። ወደ ተፈቀደው ገጽ በመመለስ ላይ...
         </Text>
       </View>
     );
