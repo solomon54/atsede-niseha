@@ -373,23 +373,25 @@ export const messageService = {
       let content = input.newContent;
       let encryption = message.encryption;
 
-      //  Edit Encryption Logic
-      if (message.isEncrypted) {
-        if (!encryption?.keyId)
-          throw new MessagingError("Original encryption keyId missing.");
-        const key = await loadKey(encryption.keyId as FamilyID);
-        if (!key)
-          throw new MessagingError(
-            "Encryption key not found for this message."
+      //  Edit Encryption Logic (graceful for server keys and client E2EE)
+      if (message.isEncrypted && encryption?.keyId) {
+        try {
+          const key = await loadKey(encryption.keyId as FamilyID);
+          if (key) {
+            const payload: EncryptedPayload = await encryptAES(content, key);
+            content = payload.ciphertext;
+            encryption = {
+              algorithm: "AES-GCM",
+              keyId: encryption.keyId,
+              iv: payload.iv,
+            };
+          }
+        } catch (keyErr) {
+          console.warn(
+            "[editMessage] Key not found on server (client E2EE), using content as-is:",
+            keyErr
           );
-
-        const payload: EncryptedPayload = await encryptAES(content, key);
-        content = payload.ciphertext;
-        encryption = {
-          algorithm: "AES-GCM",
-          keyId: encryption.keyId,
-          iv: payload.iv,
-        };
+        }
       }
 
       const updated: Message = {
@@ -441,17 +443,24 @@ export const messageService = {
 
       let encryptedWipe: Message["encryption"] = null;
 
-      // wipe logic for encrypted messages
+      // wipe logic for encrypted messages (graceful for both server keys and client E2EE)
       if (message.isEncrypted && message.encryption?.keyId) {
-        const key = await loadKey(message.encryption.keyId as FamilyID);
-        if (!key) throw new MessagingError("Encryption key not found.");
-
-        const payload: EncryptedPayload = await encryptAES("[deleted]", key);
-        encryptedWipe = {
-          algorithm: "AES-GCM",
-          keyId: message.encryption.keyId,
-          iv: payload.iv,
-        };
+        try {
+          const key = await loadKey(message.encryption.keyId as FamilyID);
+          if (key) {
+            const payload: EncryptedPayload = await encryptAES("[deleted]", key);
+            encryptedWipe = {
+              algorithm: "AES-GCM",
+              keyId: message.encryption.keyId,
+              iv: payload.iv,
+            };
+          }
+        } catch (keyErr) {
+          console.warn(
+            "[deleteMessage] Key not found on server (client E2EE), proceeding with wipe:",
+            keyErr
+          );
+        }
       }
 
       transaction.update(messageRef, {

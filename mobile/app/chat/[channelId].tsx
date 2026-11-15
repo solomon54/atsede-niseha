@@ -724,10 +724,28 @@ export default function ChannelChatScreen() {
     if (editingMessage) {
       const trimmed = inputText.trim();
       if (!trimmed || editMutation.isPending) return;
-      editMutation.mutate({
-        messageId: editingMessage.id,
-        content: trimmed,
-      });
+
+      const performEdit = async () => {
+        let contentToSend = trimmed;
+        if (editingMessage.isEncrypted && channelId) {
+          try {
+            const enc = await encryptMessage(trimmed, channelId);
+            contentToSend = enc.ciphertext;
+            setDecryptedContent((prev) => ({
+              ...prev,
+              [editingMessage.id]: trimmed,
+            }));
+          } catch (encErr) {
+            console.warn("Client encryption failed during edit, sending plaintext:", encErr);
+          }
+        }
+        editMutation.mutate({
+          messageId: editingMessage.id,
+          content: contentToSend,
+        });
+      };
+
+      performEdit();
       return;
     }
 
@@ -943,24 +961,31 @@ export default function ChannelChatScreen() {
                   isMe ? styles.myMsgRow : styles.otherMsgRow,
                 ]}
               >
-                <TouchableOpacity
-                  activeOpacity={0.88}
-                  onLongPress={() => {
-                    if (!isDeleted) {
-                      setSelectedMessage(item);
-                      setActionMenuVisible(true);
-                    }
-                  }}
+                <View
                   style={[
-                    styles.bubble,
-                    isMe
-                      ? styles.myBubble
-                      : isFather
-                      ? styles.fatherBubble
-                      : styles.otherBubble,
-                    isDeleted && styles.deletedBubble,
+                    styles.bubbleCol,
+                    isMe ? styles.myBubbleCol : styles.otherBubbleCol,
                   ]}
                 >
+                  <TouchableOpacity
+                    activeOpacity={0.88}
+                    delayLongPress={180}
+                    onLongPress={() => {
+                      if (!isDeleted) {
+                        setSelectedMessage(item);
+                        setActionMenuVisible(true);
+                      }
+                    }}
+                    style={[
+                      styles.bubble,
+                      isMe
+                        ? styles.myBubble
+                        : isFather
+                        ? styles.fatherBubble
+                        : styles.otherBubble,
+                      isDeleted && styles.deletedBubble,
+                    ]}
+                  >
                   {!isMe && isFather && !isDeleted && (
                     <View style={styles.fatherBadgeRow}>
                       <Shield color={THEME.colors.sacredAmber} size={13} />
@@ -1282,6 +1307,7 @@ export default function ChannelChatScreen() {
                       })}
                     </View>
                   )}
+                </View>
               </View>
             );
           }}
@@ -1491,9 +1517,9 @@ export default function ChannelChatScreen() {
             setSelectedMessage(null);
           }}
         >
-          <View style={styles.modalCard}>
-            {/* Top Row: Dignified Spiritual Reactions */}
-            <View style={styles.reactionsSheetRow}>
+          <View style={styles.actionModalSheet}>
+            {/* 1. Floating Quick Reactions Capsule */}
+            <View style={styles.floatingReactionCapsule}>
               {DIGNIFIED_REACTIONS.map((r) => {
                 const isSelected = selectedMessage?.reactions?.[
                   r.emoji
@@ -1501,7 +1527,7 @@ export default function ChannelChatScreen() {
                 return (
                   <TouchableOpacity
                     key={r.emoji}
-                    activeOpacity={0.7}
+                    activeOpacity={0.65}
                     onPress={() => {
                       if (selectedMessage) {
                         reactMutation.mutate({
@@ -1513,59 +1539,46 @@ export default function ChannelChatScreen() {
                       setSelectedMessage(null);
                     }}
                     style={[
-                      styles.sheetReactionBtn,
-                      isSelected && styles.sheetReactionBtnActive,
+                      styles.capsuleEmojiBtn,
+                      isSelected && styles.capsuleEmojiBtnActive,
                     ]}
                   >
-                    <Text style={styles.sheetReactionEmoji}>{r.emoji}</Text>
+                    <Text style={styles.capsuleEmojiText}>{r.emoji}</Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
 
-            <View style={styles.sheetDivider} />
-
-            {/* Action: Reply (ጥቅስ / መልስ) */}
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => {
-                if (selectedMessage) {
-                  setReplyingTo(selectedMessage);
-                  setEditingMessage(null);
-                }
-                setActionMenuVisible(false);
-                setSelectedMessage(null);
-              }}
-              activeOpacity={0.7}
-            >
-              <View
-                style={[
-                  styles.modalOptionIcon,
-                  { backgroundColor: "#EFF6FF" },
-                ]}
-              >
-                <CornerUpLeft color="#2563EB" size={20} />
+            {/* 2. Message Snippet Card */}
+            {selectedMessage && (
+              <View style={styles.actionPreviewCard}>
+                <View style={styles.actionPreviewBar} />
+                <View style={styles.actionPreviewContent}>
+                  <Text style={styles.actionPreviewAuthor} numberOfLines={1}>
+                    {selectedMessage.senderId === uid
+                      ? "የእርስዎ መልዕክት"
+                      : selectedMessage.senderName ||
+                        (selectedMessage.senderRole === "FATHER"
+                          ? "የንስሐ አባት"
+                          : "መልዕክት")}
+                  </Text>
+                  <Text style={styles.actionPreviewText} numberOfLines={2}>
+                    {displayContent(selectedMessage) ||
+                      (selectedMessage.media ? "📎 ፋይል ተያይዟል" : "መልዕክት")}
+                  </Text>
+                </View>
               </View>
-              <View style={styles.modalOptionText}>
-                <Text style={styles.modalOptionLabel}>መልስ ስጥ (Reply)</Text>
-                <Text style={styles.modalOptionSub}>
-                  ለዚህ መልዕክት ጥቅስ ሰጥተው ይመልሱ
-                </Text>
-              </View>
-            </TouchableOpacity>
+            )}
 
-            {/* Action: Copy Text */}
-            {selectedMessage?.content ? (
+            {/* 3. Grouped Action Menu */}
+            <View style={styles.actionGroupCard}>
+              {/* Action: Reply */}
               <TouchableOpacity
-                style={styles.modalOption}
-                onPress={async () => {
+                style={styles.actionRowItem}
+                onPress={() => {
                   if (selectedMessage) {
-                    const textToCopy = displayContent(selectedMessage);
-                    await Clipboard.setStringAsync(textToCopy);
-                    Alert.alert(
-                      "ተገልብጧል",
-                      "የመልዕክቱ ጽሑፍ ወደ ቅንጥብ ሰሌዳ ተገልብጧል።"
-                    );
+                    setReplyingTo(selectedMessage);
+                    setEditingMessage(null);
                   }
                   setActionMenuVisible(false);
                   setSelectedMessage(null);
@@ -1574,122 +1587,147 @@ export default function ChannelChatScreen() {
               >
                 <View
                   style={[
-                    styles.modalOptionIcon,
-                    { backgroundColor: "#F3F4F6" },
+                    styles.actionRowIcon,
+                    { backgroundColor: "#EFF6FF" },
                   ]}
                 >
-                  <Copy color="#374151" size={20} />
+                  <CornerUpLeft color="#2563EB" size={17} />
                 </View>
-                <View style={styles.modalOptionText}>
-                  <Text style={styles.modalOptionLabel}>ጽሑፍ ቅዳ (Copy)</Text>
-                  <Text style={styles.modalOptionSub}>
-                    ጽሑፉን ወደ ቅንጥብ ሰሌዳ ለመገልበጥ
-                  </Text>
-                </View>
+                <Text style={styles.actionRowText}>መልስ ስጥ (Reply)</Text>
               </TouchableOpacity>
-            ) : null}
 
-            {/* Action: Edit (isMe only) */}
-            {selectedMessage &&
-            (selectedMessage.senderId === uid ||
-              selectedMessage.senderId === "me") &&
-            !selectedMessage.deletedAt ? (
-              <TouchableOpacity
-                style={styles.modalOption}
-                onPress={() => {
-                  setEditingMessage(selectedMessage);
-                  setInputText(displayContent(selectedMessage));
-                  setReplyingTo(null);
-                  setActionMenuVisible(false);
-                  setSelectedMessage(null);
-                }}
-                activeOpacity={0.7}
-              >
-                <View
-                  style={[
-                    styles.modalOptionIcon,
-                    { backgroundColor: "#FEF3C7" },
-                  ]}
-                >
-                  <Edit2 color="#B45309" size={20} />
-                </View>
-                <View style={styles.modalOptionText}>
-                  <Text
-                    style={[
-                      styles.modalOptionLabel,
-                      { color: THEME.colors.sacredAmber },
-                    ]}
+              {/* Action: Copy Text */}
+              {selectedMessage?.content ? (
+                <>
+                  <View style={styles.actionRowDivider} />
+                  <TouchableOpacity
+                    style={styles.actionRowItem}
+                    onPress={async () => {
+                      if (selectedMessage) {
+                        const textToCopy = displayContent(selectedMessage);
+                        await Clipboard.setStringAsync(textToCopy);
+                        Alert.alert(
+                          "ተገልብጧል",
+                          "የመልዕክቱ ጽሑፍ ተገልብጧል።"
+                        );
+                      }
+                      setActionMenuVisible(false);
+                      setSelectedMessage(null);
+                    }}
+                    activeOpacity={0.7}
                   >
-                    አርትዕ (Edit)
-                  </Text>
-                  <Text style={styles.modalOptionSub}>
-                    የላኩትን መልዕክት ጽሑፍ ያስተካክሉ
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ) : null}
+                    <View
+                      style={[
+                        styles.actionRowIcon,
+                        { backgroundColor: "#F1F5F9" },
+                      ]}
+                    >
+                      <Copy color="#475569" size={17} />
+                    </View>
+                    <Text style={styles.actionRowText}>ጽሑፍ ቅዳ (Copy)</Text>
+                  </TouchableOpacity>
+                </>
+              ) : null}
 
-            {/* Action: Delete (isMe or Father) */}
-            {selectedMessage &&
-            !selectedMessage.deletedAt &&
-            (selectedMessage.senderId === uid ||
-              selectedMessage.senderId === "me" ||
-              role === "FATHER" ||
-              role === "GOVERNOR") ? (
-              <TouchableOpacity
-                style={styles.modalOption}
-                onPress={() => {
-                  const msgId = selectedMessage.id;
-                  setActionMenuVisible(false);
-                  setSelectedMessage(null);
-                  Alert.alert(
-                    "መልዕክት ሰርዝ",
-                    "ይህንን መልዕክት መሰረዝ እርግጠኛ ነዎት?",
-                    [
-                      { text: "ተመለስ", style: "cancel" },
-                      {
-                        text: "ሰርዝ",
-                        style: "destructive",
-                        onPress: () => deleteMutation.mutate(msgId),
-                      },
-                    ]
-                  );
-                }}
-                activeOpacity={0.7}
-              >
-                <View
-                  style={[
-                    styles.modalOptionIcon,
-                    { backgroundColor: "#FEE2E2" },
-                  ]}
-                >
-                  <Trash2 color="#DC2626" size={20} />
-                </View>
-                <View style={styles.modalOptionText}>
-                  <Text
-                    style={[
-                      styles.modalOptionLabel,
-                      { color: THEME.colors.error },
-                    ]}
+              {/* Action: Edit (isMe only) */}
+              {selectedMessage &&
+              (selectedMessage.senderId === uid ||
+                selectedMessage.senderId === "me") &&
+              !selectedMessage.deletedAt ? (
+                <>
+                  <View style={styles.actionRowDivider} />
+                  <TouchableOpacity
+                    style={styles.actionRowItem}
+                    onPress={() => {
+                      setEditingMessage(selectedMessage);
+                      setInputText(displayContent(selectedMessage));
+                      setReplyingTo(null);
+                      setActionMenuVisible(false);
+                      setSelectedMessage(null);
+                    }}
+                    activeOpacity={0.7}
                   >
-                    ሰርዝ (Delete)
-                  </Text>
-                  <Text style={styles.modalOptionSub}>
-                    ይህ መልዕክት ከውይይቱ እንዲሰረዝ ያድርጉ
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ) : null}
+                    <View
+                      style={[
+                        styles.actionRowIcon,
+                        { backgroundColor: "#FEF3C7" },
+                      ]}
+                    >
+                      <Edit2 color="#D97706" size={17} />
+                    </View>
+                    <Text
+                      style={[
+                        styles.actionRowText,
+                        { color: THEME.colors.sacredAmber },
+                      ]}
+                    >
+                      አርትዕ (Edit)
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : null}
 
+              {/* Action: Delete (isMe or Father) */}
+              {selectedMessage &&
+              !selectedMessage.deletedAt &&
+              (selectedMessage.senderId === uid ||
+                selectedMessage.senderId === "me" ||
+                role === "FATHER" ||
+                role === "GOVERNOR") ? (
+                <>
+                  <View style={styles.actionRowDivider} />
+                  <TouchableOpacity
+                    style={styles.actionRowItem}
+                    onPress={() => {
+                      const msgId = selectedMessage.id;
+                      setActionMenuVisible(false);
+                      setSelectedMessage(null);
+                      Alert.alert(
+                        "መልዕክት ሰርዝ",
+                        "ይህንን መልዕክት መሰረዝ እርግጠኛ ነዎት?",
+                        [
+                          { text: "ተመለስ", style: "cancel" },
+                          {
+                            text: "ሰርዝ",
+                            style: "destructive",
+                            onPress: () => deleteMutation.mutate(msgId),
+                          },
+                        ]
+                      );
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View
+                      style={[
+                        styles.actionRowIcon,
+                        { backgroundColor: "#FEE2E2" },
+                      ]}
+                    >
+                      <Trash2 color="#DC2626" size={17} />
+                    </View>
+                    <Text
+                      style={[
+                        styles.actionRowText,
+                        { color: THEME.colors.error },
+                      ]}
+                    >
+                      ሰርዝ (Delete)
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : null}
+            </View>
+
+            {/* Cancel Button */}
             <TouchableOpacity
-              style={styles.modalCancelBtn}
+              style={styles.actionModalDismissBtn}
               onPress={() => {
                 setActionMenuVisible(false);
                 setSelectedMessage(null);
               }}
               activeOpacity={0.8}
             >
-              <Text style={styles.modalCancelText}>ተመለስ</Text>
+              <Text style={styles.actionModalDismissText}>ተመለስ</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1871,6 +1909,16 @@ const styles = StyleSheet.create({
   },
   otherMsgRow: {
     justifyContent: "flex-start",
+  },
+  bubbleCol: {
+    maxWidth: "84%",
+    flexDirection: "column",
+  },
+  myBubbleCol: {
+    alignItems: "flex-end",
+  },
+  otherBubbleCol: {
+    alignItems: "flex-start",
   },
   bubble: {
     maxWidth: "84%",
@@ -2286,12 +2334,14 @@ const styles = StyleSheet.create({
     marginRight: 3,
   },
 
-  /* Reaction Badges Row on Message */
+  /* Reaction Badges Docked on Bubble */
   reactionsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 4,
-    marginTop: 4,
+    marginTop: -8,
+    marginHorizontal: 6,
+    zIndex: 10,
   },
   myReactionsRow: {
     justifyContent: "flex-end",
@@ -2303,13 +2353,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: "#E2E8F0",
     gap: 3,
-    ...THEME.shadows.button,
+    ...THEME.shadows.card,
   },
   reactionPillActive: {
     backgroundColor: "#FEF3C7",
@@ -2389,35 +2439,113 @@ const styles = StyleSheet.create({
     padding: 4,
   },
 
-  /* Reaction Sheet Palette */
-  reactionsSheetRow: {
+  /* Sleek Modern Action Modal (Telegram/WhatsApp Style) */
+  actionModalSheet: {
+    backgroundColor: THEME.colors.surface,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: Platform.OS === "ios" ? 36 : 24,
+    gap: 12,
+    ...THEME.shadows.card,
+  },
+  floatingReactionCapsule: {
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 4,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 30,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
-  sheetReactionBtn: {
+  capsuleEmojiBtn: {
     width: 44,
     height: 44,
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F9FAFB",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
   },
-  sheetReactionBtnActive: {
+  capsuleEmojiBtnActive: {
     backgroundColor: "#FEF3C7",
+    borderWidth: 1.5,
     borderColor: THEME.colors.sacredAmber,
-    transform: [{ scale: 1.1 }],
+    transform: [{ scale: 1.15 }],
   },
-  sheetReactionEmoji: {
-    fontSize: 22,
+  capsuleEmojiText: {
+    fontSize: 24,
   },
-  sheetDivider: {
+  actionPreviewCard: {
+    flexDirection: "row",
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  actionPreviewBar: {
+    width: 3.5,
+    backgroundColor: THEME.colors.sacredCrimson,
+    borderRadius: 2,
+    marginRight: 8,
+  },
+  actionPreviewContent: {
+    flex: 1,
+  },
+  actionPreviewAuthor: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: THEME.colors.sacredCrimson,
+    marginBottom: 2,
+  },
+  actionPreviewText: {
+    fontSize: 12,
+    color: THEME.colors.inkMuted,
+    lineHeight: 16,
+  },
+  actionGroupCard: {
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    overflow: "hidden",
+  },
+  actionRowItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 12,
+  },
+  actionRowDivider: {
     height: 1,
-    backgroundColor: "#F3F4F6",
-    marginVertical: 4,
+    backgroundColor: "#E2E8F0",
+    marginLeft: 46,
+  },
+  actionRowIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionRowText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: THEME.colors.inkPrimary,
+  },
+  actionModalDismissBtn: {
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    marginTop: 2,
+  },
+  actionModalDismissText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: THEME.colors.inkMuted,
   },
 });
