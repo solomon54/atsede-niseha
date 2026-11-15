@@ -6,22 +6,29 @@ import {
   AlertCircle,
   Check,
   CheckCheck,
+  Copy,
   Download,
+  ExternalLink,
   FileText,
+  Globe,
   Loader2,
+  Lock,
   MoreVertical,
   Music,
-  RefreshCw,
-  Trash2,
-  User,
-  X,
-  Video,
+  Pause,
+  PhoneCall,
   PhoneIncoming,
   PhoneMissed,
   PhoneOff,
-  PhoneCall,
+  Play,
+  RefreshCw,
+  Trash2,
+  User,
+  Video,
+  X,
+  XCircle,
 } from "lucide-react";
-import { FC, useCallback, useEffect, useRef, useState } from "react";
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatEthiopianTimeShort } from "@/shared/utils/calendar/ethiopianCalendar";
 
@@ -58,7 +65,6 @@ const MIME_EXT: Record<string, string> = {
 };
 
 export function resolveFilename(url: string, mimeType?: string, originalName?: string): string {
-  // Prefer the stored original filename if available
   if (originalName) {
     if (/\.[a-zA-Z0-9]{2,5}$/.test(originalName)) return originalName;
     return originalName + (MIME_EXT[mimeType ?? ""] ?? "");
@@ -74,6 +80,13 @@ function formatSize(bytes: number): string {
   return `${bytes} B`;
 }
 
+function formatSec(sec?: number | null): string {
+  if (!sec) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 /* ─────────────────────────────────────────────
    PROPS
 ───────────────────────────────────────────── */
@@ -84,12 +97,19 @@ interface MessageBubbleProps {
   senderName?: string;
   senderPhoto?: string;
   isDiacon?: boolean;
-  /** Role of the current user (to display premium badge on own messages) */
   currentUserRole?: ChannelRole;
   currentUserName?: string;
   onDelete?: (messageId: string) => void;
   onCancel?: (messageId: string) => void;
   onResend?: (message: Message) => void;
+}
+
+interface LinkPreviewData {
+  title?: string;
+  description?: string;
+  image?: string;
+  domain?: string;
+  url: string;
 }
 
 /* ─────────────────────────────────────────────
@@ -111,14 +131,57 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [isDownloaded, setIsDownloaded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState(false);
 
-  // ref for outside-click detection
+  // In-app browser sheet state
+  const [inAppBrowserUrl, setInAppBrowserUrl] = useState<string | null>(null);
+
+  // Link preview state
+  const [linkPreview, setLinkPreview] = useState<LinkPreviewData | null>(null);
+
+  // Audio player state
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const isSending = message.status === "sending";
   const isError = message.status === "error";
+  const isDeleted = Boolean(message.deletedAt);
+
+  // Extract public HTTPS link from message content
+  const detectedUrl = useMemo(() => {
+    if (!message.content || isDeleted) return null;
+    const match = message.content.match(/https:\/\/[^\s]+/i);
+    return match ? match[0] : null;
+  }, [message.content, isDeleted]);
+
+  // Fetch server-side link preview safely
+  useEffect(() => {
+    if (!detectedUrl) {
+      setLinkPreview(null);
+      return;
+    }
+
+    let isMounted = true;
+    fetch(`/api/message/link-preview?url=${encodeURIComponent(detectedUrl)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data?.success) {
+          setLinkPreview(data);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
+  }, [detectedUrl]);
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -133,7 +196,6 @@ const MessageBubble: FC<MessageBubbleProps> = ({
         setShowMenu(false);
       }
     }
-    // Use capture so it fires before anything else
     document.addEventListener("mousedown", handleClick, true);
     return () => document.removeEventListener("mousedown", handleClick, true);
   }, [showMenu]);
@@ -155,19 +217,21 @@ const MessageBubble: FC<MessageBubbleProps> = ({
         setDownloading(true);
         const res = await fetch(message.media.url);
         const blob = await res.blob();
-        const mime =
-          message.media.mimeType || blob.type || "application/octet-stream";
+        const mime = message.media.mimeType || blob.type || "application/octet-stream";
         const typedBlob = new Blob([blob], { type: mime });
         const blobUrl = URL.createObjectURL(typedBlob);
         const a = document.createElement("a");
         a.href = blobUrl;
-        a.download = resolveFilename(message.media.url, mime);
+        a.download = resolveFilename(message.media.url, mime, message.media.originalName);
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(blobUrl);
+        setIsDownloaded(true);
       } catch {
-        if (message.media?.url) window.open(message.media.url, "_blank");
+        if (message.media?.url) {
+          setIsPreviewOpen(true);
+        }
       } finally {
         setDownloading(false);
       }
@@ -175,23 +239,33 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     [message.media, downloading]
   );
 
-  /* ── role badge (for received messages) ── */
+  const toggleAudio = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!audioRef.current) return;
+    if (isPlayingAudio) {
+      audioRef.current.pause();
+      setIsPlayingAudio(false);
+    } else {
+      audioRef.current.play().catch(() => {});
+      setIsPlayingAudio(true);
+    }
+  };
+
+  /* ── initial for avatar fallback ── */
+  const senderInitial = useMemo(() => {
+    const clean = senderName.replace(/^(ቀሲስ|ዲያቆን|መምህር|ሊቀ)\s+/i, "");
+    return clean.charAt(0) || "✞";
+  }, [senderName]);
+
+  /* ── role badge ── */
   const roleBadge =
     senderRole === "FATHER"
-      ? { text: "አባታችን", cls: "bg-amber-100 text-amber-700" }
+      ? { text: "አባታችን", cls: "bg-amber-100 text-amber-700 font-bold" }
       : isDiacon
-      ? { text: "ዲያቆን", cls: "bg-blue-100 text-blue-700" }
+      ? { text: "ዲያቆን", cls: "bg-blue-100 text-blue-700 font-bold" }
       : null;
 
-  /* ── own sender badge (premium identity for own bubbles) ── */
-  const ownBadge =
-    isOwn && currentUserRole === "FATHER"
-      ? { text: "አባት", cls: "bg-amber-900/20 text-amber-300" }
-      : isOwn && isDiacon
-      ? { text: "ዲያቆን", cls: "bg-blue-900/20 text-blue-300" }
-      : null;
-
-  /* ── context menu — shown as a centered modal to avoid composer overlap on small devices ── */
+  /* ── context menu ── */
   const ContextMenu = showMenu ? (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-4 animate-in fade-in duration-200"
@@ -206,7 +280,9 @@ const MessageBubble: FC<MessageBubbleProps> = ({
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="px-4 py-3.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-          <span className="text-[13px] font-bold text-slate-500 uppercase tracking-wider">አማራጮች</span>
+          <span className="text-[13px] font-bold text-slate-500 uppercase tracking-wider">
+            አማራጮች
+          </span>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -219,6 +295,26 @@ const MessageBubble: FC<MessageBubbleProps> = ({
         </div>
 
         <div className="py-1">
+          {/* Copy Text Option */}
+          {message.content && !isDeleted && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (message.content) {
+                  navigator.clipboard.writeText(message.content);
+                  setCopyFeedback(true);
+                  setTimeout(() => setCopyFeedback(false), 2000);
+                }
+                setShowMenu(false);
+              }}
+              className="w-full px-4 py-3 text-left hover:bg-slate-50 flex items-center gap-3 text-[13px] text-slate-700 font-bold transition-colors"
+            >
+              <Copy size={15} />
+              ጽሑፉን ቅዳ (Copy)
+            </button>
+          )}
+
           {isSending && onCancel && (
             <button
               type="button"
@@ -227,9 +323,9 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                 onCancel(message.id);
                 setShowMenu(false);
               }}
-              className="w-full px-4 py-3.5 text-left hover:bg-orange-50 flex items-center gap-3 text-[14px] text-orange-600 font-bold transition-colors"
+              className="w-full px-4 py-3 text-left hover:bg-orange-50 flex items-center gap-3 text-[13px] text-orange-600 font-bold transition-colors"
             >
-              <X size={16} />
+              <X size={15} />
               መላክ ሰርዝ (Cancel)
             </button>
           )}
@@ -242,17 +338,19 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                 onResend(message);
                 setShowMenu(false);
               }}
-              className="w-full px-4 py-3.5 text-left hover:bg-amber-50 flex items-center gap-3 text-[14px] text-amber-700 font-bold transition-colors"
+              className="w-full px-4 py-3 text-left hover:bg-amber-50 flex items-center gap-3 text-[13px] text-amber-700 font-bold transition-colors"
             >
-              <RefreshCw size={16} />
-              እንደገና ላክ (Resend)
+              <RefreshCw size={15} />
+              እንደገና ሞክር (Retry)
             </button>
           )}
 
-          {onDelete && !isSending && (
+          {onDelete && !isSending && !isDeleted && (
             confirmDelete ? (
               <div className="px-4 py-4 bg-red-50">
-                <p className="text-[13px] text-red-700 font-bold mb-3 text-center">ይህንን መልዕክት መሰረዝ ይፈልጋሉ?</p>
+                <p className="text-[13px] text-red-700 font-bold mb-3 text-center">
+                  ይህንን መልዕክት መሰረዝ ይፈልጋሉ?
+                </p>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -262,7 +360,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                       setShowMenu(false);
                       setConfirmDelete(false);
                     }}
-                    className="flex-1 px-3 py-2.5 bg-red-600 hover:bg-red-700 transition-colors text-white rounded-xl text-[13px] font-bold"
+                    className="flex-1 px-3 py-2 bg-red-600 hover:bg-red-700 transition-colors text-white rounded-xl text-[12px] font-bold"
                   >
                     አዎ፣ ይሰረዝ
                   </button>
@@ -272,7 +370,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                       e.stopPropagation();
                       setConfirmDelete(false);
                     }}
-                    className="flex-1 px-3 py-2.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors rounded-xl text-[13px] font-bold"
+                    className="flex-1 px-3 py-2 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors rounded-xl text-[12px] font-bold"
                   >
                     ተው
                   </button>
@@ -285,9 +383,9 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                   e.stopPropagation();
                   setConfirmDelete(true);
                 }}
-                className="w-full px-4 py-3.5 text-left hover:bg-red-50 flex items-center gap-3 text-[14px] text-red-600 font-bold transition-colors"
+                className="w-full px-4 py-3 text-left hover:bg-red-50 flex items-center gap-3 text-[13px] text-red-600 font-bold transition-colors"
               >
-                <Trash2 size={16} />
+                <Trash2 size={15} />
                 መልዕክቱን ሰርዝ (Delete)
               </button>
             )
@@ -297,164 +395,6 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     </div>
   ) : null;
 
-  /* ── media rendering ── */
-  const renderMedia = () => {
-    if (!message.media?.url) return null;
-    const { url, mimeType = "", sizeBytes = 0 } = message.media;
-    const isImage = message.type === "IMAGE" || mimeType.startsWith("image/");
-    const isVideo = message.type === "VIDEO" || mimeType.startsWith("video/");
-    const isAudio = message.type === "AUDIO" || mimeType.startsWith("audio/");
-    const filename = resolveFilename(url, mimeType, message.media.originalName);
-
-    /* uploading placeholder */
-    if (isSending) {
-      return (
-        <div className="relative w-full min-h-[72px] flex items-center justify-center
-          bg-slate-800/50 overflow-hidden">
-          {isImage && (
-            <img
-              src={url}
-              alt=""
-              className="absolute inset-0 w-full h-full object-cover blur opacity-30"
-            />
-          )}
-          <div className="relative z-10 flex flex-col items-center gap-1 py-3">
-            <Loader2 size={18} className="animate-spin text-amber-400" />
-            <span className="text-[9px] font-bold text-white/60 uppercase tracking-widest">
-              በመጫን ላይ…
-            </span>
-          </div>
-          {onCancel && (
-            <button
-              type="button"
-              onClick={() => onCancel(message.id)}
-              title="Cancel upload"
-              className="absolute top-1.5 right-1.5 p-1 bg-black/50 hover:bg-red-600
-                rounded-full text-white transition-colors">
-              <X size={11} />
-            </button>
-          )}
-        </div>
-      );
-    }
-
-    if (isImage) {
-      return (
-        <div
-          className="relative cursor-pointer group/img overflow-hidden"
-          onClick={() => setIsPreviewOpen(true)}>
-          <img
-            src={url}
-            alt={filename}
-            loading="lazy"
-            className="max-h-60 sm:max-h-72 w-full object-cover
-              transition-transform duration-200 group-hover/img:scale-[1.02]"
-          />
-          <div className="absolute inset-0 bg-transparent group-hover/img:bg-black/15
-            transition-colors flex items-end justify-end p-2">
-            <button
-              type="button"
-              onClick={handleDownload}
-              title="Download"
-              className="opacity-0 group-hover/img:opacity-100 transition-opacity
-                p-1.5 bg-black/60 hover:bg-black rounded-full text-white">
-              {downloading
-                ? <Loader2 size={12} className="animate-spin" />
-                : <Download size={12} />}
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    if (isVideo) {
-      return (
-        <div
-          className="relative cursor-pointer overflow-hidden bg-black"
-          onClick={() => setIsPreviewOpen(true)}>
-          <video
-            src={url}
-            preload="metadata"
-            className="max-h-48 sm:max-h-56 w-full object-cover opacity-80"
-          />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-white/90
-              flex items-center justify-center shadow-lg">
-              <span className="text-slate-800 font-black text-sm ml-0.5">▶</span>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    if (isAudio) {
-      return (
-        <div className="flex items-center gap-2.5 px-3 py-2.5 w-full">
-          {/* tap the icon/name area to preview */}
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={() => setIsPreviewOpen(true)}
-            onKeyDown={(e) => e.key === "Enter" && setIsPreviewOpen(true)}
-            className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer
-              hover:opacity-80 transition-opacity">
-            <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center
-              justify-center shrink-0">
-              <Music size={14} className="text-amber-600" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-[11px] sm:text-xs font-bold truncate">{filename}</p>
-              <p className="text-[9px] opacity-50">{formatSize(sizeBytes)}</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={handleDownload}
-            title="Download audio"
-            className="shrink-0 p-1.5 rounded-full hover:bg-black/10 transition-colors">
-            {downloading
-              ? <Loader2 size={12} className="animate-spin" />
-              : <Download size={12} />}
-          </button>
-        </div>
-      );
-    }
-
-    /* PDF / DOC / other — file card; tap name/icon to preview, button to download */
-    return (
-      <div className="flex items-center gap-2.5 px-3 py-3 w-full">
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setIsPreviewOpen(true)}
-          onKeyDown={(e) => e.key === "Enter" && setIsPreviewOpen(true)}
-          className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer
-            hover:opacity-80 transition-opacity">
-          <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center
-            justify-center shrink-0 text-amber-700">
-            <FileText size={15} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[11px] sm:text-xs font-bold truncate">{filename}</p>
-            <p className="text-[9px] opacity-50 uppercase tracking-tight">
-              {mimeType.split("/")[1]?.toUpperCase() || "FILE"} · {formatSize(sizeBytes)}
-            </p>
-          </div>
-        </div>
-        {/* download button — separate interactive element, NOT nested in button */}
-        <button
-          type="button"
-          onClick={handleDownload}
-          title="Download file"
-          className="shrink-0 p-1.5 rounded-full hover:bg-black/10 transition-colors">
-          {downloading
-            ? <Loader2 size={12} className="animate-spin" />
-            : <Download size={12} />}
-        </button>
-      </div>
-    );
-  };
-
   /* ── call message rendering ── */
   if (message.type === "CALL" || message.callDetails) {
     const cd = message.callDetails;
@@ -462,19 +402,13 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     const isDeclined = cd?.status === "declined";
     const isCancelled = cd?.status === "cancelled";
     const isAnswered = cd?.status === "answered";
-
-    const formatDuration = (sec?: number | null) => {
-      if (!sec) return "";
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      return `${m}:${s.toString().padStart(2, "0")}`;
-    };
+    const isCallerMissed = isMissed || (isCancelled && !isOwn);
 
     const title = cd?.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ";
     let subtitle = "ጥሪ";
 
     if (isAnswered) {
-      subtitle = cd?.durationSec ? `የተመለሰ (${formatDuration(cd.durationSec)})` : "የተመለሰ";
+      subtitle = cd?.durationSec ? `የተመለሰ (${formatSec(cd.durationSec)})` : "የተመለሰ";
     } else if (isMissed) {
       subtitle = isOwn ? "ያልተመለሰ ጥሪ" : "ያመለጠ ጥሪ";
     } else if (isDeclined) {
@@ -482,8 +416,6 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     } else if (isCancelled) {
       subtitle = isOwn ? "የተሰረዘ ጥሪ" : "ያመለጠ ጥሪ";
     }
-
-    const isCallerMissed = isMissed || (isCancelled && !isOwn);
 
     return (
       <div className="flex w-full my-2 justify-center">
@@ -531,7 +463,201 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     );
   }
 
-  /* ── own bubble actions (shown as permanent tiny row under footer on error/sending, hover otherwise) ── */
+  /* ── media rendering ── */
+  const renderMedia = () => {
+    if (!message.media?.url || isDeleted) return null;
+    const { url, mimeType = "", sizeBytes = 0 } = message.media;
+    const isImage = message.type === "IMAGE" || mimeType.startsWith("image/");
+    const isVideo = message.type === "VIDEO" || mimeType.startsWith("video/");
+    const isAudio = message.type === "AUDIO" || mimeType.startsWith("audio/");
+    const isPdf = mimeType === "application/pdf" || url.toLowerCase().endsWith(".pdf");
+    const filename = resolveFilename(url, mimeType, message.media.originalName);
+
+    if (isSending) {
+      return (
+        <div className="relative w-full min-h-[72px] flex items-center justify-center bg-slate-800/50 overflow-hidden">
+          <div className="relative z-10 flex flex-col items-center gap-1 py-3">
+            <Loader2 size={18} className="animate-spin text-amber-400" />
+            <span className="text-[9px] font-bold text-white/60 uppercase tracking-widest">
+              በመጫን ላይ…
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    if (isImage) {
+      return (
+        <div
+          className="relative cursor-pointer group/img overflow-hidden"
+          onClick={() => setIsPreviewOpen(true)}
+        >
+          <img
+            src={url}
+            alt={filename}
+            loading="lazy"
+            className="max-h-60 sm:max-h-72 w-full object-cover transition-transform duration-200 group-hover/img:scale-[1.02]"
+          />
+        </div>
+      );
+    }
+
+    if (isVideo) {
+      return (
+        <div
+          className="relative cursor-pointer overflow-hidden bg-black"
+          onClick={() => setIsPreviewOpen(true)}
+        >
+          <video
+            src={url}
+            preload="metadata"
+            className="max-h-48 sm:max-h-56 w-full object-cover opacity-80"
+          />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-full bg-white/90 flex items-center justify-center shadow-lg">
+              <Play size={18} className="text-slate-900 ml-0.5 fill-slate-900" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (isAudio) {
+      return (
+        <div className="flex items-center gap-3 px-3 py-2.5 w-full min-w-[220px]">
+          <audio
+            ref={audioRef}
+            src={url}
+            preload="metadata"
+            onLoadedMetadata={() => setAudioDuration(audioRef.current?.duration || 0)}
+            onTimeUpdate={() => setAudioCurrentTime(audioRef.current?.currentTime || 0)}
+            onEnded={() => setIsPlayingAudio(false)}
+          />
+          <button
+            type="button"
+            onClick={toggleAudio}
+            className="w-9 h-9 rounded-full bg-amber-600 hover:bg-amber-500 text-white flex items-center justify-center shrink-0 shadow transition-transform active:scale-95"
+          >
+            {isPlayingAudio ? (
+              <Pause size={15} />
+            ) : (
+              <Play size={15} className="ml-0.5 fill-white" />
+            )}
+          </button>
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] sm:text-xs font-bold truncate">{filename}</p>
+            <div className="flex items-center justify-between text-[10px] opacity-60 mt-1">
+              <span>{formatSec(audioCurrentTime)}</span>
+              <span>{formatSec(audioDuration || message.media.durationSeconds || 0)}</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // PDF or any other file
+    return (
+      <div className="flex items-center gap-2.5 px-3 py-3 w-full">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => (isPdf ? setIsPreviewOpen(true) : handleDownload())}
+          className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer hover:opacity-85 transition-opacity"
+        >
+          <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center justify-center shrink-0 text-amber-700">
+            <FileText size={16} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] sm:text-xs font-bold truncate">{filename}</p>
+            <p className="text-[9px] opacity-60 uppercase tracking-tight">
+              {isPdf ? "PDF" : mimeType.split("/")[1]?.toUpperCase() || "FILE"} · {formatSize(sizeBytes)}
+            </p>
+          </div>
+        </div>
+
+        {/* Download State: Spinner if downloading, Checkmark if downloaded, Download icon if not */}
+        <button
+          type="button"
+          onClick={handleDownload}
+          title={isDownloaded ? "Downloaded" : "Download file"}
+          className="shrink-0 p-1.5 rounded-full hover:bg-black/10 transition-colors"
+        >
+          {downloading ? (
+            <Loader2 size={14} className="animate-spin text-amber-500" />
+          ) : isDownloaded ? (
+            <Check size={14} className="text-emerald-500" />
+          ) : (
+            <Download size={14} />
+          )}
+        </button>
+      </div>
+    );
+  };
+
+  /* ── link preview card inside bubble ── */
+  const renderLinkPreview = () => {
+    if (!linkPreview || isDeleted) return null;
+
+    return (
+      <div
+        onClick={() => setInAppBrowserUrl(linkPreview.url)}
+        className="mx-2 mb-2 rounded-xl overflow-hidden border border-amber-500/20 bg-black/20 hover:bg-black/30 cursor-pointer transition-all"
+      >
+        {linkPreview.image && (
+          <img
+            src={linkPreview.image}
+            alt={linkPreview.title || linkPreview.domain}
+            className="w-full h-28 object-cover"
+          />
+        )}
+        <div className="p-2.5">
+          <div className="flex items-center gap-1.5 text-[9px] font-bold text-amber-400 uppercase tracking-wider mb-1">
+            <Globe size={10} />
+            <span>{linkPreview.domain}</span>
+          </div>
+          <p className="text-xs font-bold leading-tight truncate text-white">
+            {linkPreview.title}
+          </p>
+          {linkPreview.description && (
+            <p className="text-[10px] text-slate-300 opacity-80 line-clamp-1 mt-0.5">
+              {linkPreview.description}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  /* ── deleted message rendering ── */
+  const renderDeleted = () => (
+    <div className="px-3 py-2.5 flex items-center gap-2 text-xs italic text-slate-400 opacity-70">
+      <XCircle size={14} className="shrink-0 text-slate-400" />
+      <span>ይህ መልዕክት ተሰርዟል (Message deleted)</span>
+    </div>
+  );
+
+  /* ── reply quote header ── */
+  const renderReplyQuote = () => {
+    if (!message.replyTo || isDeleted) return null;
+
+    return (
+      <div
+        className={`mx-2.5 mt-2 mb-1 p-2 rounded-lg border-l-3 flex flex-col ${
+          isOwn
+            ? "bg-white/10 border-amber-400 text-white"
+            : "bg-slate-100 border-amber-600 text-slate-800"
+        }`}
+      >
+        <span className="text-[10px] font-bold text-amber-500 truncate">
+          {message.replyTo.senderName}
+        </span>
+        <span className="text-[11px] opacity-80 truncate line-clamp-1">
+          {message.replyTo.contentSnippet}
+        </span>
+      </div>
+    );
+  };
+
   const showActions = isOwn && (isError || isSending || (!isSending && (onDelete || onResend)));
 
   return (
@@ -542,129 +668,166 @@ const MessageBubble: FC<MessageBubbleProps> = ({
         transition={{ duration: 0.12 }}
         className={`flex w-full mb-1 sm:mb-1.5 px-2 sm:px-3 ${
           isOwn ? "justify-end" : "justify-start"
-        }`}>
-
-        <div className={`flex items-end gap-1.5 sm:gap-2 max-w-[86%] sm:max-w-[72%] md:max-w-[60%]
-          ${isOwn ? "flex-row-reverse" : "flex-row"}`}>
-
-          {/* avatar — other person only */}
+        }`}
+      >
+        <div
+          className={`flex items-end gap-1.5 sm:gap-2 max-w-[80%] ${
+            isOwn ? "flex-row-reverse" : "flex-row"
+          }`}
+        >
+          {/* Avatar for the other person: Photo or Initial */}
           {!isOwn && (
-            <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-full ring-1 ring-slate-200
-              overflow-hidden shrink-0 mb-0.5">
-              {senderPhoto
-                ? <img src={senderPhoto} alt="" className="w-full h-full object-cover" />
-                : <div className="w-full h-full bg-slate-100 flex items-center justify-center">
-                    <User size={11} className="text-slate-400" />
-                  </div>
-              }
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full ring-1 ring-slate-200 overflow-hidden shrink-0 mb-0.5 flex items-center justify-center bg-gradient-to-tr from-amber-700 via-amber-600 to-amber-500 text-white font-bold text-xs shadow-xs">
+              {senderPhoto ? (
+                <img src={senderPhoto} alt={senderName} className="w-full h-full object-cover" />
+              ) : (
+                <span>{senderInitial}</span>
+              )}
             </div>
           )}
 
-          {/* wrapper — relative so context menu can be positioned here */}
-          <div className="relative flex flex-col">
-
-            {/* bubble */}
-            <div className={`flex flex-col shadow-sm border overflow-hidden
-              ${isOwn
-                ? "bg-slate-900 border-slate-700 text-white rounded-2xl rounded-br-[4px]"
-                : "bg-white border-slate-200 text-slate-900 rounded-2xl rounded-bl-[4px]"
-              }
-              ${isError ? "border-red-400/40" : ""}
-            `}>
-
-              {/* sender name + role badge */}
-              {!isOwn && senderName && (
+          {/* Bubble Container: Mine dark, Theirs light, max 80% */}
+          <div className="relative flex flex-col max-w-full">
+            <div
+              className={`flex flex-col shadow-sm border overflow-hidden max-w-full break-words ${
+                isOwn
+                  ? "bg-slate-900 border-slate-700 text-white rounded-2xl rounded-br-[4px]"
+                  : "bg-white border-slate-200 text-slate-900 rounded-2xl rounded-bl-[4px]"
+              } ${isError ? "border-red-400/40" : ""}`}
+            >
+              {/* Sender Name + Role Badge (Theirs) */}
+              {!isOwn && senderName && !isDeleted && (
                 <div className="px-2.5 sm:px-3 pt-2 pb-0.5 flex items-center gap-1.5">
-                  <span className="text-[10px] sm:text-[11px] font-bold text-slate-600">
+                  <span className="text-[11px] font-bold text-slate-700 truncate">
                     {senderName}
                   </span>
                   {roleBadge && (
-                    <span className={`text-[8px] px-1.5 py-0.5 rounded font-black
-                      uppercase leading-none ${roleBadge.cls}`}>
+                    <span className={`text-[8px] px-1.5 py-0.5 rounded ${roleBadge.cls}`}>
                       {roleBadge.text}
                     </span>
                   )}
                 </div>
               )}
-              {/* Premium identity badge on own messages */}
-              {isOwn && ownBadge && currentUserName && (
-                <div className="px-2.5 sm:px-3 pt-2 pb-0.5 flex items-center gap-1.5 justify-end">
-                  <span className="text-[10px] font-bold text-white/60">
-                    {currentUserName}
-                  </span>
-                  <span className={`text-[8px] px-1.5 py-0.5 rounded font-black
-                    uppercase leading-none ${ownBadge.cls}`}>
-                    {ownBadge.text}
-                  </span>
-                </div>
+
+              {/* Reply Quote Header */}
+              {renderReplyQuote()}
+
+              {/* Deleted Message */}
+              {isDeleted ? (
+                renderDeleted()
+              ) : (
+                <>
+                  {renderMedia()}
+
+                  {message.content && (
+                    <p
+                      className={`px-2.5 sm:px-3 text-[13px] sm:text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                        message.media ? "py-1.5" : "pt-2 pb-1"
+                      }`}
+                    >
+                      {message.content}
+                    </p>
+                  )}
+
+                  {renderLinkPreview()}
+                </>
               )}
 
-              {renderMedia()}
-
-              {message.content && (
-                <p className={`px-2.5 sm:px-3 text-[13px] sm:text-sm leading-relaxed
-                  whitespace-pre-wrap break-words
-                  ${message.media ? "py-1.5" : "pt-2 pb-1.5"}`}>
-                  {message.content}
-                </p>
-              )}
-
-              {/* footer row: time + tick + three-dot */}
-              <div className={`px-2.5 sm:px-3 pb-1.5 pt-0.5 flex items-center gap-1.5
-                ${isOwn ? "justify-between" : "justify-end"}`}>
-
-                {/* three-dot — only own messages, positioned INSIDE footer so
-                    it's never clipped and always visible */}
+              {/* Footer: Time + Ticks inside the bubble */}
+              <div
+                className={`px-2.5 sm:px-3 pb-1.5 pt-0.5 flex items-center gap-1.5 ${
+                  isOwn ? "justify-between" : "justify-end"
+                }`}
+              >
                 {showActions && (
                   <button
                     ref={triggerRef}
                     type="button"
                     title="Message options"
                     onClick={() => setShowMenu((v) => !v)}
-                    className={`p-0.5 rounded-full transition-colors
-                      ${isOwn
+                    className={`p-0.5 rounded-full transition-colors ${
+                      isOwn
                         ? "text-white/40 hover:text-white/90 hover:bg-white/10"
                         : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-                      }`}>
+                    }`}
+                  >
                     <MoreVertical size={13} />
                   </button>
                 )}
 
-                <div className={`flex items-center gap-1 text-[9px] sm:text-[10px]
-                  ${isOwn ? "opacity-50 ml-auto" : "opacity-40"}`}>
-                  <span>
+                <div className="flex items-center gap-1 shrink-0 ml-auto">
+                  <span
+                    className={`text-[9px] ${
+                      isOwn ? "text-white/50" : "text-slate-400"
+                    }`}
+                  >
                     {formatEthiopianTimeShort(message.createdAt)}
                   </span>
+
                   {isOwn && (
-                    isSending
-                      ? <Loader2 size={9} className="animate-spin text-amber-400" />
-                      : isError
-                      ? <AlertCircle size={10} className="text-red-400" />
-                      : message.isRead
-                      ? <CheckCheck size={11} className="text-amber-400" />
-                      : <Check size={11} />
+                    <span className="inline-flex items-center">
+                      {isSending ? (
+                        <Loader2 size={10} className="animate-spin text-white/40" />
+                      ) : isError ? (
+                        <AlertCircle size={10} className="text-red-400" />
+                      ) : message.isRead ? (
+                        <CheckCheck size={11} className="text-amber-400" />
+                      ) : (
+                        <Check size={11} className="text-white/40" />
+                      )}
+                    </span>
                   )}
                 </div>
               </div>
             </div>
-
-            {/* Context menu — rendered outside bubble div so no overflow clipping */}
-            {ContextMenu}
           </div>
         </div>
       </motion.div>
 
+      {/* Context Menu Modal */}
+      {ContextMenu}
+
+      {/* In-App Media Preview Full Screen Modal */}
       <MediaPreview
-        url={message.media?.url ?? null}
-        mimeType={message.media?.mimeType ?? ""}
+        isOpen={isPreviewOpen}
+        onClose={() => setIsPreviewOpen(false)}
+        url={message.media?.url || null}
+        mimeType={message.media?.mimeType}
         fileName={resolveFilename(
-          message.media?.url ?? "media",
+          message.media?.url || "",
           message.media?.mimeType,
           message.media?.originalName
         )}
-        isOpen={isPreviewOpen}
-        onClose={() => setIsPreviewOpen(false)}
       />
+
+      {/* In-App Browser Sheet Modal for safe Link Viewing */}
+      {inAppBrowserUrl && (
+        <div className="fixed inset-0 z-[300] flex flex-col bg-slate-950/95 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-slate-900/90 text-white">
+            <div className="flex items-center gap-2 min-w-0 pr-4">
+              <Lock size={13} className="text-emerald-400 shrink-0" />
+              <span className="text-xs font-bold truncate text-slate-200">
+                {inAppBrowserUrl}
+              </span>
+            </div>
+            <button
+              onClick={() => setInAppBrowserUrl(null)}
+              className="p-1.5 rounded-full hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
+              title="Close browser sheet"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="flex-1 w-full bg-white">
+            <iframe
+              src={inAppBrowserUrl}
+              title="In-app browser"
+              sandbox="allow-same-origin allow-scripts allow-forms"
+              className="w-full h-full border-none"
+            />
+          </div>
+        </div>
+      )}
     </>
   );
 };

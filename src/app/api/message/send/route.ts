@@ -86,6 +86,17 @@ function mapMedia(
   };
 }
 
+/**
+ * Plain-text sanitizer: strips HTML tags and control characters while preserving line breaks.
+ */
+function sanitizePlainText(text?: string | null): string {
+  if (!text) return "";
+  return text
+    .replace(/<[^>]*>/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .trim();
+}
+
 /* ============================================================
    POST /api/message/send
 ============================================================ */
@@ -120,21 +131,23 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 3. CONTENT VALIDATION
-    // Logic: Message is valid if it has text OR if it has a media URL from the first upload
-    if (!body.content?.trim() && !body.media?.url) {
+    // 3. SANITIZATION & LENGTH CHECK (Max 4,000 characters, no HTML, no control chars)
+    const sanitizedContent = sanitizePlainText(body.content);
+
+    if (sanitizedContent.length > 4000) {
+      return NextResponse.json(
+        { error: "መልእክቱ ከ 4,000 ፊደላት መብለጥ አይችልም (Message exceeds 4,000 character limit)" },
+        { status: 400 }
+      );
+    }
+
+    // 4. CONTENT VALIDATION: Must have sanitized text OR media URL
+    if (!sanitizedContent && !body.media?.url) {
       return NextResponse.json(
         { error: "መልእክቱ ባዶ መሆን አይችልም (Message cannot be empty)" },
         { status: 400 }
       );
     }
-
-    /**
-     * 4. REDUNDANT UPLOAD REMOVED
-     * We no longer check 'if (body.file)' because the file was
-     * already uploaded by the 'chat-media-upload' route.
-     * This prevents the "Double Upload" bug.
-     */
 
     // 5. PREPARE & SAVE (The "Sacred Ledger" Step)
     const finalMedia = mapMedia(body.media);
@@ -144,7 +157,7 @@ export async function POST(req: NextRequest) {
       channelId: asChannelID(body.channelId),
       senderId: asUID(session.uid),
       type: body.type,
-      content: body.content?.trim() || "",
+      content: sanitizedContent,
       media: finalMedia,
       isEncrypted: body.isEncrypted ?? false,
       encryption: body.encryption

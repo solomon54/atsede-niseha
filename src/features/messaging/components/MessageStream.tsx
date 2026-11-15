@@ -1,7 +1,7 @@
 // src/features/messaging/components/MessageStream.tsx
 "use client";
 
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, MessageSquare } from "lucide-react";
 import {
   forwardRef,
   useCallback,
@@ -13,10 +13,7 @@ import {
 } from "react";
 
 import { useIsMounted } from "@/shared/hooks/useIsMounted";
-import {
-  formatEthiopianDateLabel,
-  gregorianToEthiopian,
-} from "@/shared/utils/calendar/ethiopianCalendar";
+import { formatEthiopianDateLabel } from "@/shared/utils/calendar/ethiopianCalendar";
 
 import { db } from "../db/ladger-db";
 import { useSendMessage } from "../hooks/useSendMessage";
@@ -41,10 +38,40 @@ interface MessageStreamProps {
   channelId: ChannelID;
   currentUserId: UID;
   encryptionKeyId?: string;
-  /** Current user's role for premium identity display */
   currentUserRole?: ChannelRole;
   currentUserName?: string;
 }
+
+function formatDateChip(timestamp: number): string {
+  const now = new Date();
+  const msgDate = new Date(timestamp);
+
+  const isToday =
+    now.getFullYear() === msgDate.getFullYear() &&
+    now.getMonth() === msgDate.getMonth() &&
+    now.getDate() === msgDate.getDate();
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const isYesterday =
+    yesterday.getFullYear() === msgDate.getFullYear() &&
+    yesterday.getMonth() === msgDate.getMonth() &&
+    yesterday.getDate() === msgDate.getDate();
+
+  if (isToday) return "ዛሬ (Today)";
+  if (isYesterday) return "ትናንት (Yesterday)";
+  return formatEthiopianDateLabel(timestamp);
+}
+
+const isSameDay = (ts1: number, ts2: number): boolean => {
+  const d1 = new Date(ts1);
+  const d2 = new Date(ts2);
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+};
 
 const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
   ({ channelId, currentUserId, encryptionKeyId, currentUserRole, currentUserName }, ref) => {
@@ -52,66 +79,145 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
     const scrollRef = useRef<HTMLDivElement>(null);
     const initialScrollDone = useRef(false);
     const [showScrollDown, setShowScrollDown] = useState(false);
-    const userHasScrolled = useRef(false);
+    const [hasNewMessagePill, setHasNewMessagePill] = useState(false);
+    const prevCountRef = useRef(0);
+
+    const storageKey = `chat_last_seen_${currentUserId}_${channelId}`;
 
     usePusherListener(channelId);
     const { messages, isLoading } = useMessages(channelId);
     const { sendMessage } = useSendMessage(currentUserId);
 
     useImperativeHandle(ref, () => ({
-      addOptimistic: (_msg: OptimisticMessage) => {
-        // handled inside useSendMessage
-      },
+      addOptimistic: (_msg: OptimisticMessage) => {},
     }));
 
+    // Find the first unread message from the other party
+    const firstUnreadIndex = useMemo(() => {
+      for (let i = 0; i < messages.length; i++) {
+        if (messages[i].senderId !== currentUserId && !messages[i].isRead) {
+          return i;
+        }
+      }
+      return -1;
+    }, [messages, currentUserId]);
+
     // ─────────────────────────────────────────────
-    // SCROLL: Initial load goes to bottom. After that, NO auto-scroll.
-    // User scrolls manually. A "scroll down" button appears when far from bottom.
+    // SCROLL POSITION RESTORATION:
+    // 1. If unread messages, open on first unread with unread line above it
+    // 2. If nothing unread, restore exact message last left on screen
+    // 3. Remember position per room per user in localStorage
     // ─────────────────────────────────────────────
     useEffect(() => {
       const el = scrollRef.current;
-      if (!el || messages.length === 0) return;
+      if (!el || messages.length === 0 || initialScrollDone.current) return;
 
-      if (!initialScrollDone.current) {
-        // First load: jump to bottom instantly
+      const timer = setTimeout(() => {
+        if (firstUnreadIndex !== -1 && messages[firstUnreadIndex]) {
+          const unreadEl = document.getElementById(`msg-${messages[firstUnreadIndex].id}`);
+          if (unreadEl) {
+            unreadEl.scrollIntoView({ block: "center", behavior: "auto" });
+            initialScrollDone.current = true;
+            return;
+          }
+        }
+
+        const savedId = localStorage.getItem(storageKey);
+        if (savedId) {
+          const savedEl = document.getElementById(`msg-${savedId}`);
+          if (savedEl) {
+            savedEl.scrollIntoView({ block: "center", behavior: "auto" });
+            initialScrollDone.current = true;
+            return;
+          }
+        }
+
+        // Default to bottom
         el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
         initialScrollDone.current = true;
+      }, 50);
+
+      return () => clearTimeout(timer);
+    }, [messages, firstUnreadIndex, storageKey]);
+
+    // Reset when switching rooms
+    useEffect(() => {
+      initialScrollDone.current = false;
+      setHasNewMessagePill(false);
+      setShowScrollDown(false);
+    }, [channelId]);
+
+    // ─────────────────────────────────────────────
+    // NEW MESSAGES ARRIVAL WHILE READING UPWARD:
+    // Auto-scroll only if already at bottom or user sent it.
+    // Otherwise show "New message" pill.
+    // ─────────────────────────────────────────────
+    useEffect(() => {
+      if (!initialScrollDone.current) {
+        prevCountRef.current = messages.length;
         return;
       }
 
-      // Only auto-scroll if the user sent the last message themselves
-      const lastMsg = messages[messages.length - 1];
-      if (lastMsg.senderId === currentUserId && lastMsg.status === "sending") {
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      if (messages.length > prevCountRef.current) {
+        const newMsg = messages[messages.length - 1];
+        const el = scrollRef.current;
+        if (el) {
+          const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+          const isAtBottom = distanceFromBottom < 100;
+          const isMe = newMsg.senderId === currentUserId;
+
+          if (isMe || isAtBottom) {
+            el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+            setHasNewMessagePill(false);
+          } else {
+            setHasNewMessagePill(true);
+          }
+        }
       }
-      // Otherwise: do NOT scroll. Stay exactly where the user left off.
+      prevCountRef.current = messages.length;
     }, [messages, currentUserId]);
 
-    // Reset initial scroll when switching channels
-    useEffect(() => {
-      initialScrollDone.current = false;
-      userHasScrolled.current = false;
-    }, [channelId]);
-
-    // Track scroll position for "jump to bottom" button
+    // Track scroll position to remember last left message & show jump buttons
     useEffect(() => {
       const el = scrollRef.current;
       if (!el) return;
 
       const handleScroll = () => {
         const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        const atBottom = distanceFromBottom < 100;
         setShowScrollDown(distanceFromBottom > 200);
-        if (distanceFromBottom > 50) {
-          userHasScrolled.current = true;
+
+        if (atBottom) {
+          setHasNewMessagePill(false);
+        }
+
+        // Save visible message position
+        const messageElements = el.querySelectorAll("[data-message-id]");
+        for (let i = 0; i < messageElements.length; i++) {
+          const rect = messageElements[i].getBoundingClientRect();
+          const parentRect = el.getBoundingClientRect();
+          if (rect.top >= parentRect.top && rect.bottom <= parentRect.bottom + 100) {
+            const mid = messageElements[i].getAttribute("data-message-id");
+            if (mid) {
+              try {
+                localStorage.setItem(storageKey, mid);
+              } catch {}
+              break;
+            }
+          }
         }
       };
 
       el.addEventListener("scroll", handleScroll, { passive: true });
       return () => el.removeEventListener("scroll", handleScroll);
-    }, []);
+    }, [storageKey]);
 
     const scrollToBottom = () => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+      scrollRef.current?.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+      setHasNewMessagePill(false);
     };
 
     // Mark last message as read
@@ -127,22 +233,9 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
       }
     }, [messages, channelId, currentUserId, isMounted]);
 
-    // ─────────────────────────────────────────────
-    // UNREAD DIVIDER: Find the first unread message from the other person
-    // ─────────────────────────────────────────────
-    const firstUnreadIndex = useMemo(() => {
-      for (let i = 0; i < messages.length; i++) {
-        if (messages[i].senderId !== currentUserId && !messages[i].isRead) {
-          return i;
-        }
-      }
-      return -1;
-    }, [messages, currentUserId]);
-
     /* ── DELETE ── */
     const handleDelete = useCallback(
       async (messageId: string) => {
-        // Optimistic remove
         await db.messages.delete(messageId as MessageID);
         try {
           await fetch("/api/message/delete", {
@@ -157,7 +250,7 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
       [channelId]
     );
 
-    /* ── CANCEL (optimistic only, never hit server) ── */
+    /* ── CANCEL ── */
     const handleCancel = useCallback(async (messageId: string) => {
       await db.messages.delete(messageId as MessageID);
     }, []);
@@ -165,10 +258,7 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
     /* ── RESEND ── */
     const handleResend = useCallback(
       async (msg: Message) => {
-        // Remove the failed message from Dexie first
         await db.messages.delete(msg.id);
-
-        // Re-send with original content and type
         try {
           await sendMessage({
             channelId,
@@ -185,50 +275,34 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
 
     if (!isMounted) return null;
 
-    /**
-     * Ethiopian date comparison: checks if two timestamps fall on the same Ethiopian day
-     */
-    const isSameEthiopianDay = (ts1: number, ts2: number): boolean => {
-      const d1 = gregorianToEthiopian(new Date(ts1));
-      const d2 = gregorianToEthiopian(new Date(ts2));
-      return d1.year === d2.year && d1.month === d2.month && d1.day === d2.day;
-    };
-
     return (
       <section
         ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto px-2 sm:px-5 md:px-8 py-4 sm:py-5
-          bg-[#FCFBF7] custom-scrollbar overscroll-contain relative">
+        className="flex-1 min-h-0 overflow-y-auto px-2 sm:px-5 md:px-8 py-4 sm:py-5 bg-[#FCFBF7] custom-scrollbar overscroll-contain relative"
+      >
         <div className="max-w-3xl mx-auto space-y-0">
-
           {isLoading && messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20">
-              <div className="w-8 h-8 border-2 border-amber-600/10 border-t-amber-600
-                rounded-full animate-spin mb-3" />
-              <p className="text-[10px] font-black uppercase tracking-widest
-                text-amber-900/30">
+              <div className="w-8 h-8 border-2 border-amber-600/10 border-t-amber-600 rounded-full animate-spin mb-3" />
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-900/30">
                 መልዕክቶችን በመክፈት ላይ…
               </p>
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20
-              text-center opacity-30">
+            <div className="flex flex-col items-center justify-center py-20 text-center opacity-30">
               <span className="text-3xl mb-3">📜</span>
-              <p className="text-[10px] font-bold uppercase tracking-widest
-                text-slate-500">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
                 ምንም መልዕክት የለም
               </p>
-              <p className="text-[9px] text-slate-400 mt-1">
-                The Ledger is Pristine
-              </p>
+              <p className="text-[9px] text-slate-400 mt-1">The Ledger is Pristine</p>
             </div>
           ) : (
             messages.map((msg: EnrichedMessage, index) => {
               const prev = messages[index - 1];
 
-              // Ethiopian date separator
+              // Date chips between days ("Today", "Yesterday", or formatted date)
               const showDate =
-                !prev || !isSameEthiopianDay(msg.createdAt, prev.createdAt);
+                !prev || !isSameDay(msg.createdAt, prev.createdAt);
 
               // Collapse avatar/name for consecutive messages from same sender
               const grouped =
@@ -236,28 +310,26 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
                 prev.senderId === msg.senderId &&
                 msg.createdAt - prev.createdAt < 2 * 60 * 1000;
 
-              // Unread divider
+              // Small unread divider line above the first unread message
               const showUnreadDivider = index === firstUnreadIndex;
 
               return (
-                <div key={msg.id}>
+                <div key={msg.id} id={`msg-${msg.id}`} data-message-id={msg.id}>
                   {showDate && (
                     <div className="flex justify-center my-4 sm:my-6">
-                      <span className="px-3 py-1 bg-amber-50 rounded-full
-                        text-[9px] font-black uppercase tracking-widest
-                        text-amber-800/50 border border-amber-100">
-                        {formatEthiopianDateLabel(msg.createdAt)}
+                      <span className="px-3 py-1 bg-amber-50 rounded-full text-[10px] font-bold text-amber-900/70 border border-amber-200/60 shadow-2xs">
+                        {formatDateChip(msg.createdAt)}
                       </span>
                     </div>
                   )}
 
                   {showUnreadDivider && (
                     <div className="flex items-center gap-3 my-4 sm:my-6 px-4">
-                      <div className="flex-1 h-px bg-amber-400/40" />
-                      <span className="text-[9px] font-black uppercase tracking-widest text-amber-600 shrink-0">
-                        ያልተነበቡ መልዕክቶች
+                      <div className="flex-1 h-px bg-amber-400/50" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-amber-700 shrink-0 bg-amber-100/70 px-2.5 py-0.5 rounded-full">
+                        ያልተነበቡ መልዕክቶች (Unread)
                       </span>
-                      <div className="flex-1 h-px bg-amber-400/40" />
+                      <div className="flex-1 h-px bg-amber-400/50" />
                     </div>
                   )}
 
@@ -282,15 +354,25 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
           <div className="h-3" />
         </div>
 
-        {/* Jump to bottom button */}
-        {showScrollDown && (
+        {/* Floating "New message" pill if reading upward */}
+        {hasNewMessagePill && (
           <button
             type="button"
             onClick={scrollToBottom}
-            className="fixed bottom-28 right-6 md:right-10 z-40 w-10 h-10 rounded-full
-              bg-slate-900 text-white shadow-xl flex items-center justify-center
-              hover:bg-amber-600 transition-all active:scale-90
-              animate-in fade-in zoom-in-95 duration-200">
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-full shadow-xl flex items-center gap-2 text-xs font-bold transition-all animate-bounce"
+          >
+            <MessageSquare size={14} />
+            <span>አዲስ መልእክት ↓</span>
+          </button>
+        )}
+
+        {/* Jump to bottom button */}
+        {showScrollDown && !hasNewMessagePill && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="fixed bottom-24 right-6 md:right-10 z-40 w-10 h-10 rounded-full bg-slate-900 text-white shadow-xl flex items-center justify-center hover:bg-amber-600 transition-all active:scale-90 animate-in fade-in zoom-in-95 duration-200"
+          >
             <ArrowDown size={18} />
           </button>
         )}
@@ -301,4 +383,3 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
 
 MessageStream.displayName = "MessageStream";
 export default MessageStream;
-

@@ -77,10 +77,8 @@ const Composer: FC<ComposerProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > MEDIA_LIMITS.MAX_FILE_SIZE) {
-      setError(
-        `ፋይሉ በጣም ትልቅ ነው (Max ${MEDIA_LIMITS.MAX_FILE_SIZE / (1024 * 1024)}MB)`
-      );
+    if (file.size > 25 * 1024 * 1024) {
+      setError("ፋይሉ ከ 25 MB በላይ ስለሆነ መላክ አይቻልም (File exceeds 25 MB limit)");
       return;
     }
 
@@ -106,11 +104,23 @@ const Composer: FC<ComposerProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleSend = async () => {
-    const rawContent = value.trim();
-    if ((!rawContent && !selectedFile) || isSending || disabled) return;
+  const sanitizeInput = (text: string) => {
+    return text
+      .replace(/<[^>]*>/g, "")
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+      .trim();
+  };
 
-    const textToSend = value;
+  const handleSend = async () => {
+    const sanitized = sanitizeInput(value);
+    if ((!sanitized && !selectedFile) || isSending || disabled) return;
+
+    if (value.length > 4000) {
+      setError("መልእክቱ ከ 4,000 ፊደላት መብለጥ አይችልም (Message exceeds 4,000 characters)");
+      return;
+    }
+
+    const textToSend = sanitized;
     const fileToSend = selectedFile;
     const currentPreview = previewUrl;
 
@@ -257,9 +267,22 @@ const Composer: FC<ComposerProps> = ({
           style={{ WebkitOverflowScrolling: "touch" }}
         />
 
+        {/* Character count warning near limit (from 3,600) */}
+        {value.length >= 3600 && (
+          <span
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full self-center shrink-0 ${
+              value.length > 4000
+                ? "bg-red-100 text-red-600 border border-red-300"
+                : "bg-amber-100 text-amber-800 border border-amber-300"
+            }`}
+          >
+            {value.length} / 4,000
+          </span>
+        )}
+
         <button
           onClick={handleSend}
-          disabled={disabled || isSending || (!value.trim() && !selectedFile)}
+          disabled={disabled || isSending || (!value.trim() && !selectedFile) || value.length > 4000}
           aria-label="Send message"
           className="flex-shrink-0 flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-full bg-slate-900 text-white shadow-md hover:bg-amber-700 disabled:bg-slate-100 disabled:text-slate-300 transition-all active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500">
           {isSending ? (

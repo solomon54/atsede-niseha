@@ -1,8 +1,7 @@
 // src/features/messaging/components/ConversationList.tsx
 "use client";
 
-import { FC } from "react";
-
+import { FC, useMemo } from "react";
 import { ChannelID, ConversationSummary, UID } from "../types/messaging.types";
 import { ConversationItem } from "./ConversationItem";
 
@@ -31,49 +30,26 @@ export const ConversationList: FC<Props> = ({
     );
   }
 
-  // Separate COMMON_HOUSE from DIRECT channels
-  const commonHouse = conversations.filter(
-    (c) => c.channel.type === "COMMON_HOUSE"
-  );
-  const direct = conversations.filter((c) => c.channel.type === "DIRECT");
+  // Sort list: most recent message first across all conversations
+  const sortedConversations = useMemo(() => {
+    return [...conversations].sort((a, b) => {
+      const timeA = a.lastMessage?.createdAt || a.channel?.createdAt || 0;
+      const timeB = b.lastMessage?.createdAt || b.channel?.createdAt || 0;
+      return timeB - timeA;
+    });
+  }, [conversations]);
 
   return (
-    <div className="py-2 px-2 space-y-1">
-      {/* COMMON_HOUSE group */}
-      {commonHouse.length > 0 && (
-        <div>
-          <p className="px-2 py-2 text-[9px] font-black uppercase tracking-[0.25em] text-slate-400">
-            የጋራ ቤት · Family
-          </p>
-          {commonHouse.map((c) => (
-            <ConversationItem
-              key={c.channel.id}
-              convo={c}
-              active={c.channel.id === activeChannelId}
-              onSelect={() => onSelect(c.channel.id)}
-              currentUserId={currentUserId}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* DIRECT group */}
-      {direct.length > 0 && (
-        <div>
-          <p className="px-2 py-2 text-[9px] font-black uppercase tracking-[0.25em] text-slate-400">
-            የግል መልዕክት · Direct
-          </p>
-          {direct.map((c) => (
-            <ConversationItem
-              key={c.channel.id}
-              convo={c}
-              active={c.channel.id === activeChannelId}
-              onSelect={() => onSelect(c.channel.id)}
-              currentUserId={currentUserId}
-            />
-          ))}
-        </div>
-      )}
+    <div className="py-2 px-1 space-y-1 w-full">
+      {sortedConversations.map((c) => (
+        <ConversationItem
+          key={c.channel.id}
+          convo={c}
+          active={c.channel.id === activeChannelId}
+          onSelect={() => onSelect(c.channel.id)}
+          currentUserId={currentUserId}
+        />
+      ))}
     </div>
   );
 };

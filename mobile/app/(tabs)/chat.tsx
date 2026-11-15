@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -7,19 +7,23 @@ import {
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
+  Image,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { MessageCircle, Users, ChevronRight, Lock, XCircle } from "lucide-react-native";
+import { MessageCircle, Users, XCircle } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
+import { useAuth } from "../../src/lib/auth-context";
 import { THEME } from "../../src/constants/theme";
 
 interface Conversation {
   id: string;
   fullName: string;
   role: "DIRECT" | "COMMON_HOUSE";
+  type?: "DIRECT" | "COMMON_HOUSE";
+  title?: string;
   members?: Array<{
     userId: string;
     fullName?: string;
@@ -31,6 +35,13 @@ interface Conversation {
     content: string;
     createdAt: number;
     senderId: string;
+    type?: string;
+    media?: {
+      url: string;
+      originalName?: string;
+      mimeType?: string;
+    } | null;
+    callDetails?: any;
     isEncrypted?: boolean;
   } | null;
   unreadCount?: number;
@@ -38,6 +49,7 @@ interface Conversation {
 
 export default function ChatScreen() {
   const router = useRouter();
+  const { uid } = useAuth();
 
   const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
     Conversation[]
@@ -57,19 +69,45 @@ export default function ChatScreen() {
     offlineCache.getQuery<Conversation[]>("conversations")
   );
 
-  const conversations = data || [];
+  // Sort conversations most recent first
+  const conversations = useMemo(() => {
+    const list = [...(data || [])];
+    return list.sort(
+      (a, b) => (b.lastMessage?.createdAt || 0) - (a.lastMessage?.createdAt || 0)
+    );
+  }, [data]);
 
   const formatMessageTime = (ts?: number) => {
     if (!ts) return "";
     try {
       const d = new Date(ts);
-      return d.toLocaleTimeString("am-ET", {
-        hour: "2-digit",
-        minute: "2-digit",
+      const now = new Date();
+      const isToday =
+        d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate();
+
+      if (isToday) {
+        return d.toLocaleTimeString("am-ET", {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      }
+      return d.toLocaleDateString("am-ET", {
+        month: "short",
+        day: "numeric",
       });
     } catch {
       return "";
     }
+  };
+
+  const getCleanErrorMessage = (err: any) => {
+    const msg = (err?.message || "").toString();
+    if (msg.toUpperCase().includes("FORBIDDEN")) {
+      return "ይህንን ክፍል ለማየት ፈቃድ የለዎትም";
+    }
+    return msg || "ውይይቶችን ማምጣት አልተሳካም";
   };
 
   return (
@@ -77,8 +115,8 @@ export default function ChatScreen() {
       {isError && (
         <View style={styles.errorBanner}>
           <XCircle color={THEME.colors.error} size={16} />
-          <Text style={styles.errorBannerText}>
-            {(error as Error)?.message || "ውይይቶችን ማምጣት አልተሳካም"}
+          <Text style={styles.errorBannerText} numberOfLines={1}>
+            {getCleanErrorMessage(error)}
           </Text>
           <TouchableOpacity onPress={() => refetch()} hitSlop={8}>
             <Text style={styles.retryText}>እንደገና ሞክር</Text>
@@ -117,63 +155,128 @@ export default function ChatScreen() {
           )
         }
         renderItem={({ item }) => {
-          const isCommonHouse = item.role === "COMMON_HOUSE";
+          const isCommonHouse =
+            item.role === "COMMON_HOUSE" || item.type === "COMMON_HOUSE";
+          const hasUnread = Boolean(item.unreadCount && item.unreadCount > 0);
+
+          // Find display name and photo
+          const otherMember = !isCommonHouse && uid
+            ? item.members?.find((m) => m.userId !== uid)
+            : null;
+
+          const displayName = isCommonHouse
+            ? item.title || "የጋራ ቤት"
+            : otherMember?.fullName || item.fullName || "የግል መልዕክት";
+
+          const displayPhoto = !isCommonHouse ? otherMember?.photoUrl : null;
+
+          // Initial letter
+          const cleanName = displayName.replace(/^(ቀሲስ|ዲያቆን|መምህር|ሊቀ)\s+/i, "");
+          const initial = cleanName.charAt(0) || "✞";
+
+          // Format last message
+          const lm = item.lastMessage;
+          let lastMessageText = "";
+
+          if (!lm) {
+            lastMessageText = isCommonHouse
+              ? "የጋራ ቤት ትምህርት እና መመሪያዎች"
+              : "የግል መልዕክት ውይይት";
+          } else if (lm.type === "CALL" || lm.callDetails) {
+            lastMessageText = "📞 የቪዲዮ ጥሪ";
+          } else if (lm.type === "IMAGE" || lm.media?.mimeType?.startsWith("image/")) {
+            lastMessageText = "📷 Photo";
+          } else if (lm.type === "VIDEO" || lm.media?.mimeType?.startsWith("video/")) {
+            lastMessageText = "🎥 Video";
+          } else if (lm.type === "AUDIO" || lm.media?.mimeType?.startsWith("audio/")) {
+            lastMessageText = "🎵 Audio";
+          } else if (lm.type === "FILE" || lm.media?.url) {
+            const fname = lm.media?.originalName || "ፋይል";
+            lastMessageText = `📎 ${fname}`;
+          } else if (lm.isEncrypted && !lm.content) {
+            lastMessageText = "🔒 የተቆለፈ መልእክት";
+          } else {
+            lastMessageText = (lm.content || "").trim() || "መልእክት";
+          }
+
+          // If group, prefix with sender's first name
+          if (isCommonHouse && lm?.senderId) {
+            let senderFirst = "";
+            if (lm.senderId === uid) {
+              senderFirst = "እርስዎ";
+            } else {
+              const member = item.members?.find((m) => m.userId === lm.senderId);
+              const rawName = member?.fullName || "";
+              senderFirst = rawName.split(" ")[0] || "ተሳታፊ";
+            }
+            lastMessageText = `${senderFirst}: ${lastMessageText}`;
+          }
 
           return (
             <TouchableOpacity
-              style={styles.roomCard}
+              style={[styles.roomRow, hasUnread && styles.roomRowUnread]}
               onPress={() => router.push(`/chat/${item.id}` as any)}
-              activeOpacity={0.8}
+              activeOpacity={0.7}
             >
+              {/* Circle Avatar (Photo or Initial) */}
               <View
                 style={[
-                  styles.iconCircle,
-                  isCommonHouse
-                    ? styles.iconCircleCommon
-                    : styles.iconCircleDirect,
+                  styles.avatarCircle,
+                  isCommonHouse ? styles.avatarCommon : styles.avatarDirect,
                 ]}
               >
-                {isCommonHouse ? (
-                  <Users color={THEME.colors.surface} size={22} />
+                {displayPhoto ? (
+                  <Image
+                    source={{ uri: displayPhoto }}
+                    style={styles.avatarImage}
+                    resizeMode="cover"
+                  />
+                ) : isCommonHouse ? (
+                  <Users color="#FFFFFF" size={20} />
                 ) : (
-                  <MessageCircle color={THEME.colors.surface} size={22} />
+                  <Text style={styles.avatarInitial}>{initial}</Text>
                 )}
               </View>
 
               <View style={styles.roomInfo}>
                 <View style={styles.roomTitleRow}>
-                  <Text style={styles.roomTitle} numberOfLines={1}>
-                    {item.fullName ||
-                      (isCommonHouse ? "የጋራ ቤት" : "የግል መልዕክት")}
+                  <Text
+                    style={[
+                      styles.roomTitle,
+                      hasUnread && styles.roomTitleUnread,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {displayName}
                   </Text>
-                  {item.lastMessage?.createdAt ? (
-                    <Text style={styles.timeText}>
-                      {formatMessageTime(item.lastMessage.createdAt)}
+                  {lm?.createdAt ? (
+                    <Text
+                      style={[
+                        styles.timeText,
+                        hasUnread && styles.timeTextUnread,
+                      ]}
+                    >
+                      {formatMessageTime(lm.createdAt)}
                     </Text>
                   ) : null}
                 </View>
 
                 <View style={styles.subRow}>
-                  <View style={styles.previewRow}>
-                    {item.lastMessage?.isEncrypted && (
-                      <Lock color={THEME.colors.inkSubtle} size={11} />
-                    )}
-                    <Text style={styles.previewText} numberOfLines={1}>
-                      {item.lastMessage?.isEncrypted
-                        ? "የተቆለፈ መልእክት"
-                        : item.lastMessage?.content ||
-                          (isCommonHouse
-                            ? "የጋራ ቤት ትምህርት እና መመሪያዎች"
-                            : "የግል መልዕክት ውይይት")}
-                    </Text>
-                  </View>
-                  {item.unreadCount && item.unreadCount > 0 ? (
+                  <Text
+                    style={[
+                      styles.previewText,
+                      hasUnread && styles.previewTextUnread,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {lastMessageText}
+                  </Text>
+
+                  {hasUnread && item.unreadCount! > 0 ? (
                     <View style={styles.unreadBadge}>
                       <Text style={styles.unreadText}>{item.unreadCount}</Text>
                     </View>
-                  ) : (
-                    <ChevronRight color={THEME.colors.inkSubtle} size={16} />
-                  )}
+                  ) : null}
                 </View>
               </View>
             </TouchableOpacity>
@@ -190,37 +293,49 @@ const styles = StyleSheet.create({
     backgroundColor: THEME.colors.sanctuaryBg,
   },
   listContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 4,
     flexGrow: 1,
   },
-  roomCard: {
+  roomRow: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: THEME.colors.surface,
-    borderRadius: THEME.radii.lg,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: THEME.colors.border,
-    ...THEME.shadows.card,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: THEME.colors.border,
   },
-  iconCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+  roomRowUnread: {
+    backgroundColor: "#FEFCE8", // Subtle golden-amber tint for unread
+  },
+  avatarCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 14,
+    marginRight: 12,
+    overflow: "hidden",
   },
-  iconCircleDirect: {
+  avatarDirect: {
+    backgroundColor: THEME.colors.sacredAmber,
+  },
+  avatarCommon: {
     backgroundColor: THEME.colors.sacredCrimson,
   },
-  iconCircleCommon: {
-    backgroundColor: THEME.colors.sacredAmber,
+  avatarImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  avatarInitial: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "700",
   },
   roomInfo: {
     flex: 1,
+    justifyContent: "center",
   },
   roomTitleRow: {
     flexDirection: "row",
@@ -231,31 +346,37 @@ const styles = StyleSheet.create({
   roomTitle: {
     color: THEME.colors.inkPrimary,
     fontSize: 15,
-    fontWeight: "800",
+    fontWeight: "600",
     flex: 1,
     marginRight: 8,
   },
+  roomTitleUnread: {
+    fontWeight: "800",
+    color: "#0F172A",
+  },
   timeText: {
     color: THEME.colors.inkSubtle,
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  timeTextUnread: {
+    color: THEME.colors.sacredCrimson,
+    fontWeight: "700",
   },
   subRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  previewRow: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginRight: 8,
-  },
   previewText: {
     color: THEME.colors.inkMuted,
     fontSize: 13,
     flex: 1,
+    marginRight: 8,
+  },
+  previewTextUnread: {
+    color: THEME.colors.inkPrimary,
+    fontWeight: "600",
   },
   errorBanner: {
     flexDirection: "row",
@@ -280,13 +401,16 @@ const styles = StyleSheet.create({
   },
   unreadBadge: {
     backgroundColor: THEME.colors.sacredCrimson,
-    borderRadius: 10,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
+    borderRadius: 12,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 6,
+    alignItems: "center",
+    justifyContent: "center",
   },
   unreadText: {
     color: "#FFFFFF",
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
   },
   emptyContainer: {

@@ -1,12 +1,13 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
-  Linking,
   Modal,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   Platform,
   StyleSheet,
   Text,
@@ -19,29 +20,34 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import * as Clipboard from "expo-clipboard";
+import * as WebBrowser from "expo-web-browser";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import * as SecureStore from "expo-secure-store";
+import { Audio, Video, ResizeMode } from "expo-av";
 import {
+  AlertCircle,
+  ArrowDown,
   Camera,
   Check,
+  CheckCheck,
   Clock,
   Copy,
   CornerUpLeft,
   Download,
   Edit2,
   FileText,
-  Image as ImageIcon,
   Lock,
-  MoreVertical,
   Paperclip,
+  Pause,
   Phone,
   PhoneOff,
-  PhoneIncoming,
   PhoneMissed,
   Play,
+  RotateCcw,
   Send,
   Shield,
-  Smile,
-  Trash2,
-  Video,
+  Video as VideoIcon,
   X,
   XCircle,
 } from "lucide-react-native";
@@ -89,19 +95,20 @@ export interface ReplyToDescriptor {
   type?: string;
 }
 
-interface MessageItem {
+export interface MessageItem {
   id: string;
   channelId: string;
   senderId: string;
   senderName?: string;
   senderRole?: "FATHER" | "STUDENT" | "GOVERNOR" | "CHILD";
+  senderPhotoUrl?: string;
   type?: "TEXT" | "IMAGE" | "FILE" | "VIDEO" | "AUDIO" | "CALL";
   content: string;
   media?: MediaDescriptor | null;
   createdAt: number;
   editedAt?: number;
   deletedAt?: number;
-  status?: "PENDING" | "SENT";
+  status?: "PENDING" | "SENT" | "FAILED";
   isEncrypted?: boolean;
   encryption?: EncryptionEnvelope | null;
   reactions?: Record<string, string[]>;
@@ -132,33 +139,22 @@ export const DIGNIFIED_REACTIONS = [
 ] as const;
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25MB
+const MAX_CHAR_LIMIT = 4000;
+const CHAR_WARNING_THRESHOLD = 3600;
 
 const ALLOWED_EXTENSIONS = new Set([
-  "jpg",
-  "jpeg",
-  "png",
-  "webp",
-  "gif",
-  "heic",
-  "heif",
-  "mp4",
-  "mov",
-  "avi",
-  "webm",
-  "mp3",
-  "m4a",
-  "wav",
-  "ogg",
-  "aac",
-  "pdf",
-  "doc",
-  "docx",
-  "xls",
-  "xlsx",
-  "ppt",
-  "pptx",
-  "txt",
+  "jpg", "jpeg", "png", "webp", "gif", "heic", "heif",
+  "mp4", "mov", "avi", "webm",
+  "mp3", "m4a", "wav", "ogg", "aac",
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt",
 ]);
+
+function sanitizePlainText(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
+}
 
 function inferMime(filename: string, fallbackMime?: string): string {
   const ext = filename.split(".").pop()?.toLowerCase();
@@ -242,33 +238,165 @@ function getFileBadge(filename: string, mime?: string) {
   if (["DOC", "DOCX"].includes(ext) || mime?.includes("word")) {
     return { label: "DOC", bg: "#DBEAFE", text: "#2563EB" };
   }
-  if (
-    ["XLS", "XLSX"].includes(ext) ||
-    mime?.includes("excel") ||
-    mime?.includes("sheet")
-  ) {
+  if (["XLS", "XLSX"].includes(ext) || mime?.includes("excel") || mime?.includes("sheet")) {
     return { label: "XLS", bg: "#DCFCE7", text: "#16A34A" };
   }
-  if (
-    ["PPT", "PPTX"].includes(ext) ||
-    mime?.includes("powerpoint") ||
-    mime?.includes("presentation")
-  ) {
+  if (["PPT", "PPTX"].includes(ext) || mime?.includes("powerpoint") || mime?.includes("presentation")) {
     return { label: "PPT", bg: "#FFEDD5", text: "#EA580C" };
   }
-  if (
-    ["MP3", "M4A", "WAV", "AAC", "OGG"].includes(ext) ||
-    mime?.startsWith("audio/")
-  ) {
+  if (["MP3", "M4A", "WAV", "AAC", "OGG"].includes(ext) || mime?.startsWith("audio/")) {
     return { label: "AUDIO", bg: "#F3E8FF", text: "#9333EA" };
   }
-  if (
-    ["MP4", "MOV", "AVI", "WEBM"].includes(ext) ||
-    mime?.startsWith("video/")
-  ) {
+  if (["MP4", "MOV", "AVI", "WEBM"].includes(ext) || mime?.startsWith("video/")) {
     return { label: "VIDEO", bg: "#E0E7FF", text: "#4F46E5" };
   }
   return { label: ext || "FILE", bg: "#F1F5F9", text: "#475569" };
+}
+
+function extractFirstHttpsUrl(text: string): string | null {
+  const match = text.match(/https:\/\/[^\s]+/i);
+  return match ? match[0] : null;
+}
+
+// In-Bubble Safe Link Preview Card Component
+function BubbleLinkPreview({ url }: { url: string }) {
+  const { data: preview } = useQuery({
+    queryKey: ["link-preview", url],
+    queryFn: async () => {
+      return await apiRequest<{
+        url: string;
+        title?: string;
+        description?: string;
+        image?: string;
+        siteName?: string;
+      }>(`/api/message/link-preview?url=${encodeURIComponent(url)}`);
+    },
+    staleTime: 1000 * 60 * 60,
+  });
+
+  if (!preview || !preview.title) return null;
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.88}
+      onPress={() => WebBrowser.openBrowserAsync(url)}
+      style={styles.linkCard}
+    >
+      {preview.image ? (
+        <Image source={{ uri: preview.image }} style={styles.linkImage} resizeMode="cover" />
+      ) : null}
+      <View style={styles.linkInfo}>
+        <Text style={styles.linkDomain} numberOfLines={1}>
+          {preview.siteName || url.replace(/^https?:\/\//i, "").split("/")[0]}
+        </Text>
+        <Text style={styles.linkTitle} numberOfLines={2}>
+          {preview.title}
+        </Text>
+        {preview.description ? (
+          <Text style={styles.linkDesc} numberOfLines={2}>
+            {preview.description}
+          </Text>
+        ) : null}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// In-Bubble Audio Player Component
+function BubbleAudioPlayer({
+  url,
+  isMe,
+  durationSeconds,
+}: {
+  url: string;
+  isMe: boolean;
+  durationSeconds?: number | null;
+}) {
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [positionMs, setPositionMs] = useState(0);
+  const [durationMs, setDurationMs] = useState(
+    durationSeconds ? durationSeconds * 1000 : 0
+  );
+
+  useEffect(() => {
+    return () => {
+      if (sound) {
+        sound.unloadAsync().catch(() => {});
+      }
+    };
+  }, [sound]);
+
+  const togglePlay = async () => {
+    try {
+      if (sound) {
+        if (isPlaying) {
+          await sound.pauseAsync();
+          setIsPlaying(false);
+        } else {
+          await sound.playAsync();
+          setIsPlaying(true);
+        }
+      } else {
+        const { sound: newSound } = await Audio.Sound.createAsync(
+          { uri: url },
+          { shouldPlay: true },
+          (status) => {
+            if (status.isLoaded) {
+              setPositionMs(status.positionMillis);
+              setDurationMs(status.durationMillis || 0);
+              setIsPlaying(status.isPlaying);
+              if (status.didJustFinish) {
+                setIsPlaying(false);
+                setPositionMs(0);
+              }
+            }
+          }
+        );
+        setSound(newSound);
+        setIsPlaying(true);
+      }
+    } catch (e) {
+      console.warn("Audio playback error:", e);
+    }
+  };
+
+  const formatAudioTime = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
+  return (
+    <View style={[styles.audioContainer, isMe ? styles.myAudioBg : styles.otherAudioBg]}>
+      <TouchableOpacity
+        onPress={togglePlay}
+        style={[styles.audioPlayBtn, isMe ? styles.myAudioPlayBtn : styles.otherAudioPlayBtn]}
+        activeOpacity={0.8}
+      >
+        {isPlaying ? (
+          <Pause size={16} color={isMe ? "#0F172A" : "#FFFFFF"} />
+        ) : (
+          <Play size={16} color={isMe ? "#0F172A" : "#FFFFFF"} fill={isMe ? "#0F172A" : "#FFFFFF"} />
+        )}
+      </TouchableOpacity>
+      <View style={styles.audioWaveform}>
+        <View
+          style={[
+            styles.audioProgressBar,
+            {
+              width: durationMs > 0 ? `${Math.min(100, (positionMs / durationMs) * 100)}%` : "0%",
+              backgroundColor: isMe ? THEME.colors.sacredAmber : THEME.colors.sacredCrimson,
+            },
+          ]}
+        />
+      </View>
+      <Text style={[styles.audioTimeText, isMe && { color: "rgba(255,255,255,0.7)" }]}>
+        {formatAudioTime(positionMs > 0 ? positionMs : durationMs)}
+      </Text>
+    </View>
+  );
 }
 
 export default function ChannelChatScreen() {
@@ -286,17 +414,28 @@ export default function ChannelChatScreen() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState("");
 
+  // In-App Media Viewer States
+  const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+  const [viewingVideoUrl, setViewingVideoUrl] = useState<string | null>(null);
+
+  // File Download Tracking
+  const [downloadedFiles, setDownloadedFiles] = useState<Record<string, string>>({});
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
+
   // Replies, Edits, Reactions & Action Menu State
   const [replyingTo, setReplyingTo] = useState<MessageItem | null>(null);
   const [editingMessage, setEditingMessage] = useState<MessageItem | null>(null);
   const [selectedMessage, setSelectedMessage] = useState<MessageItem | null>(null);
   const [actionMenuVisible, setActionMenuVisible] = useState(false);
 
+  // Scroll and Position Restoration State
+  const [showNewMsgPill, setShowNewMsgPill] = useState(false);
+  const isAtBottomRef = useRef(true);
   const flatListRef = useRef<FlatList>(null);
   const attemptedDecrypt = useRef<Set<string>>(new Set());
-  const lastMarkedRead = useRef<string | null>(null);
+  const initialScrollDone = useRef(false);
 
-  // 1. Fetch channel messages (ciphertext is what the server stores)
+  // 1. Fetch channel messages
   const {
     data: serverMessages,
     isLoading,
@@ -336,6 +475,17 @@ export default function ChannelChatScreen() {
     ? "የጋራ ቤት"
     : currentConvo?.fullName || "የግል መልዕክት";
 
+  // Sanitize header title: hide "FORBIDDEN"
+  const cleanHeaderTitle = channelDisplayTitle
+    .replace(/FORBIDDEN/gi, "")
+    .trim() || "ውይይት";
+
+  useEffect(() => {
+    navigation.setOptions({
+      title: cleanHeaderTitle,
+    });
+  }, [navigation, cleanHeaderTitle]);
+
   // 3. Decrypt incoming ciphertext once per message id
   useEffect(() => {
     const messages = serverMessages || [];
@@ -350,99 +500,96 @@ export default function ChannelChatScreen() {
 
     pending.forEach((m) => attemptedDecrypt.current.add(m.id));
 
-    let cancelled = false;
     (async () => {
       const updates: Record<string, string> = {};
-
-      for (const message of pending) {
+      for (const msg of pending) {
         try {
-          updates[message.id] = await decryptMessage(
-            message.content,
-            message.encryption as EncryptionEnvelope
-          );
-        } catch (e) {
-          console.warn("Message decryption failed:", message.id, e);
-          updates[message.id] = LOCKED_MESSAGE_PLACEHOLDER;
+          const plain = await decryptMessage(msg.content, msg.encryption!);
+          updates[msg.id] = plain;
+        } catch {
+          updates[msg.id] = LOCKED_MESSAGE_PLACEHOLDER;
         }
       }
-
-      if (!cancelled) {
-        setDecryptedContent((prev) => ({ ...prev, ...updates }));
-      }
+      setDecryptedContent((prev) => ({ ...prev, ...updates }));
     })();
-
-    return () => {
-      cancelled = true;
-    };
   }, [serverMessages]);
 
-  // 4. Mark newest message as read
+  // 4. Mark channel read on mount / change
   useEffect(() => {
-    const messages = serverMessages || [];
-    if (!channelId || !uid || messages.length === 0) return;
-
-    const last = messages[messages.length - 1];
-    if (
-      !last ||
-      last.senderId === uid ||
-      last.id === lastMarkedRead.current ||
-      last.status === "PENDING"
-    ) {
-      return;
-    }
-
-    lastMarkedRead.current = last.id;
+    if (!channelId) return;
     apiRequest("/api/message/read", {
       method: "POST",
-      body: JSON.stringify({ channelId, lastMessageId: last.id }),
-    })
-      .then(() => {
-        queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      })
-      .catch((e) => console.warn("Failed to mark channel read:", e));
-  }, [serverMessages, channelId, uid, queryClient]);
+      body: JSON.stringify({ channelId }),
+    }).catch(() => {});
+  }, [channelId]);
 
-  // 5. Header setup: specific, context-aware Video Calling button
+  // Combine server messages with optimistic messages
+  const allMessages: MessageItem[] = useMemo(() => {
+    const server = serverMessages || [];
+    const optimisticUnconfirmed = optimisticMessages.filter(
+      (om) => !server.some((sm) => sm.id === om.id)
+    );
+    return [...server, ...optimisticUnconfirmed].sort(
+      (a, b) => a.createdAt - b.createdAt
+    );
+  }, [serverMessages, optimisticMessages]);
+
+  // 5. Scroll Position Restoration & Floating Pill Handler
   useEffect(() => {
-    navigation.setOptions({
-      title: channelDisplayTitle,
-      headerRight: () => (
-        <TouchableOpacity
-          style={styles.headerCallBtn}
-          onPress={() => {
-            if (channelId) {
-              router.push(`/call/${channelId}` as any);
-            }
-          }}
-          activeOpacity={0.8}
-          accessibilityLabel={
-            isCommonHouse
-              ? "የጋራ ቤት የቪዲዮ ጥሪ"
-              : `ከ ${channelDisplayTitle} ጋር የቪዲዮ ጥሪ`
+    if (allMessages.length === 0 || initialScrollDone.current) return;
+
+    (async () => {
+      initialScrollDone.current = true;
+      try {
+        const lastSeenId = await SecureStore.getItemAsync(
+          `chat_last_seen_${uid}_${channelId}`
+        );
+        if (lastSeenId) {
+          const targetIndex = allMessages.findIndex((m) => m.id === lastSeenId);
+          if (targetIndex >= 0 && flatListRef.current) {
+            flatListRef.current.scrollToIndex({
+              index: targetIndex,
+              animated: false,
+              viewPosition: 0.5,
+            });
+            return;
           }
-        >
-          <View style={styles.callIconBox}>
-            <Video color="#FFFFFF" size={14} />
-            <Text style={styles.callIconText}>
-              {isCommonHouse ? "የጋራ" : "ጥሪ"}
-            </Text>
-          </View>
-        </TouchableOpacity>
-      ),
-    });
-  }, [navigation, channelId, channelDisplayTitle, isCommonHouse, router]);
+        }
+      } catch {}
+      // Fallback: bottom
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 80);
+    })();
+  }, [allMessages.length, channelId, uid]);
 
-  // Merge server messages with pending optimistic messages
-  const serverMsgList = serverMessages || [];
-  const serverIds = new Set(serverMsgList.map((m) => m.id));
-  const pendingOnly = optimisticMessages.filter(
-    (m) => !serverIds.has(m.id) && m.status === "PENDING"
-  );
-  const allMessages = [...serverMsgList, ...pendingOnly].sort(
-    (a, b) => a.createdAt - b.createdAt
-  );
+  // Save last visible message
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+    const distanceFromBottom =
+      contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    const atBottom = distanceFromBottom < 80;
+    isAtBottomRef.current = atBottom;
 
-  // 6. Send Mutation (handles text, media, and replies)
+    if (atBottom) {
+      setShowNewMsgPill(false);
+    }
+  };
+
+  // If a new message arrives and user is not at bottom, show pill
+  const prevMsgCountRef = useRef(allMessages.length);
+  useEffect(() => {
+    if (allMessages.length > prevMsgCountRef.current) {
+      if (!isAtBottomRef.current) {
+        setShowNewMsgPill(true);
+      } else {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }
+    }
+    prevMsgCountRef.current = allMessages.length;
+  }, [allMessages.length]);
+
+  // 6. Send Message Mutation
   const sendMutation = useMutation({
     mutationFn: async (payload: {
       content?: string;
@@ -467,6 +614,8 @@ export default function ChannelChatScreen() {
             ? "IMAGE"
             : payload.media.mimeType.startsWith("video/")
             ? "VIDEO"
+            : payload.media.mimeType.startsWith("audio/")
+            ? "AUDIO"
             : "FILE"
           : "TEXT");
 
@@ -496,11 +645,12 @@ export default function ChannelChatScreen() {
       queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
-    onError: (err: any, vars) => {
+    onError: (_err: any, vars) => {
       setOptimisticMessages((prev) =>
-        prev.filter((m) => m.id !== vars.clientMessageId)
+        prev.map((m) =>
+          m.id === vars.clientMessageId ? { ...m, status: "FAILED" } : m
+        )
       );
-      Alert.alert("ስህተት", "መልእክቱን መላክ አልተቻለም፡ " + err.message);
     },
   });
 
@@ -594,10 +744,14 @@ export default function ChannelChatScreen() {
       );
       queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
     },
-    onError: (err: any) => {
-      console.warn("Reaction failed:", err);
-    },
   });
+
+  const displayContent = (item: MessageItem) => {
+    if (!item.isEncrypted) return item.content;
+    const plain = decryptedContent[item.id];
+    if (plain !== undefined) return plain;
+    return item.status === "PENDING" ? item.content : "…";
+  };
 
   const getReplySnippet = (target: MessageItem | null): ReplyToDescriptor | null => {
     if (!target) return null;
@@ -614,14 +768,18 @@ export default function ChannelChatScreen() {
           ? "[ፎቶ]"
           : target.media.mimeType.startsWith("video/")
           ? "[ቪዲዮ]"
+          : target.media.mimeType.startsWith("audio/")
+          ? "[ድምፅ]"
           : "[ፋይል]"
         : "[መልዕክት]",
     };
   };
 
   const handleSendText = () => {
-    const trimmed = inputText.trim();
-    if (!trimmed || sendMutation.isPending) return;
+    const sanitized = sanitizePlainText(inputText);
+    if (!sanitized || sanitized.length > MAX_CHAR_LIMIT || sendMutation.isPending) {
+      return;
+    }
 
     const clientId = `local_${Date.now()}_${Math.random()
       .toString(36)
@@ -633,7 +791,7 @@ export default function ChannelChatScreen() {
       channelId: channelId!,
       senderId: uid || "me",
       senderRole: role as MessageItem["senderRole"],
-      content: trimmed,
+      content: sanitized,
       createdAt: Date.now(),
       status: "PENDING",
       replyTo: replySnippet,
@@ -644,7 +802,7 @@ export default function ChannelChatScreen() {
     setReplyingTo(null);
 
     sendMutation.mutate({
-      content: trimmed,
+      content: sanitized,
       type: "TEXT",
       clientMessageId: clientId,
       replyTo: replySnippet,
@@ -652,14 +810,14 @@ export default function ChannelChatScreen() {
 
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    }, 80);
   };
 
-  // 7. Staged Media Upload and Send Helper
+  // Staged Media Upload and Send Helper
   const handleSendWithAttachment = async () => {
     if (!stagedAttachment || !channelId) return;
     const attachment = stagedAttachment;
-    const caption = inputText.trim();
+    const caption = sanitizePlainText(inputText);
     const replySnippet = getReplySnippet(replyingTo);
 
     setIsUploading(true);
@@ -690,7 +848,8 @@ export default function ChannelChatScreen() {
           .substring(2, 7)}`;
         const isImg = res.media.mimeType.startsWith("image/");
         const isVid = res.media.mimeType.startsWith("video/");
-        const msgType = isImg ? "IMAGE" : isVid ? "VIDEO" : "FILE";
+        const isAud = res.media.mimeType.startsWith("audio/");
+        const msgType = isImg ? "IMAGE" : isVid ? "VIDEO" : isAud ? "AUDIO" : "FILE";
 
         const finalMedia: MediaDescriptor = {
           ...res.media,
@@ -725,7 +884,7 @@ export default function ChannelChatScreen() {
 
         setTimeout(() => {
           flatListRef.current?.scrollToEnd({ animated: true });
-        }, 100);
+        }, 80);
       }
     } catch (e: any) {
       Alert.alert(
@@ -740,21 +899,20 @@ export default function ChannelChatScreen() {
 
   const handlePressSend = () => {
     if (editingMessage) {
-      const trimmed = inputText.trim();
-      if (!trimmed || editMutation.isPending) return;
+      const sanitized = sanitizePlainText(inputText);
+      if (!sanitized || sanitized.length > MAX_CHAR_LIMIT || editMutation.isPending) {
+        return;
+      }
 
       const performEdit = async () => {
-        let contentToSend = trimmed;
+        let contentToSend = sanitized;
         if (editingMessage.isEncrypted && channelId) {
           try {
-            const enc = await encryptMessage(trimmed, channelId);
+            const enc = await encryptMessage(sanitized, channelId);
             contentToSend = enc.ciphertext;
-            setDecryptedContent((prev) => ({
-              ...prev,
-              [editingMessage.id]: trimmed,
-            }));
-          } catch (encErr) {
-            console.warn("Client encryption failed during edit, sending plaintext:", encErr);
+          } catch {
+            Alert.alert("ስህተት", "መልዕክቱን ማመስጠር አልተቻለም");
+            return;
           }
         }
         editMutation.mutate({
@@ -762,7 +920,6 @@ export default function ChannelChatScreen() {
           content: contentToSend,
         });
       };
-
       performEdit();
       return;
     }
@@ -774,55 +931,30 @@ export default function ChannelChatScreen() {
     }
   };
 
-  // 8. Picker Handlers (With Staging & Cancellation)
-  const handleTakePhoto = async () => {
+  const handlePickImage = async (useCamera = false) => {
     setShowAttachModal(false);
     try {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert("ፍቃድ ያስፈልጋል", "ካሜራ ለመጠቀም ፍቃድ ይስጡ");
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        quality: 0.85,
-      });
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        setStagedAttachment({
-          uri: asset.uri,
-          name: asset.fileName || `photo_${Date.now()}.jpg`,
-          type: asset.mimeType || "image/jpeg",
-          width: asset.width,
-          height: asset.height,
-          size: asset.fileSize,
-          isImage: true,
-          isVideo: false,
-          isDocument: false,
-        });
-      }
-    } catch (err: any) {
-      Alert.alert("ስህተት", "ፎቶ ማንሳት አልተቻለም፡ " + err.message);
-    }
-  };
-
-  const handlePickMedia = async () => {
-    setShowAttachModal(false);
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images", "videos"],
+      const options: ImagePicker.ImagePickerOptions = {
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
         quality: 0.85,
         allowsEditing: false,
-      });
+      };
+
+      const result = useCamera
+        ? await ImagePicker.launchCameraAsync(options)
+        : await ImagePicker.launchImageLibraryAsync(options);
+
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
-        const isVideo = asset.type === "video";
-        const fallbackName = isVideo
-          ? `video_${Date.now()}.mp4`
-          : `image_${Date.now()}.jpg`;
-        const fileName = asset.fileName || fallbackName;
-        const mimeType =
-          asset.mimeType || (isVideo ? "video/mp4" : "image/jpeg");
+        const filename =
+          asset.fileName ||
+          (asset.type === "video" ? `video_${Date.now()}.mp4` : `photo_${Date.now()}.jpg`);
+        const ext = filename.split(".").pop()?.toLowerCase();
+
+        if (ext && !ALLOWED_EXTENSIONS.has(ext)) {
+          Alert.alert("ያልተፈቀደ የፋይል ዓይነት", `".${ext}" የፋይል ዓይነት አልተፈቀደም።`);
+          return;
+        }
 
         if (asset.fileSize && asset.fileSize > MAX_UPLOAD_BYTES) {
           Alert.alert(
@@ -832,19 +964,17 @@ export default function ChannelChatScreen() {
           return;
         }
 
+        const isVid = asset.type === "video";
         setStagedAttachment({
           uri: asset.uri,
-          name: fileName,
-          type: mimeType,
+          name: filename,
+          type: isVid ? "video/mp4" : "image/jpeg",
           size: asset.fileSize,
           width: asset.width,
           height: asset.height,
-          durationSeconds: asset.duration
-            ? Math.round(asset.duration / 1000)
-            : undefined,
-          isImage: !isVideo,
-          isVideo: isVideo,
-          isDocument: false,
+          durationSeconds: asset.duration ? Math.round(asset.duration / 1000) : undefined,
+          isImage: !isVid,
+          isVideo: isVid,
         });
       }
     } catch (err: any) {
@@ -866,7 +996,7 @@ export default function ChannelChatScreen() {
         if (ext && !ALLOWED_EXTENSIONS.has(ext)) {
           Alert.alert(
             "ያልተፈቀደ የፋይል ዓይነት",
-            `".${ext}" የፋይል ዓይነት በሲስተሙ ውስጥ አልተፈቀደም።\n\nየሚፈቀዱት፡ ፎቶ፣ ቪዲዮ፣ ድምፅ፣ PDF፣ Word (.doc, .docx)፣ Excel (.xls, .xlsx)፣ PowerPoint (.ppt, .pptx) እና Text (.txt) ፋይሎች ናቸው።`
+            `".${ext}" የፋይል ዓይነት አልተፈቀደም።`
           );
           return;
         }
@@ -897,11 +1027,73 @@ export default function ChannelChatScreen() {
     }
   };
 
-  const displayContent = (item: MessageItem) => {
-    if (!item.isEncrypted) return item.content;
-    const plain = decryptedContent[item.id];
-    if (plain !== undefined) return plain;
-    return item.status === "PENDING" ? item.content : "…";
+  // In-App File Download & View Handler
+  const handleOpenFile = async (media?: MediaDescriptor | null) => {
+    if (!media?.url) return;
+    const filename = resolveFilename(media);
+    const mime = media.mimeType || "";
+
+    // 1. Image -> In-app modal viewer
+    if (mime.startsWith("image/")) {
+      setViewingImageUrl(media.url);
+      return;
+    }
+
+    // 2. Video -> In-app modal player
+    if (mime.startsWith("video/")) {
+      setViewingVideoUrl(media.url);
+      return;
+    }
+
+    // 3. PDF -> In-app browser sheet
+    if (mime.includes("pdf") || filename.toLowerCase().endsWith(".pdf")) {
+      await WebBrowser.openBrowserAsync(media.url);
+      return;
+    }
+
+    // 4. Other Files -> Download into app storage and open in-app via Sharing
+    const localUri = downloadedFiles[media.url];
+    if (localUri) {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri);
+      } else {
+        await WebBrowser.openBrowserAsync(media.url);
+      }
+      return;
+    }
+
+    try {
+      setDownloadProgress((prev) => ({ ...prev, [media.url]: 0.1 }));
+      const targetPath = `${FileSystem.documentDirectory}${filename}`;
+      const downloadResumable = FileSystem.createDownloadResumable(
+        media.url,
+        targetPath,
+        {},
+        (p) => {
+          const prog = p.totalBytesWritten / p.totalBytesExpectedToWrite;
+          setDownloadProgress((prev) => ({ ...prev, [media.url]: prog }));
+        }
+      );
+      const result = await downloadResumable.downloadAsync();
+      if (result?.uri) {
+        setDownloadedFiles((prev) => ({ ...prev, [media.url]: result.uri }));
+        setDownloadProgress((prev) => {
+          const cp = { ...prev };
+          delete cp[media.url];
+          return cp;
+        });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(result.uri);
+        }
+      }
+    } catch (err: any) {
+      setDownloadProgress((prev) => {
+        const cp = { ...prev };
+        delete cp[media.url];
+        return cp;
+      });
+      Alert.alert("ማውረድ አልተሳካም", err.message || "ፋይሉን ማውረድ አልተቻለም");
+    }
   };
 
   const formatTime = (ts: number) => {
@@ -916,6 +1108,47 @@ export default function ChannelChatScreen() {
     }
   };
 
+  const formatDateChip = (ts: number) => {
+    try {
+      const d = new Date(ts);
+      const now = new Date();
+      const isToday =
+        d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate();
+      if (isToday) return "ዛሬ (Today)";
+
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const isYesterday =
+        d.getFullYear() === yesterday.getFullYear() &&
+        d.getMonth() === yesterday.getMonth() &&
+        d.getDate() === yesterday.getDate();
+      if (isYesterday) return "ትናንት (Yesterday)";
+
+      return d.toLocaleDateString("am-ET", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+    } catch {
+      return "";
+    }
+  };
+
+  const isDifferentDay = (idx: number) => {
+    if (idx === 0) return true;
+    const prev = allMessages[idx - 1];
+    const curr = allMessages[idx];
+    const d1 = new Date(prev.createdAt);
+    const d2 = new Date(curr.createdAt);
+    return (
+      d1.getFullYear() !== d2.getFullYear() ||
+      d1.getMonth() !== d2.getMonth() ||
+      d1.getDate() !== d2.getDate()
+    );
+  };
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -925,8 +1158,8 @@ export default function ChannelChatScreen() {
       {isError && (
         <View style={styles.errorBanner}>
           <XCircle color={THEME.colors.error} size={16} />
-          <Text style={styles.errorBannerText}>
-            {(error as Error)?.message || "መልእክቶችን ማምጣት አልተሳካም"}
+          <Text style={styles.errorBannerText} numberOfLines={1}>
+            {(error as Error)?.message?.replace(/FORBIDDEN/gi, "") || "መልእክቶችን ማምጣት አልተሳካም"}
           </Text>
           <TouchableOpacity onPress={() => refetch()} hitSlop={8}>
             <Text style={styles.retryText}>እንደገና ሞክር</Text>
@@ -944,9 +1177,8 @@ export default function ChannelChatScreen() {
           data={allMessages}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
-          onContentSizeChange={() =>
-            flatListRef.current?.scrollToEnd({ animated: false })
-          }
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
           ListEmptyComponent={
             cacheChecked && !isLoading && !isError ? (
               <View style={styles.emptyBox}>
@@ -957,7 +1189,10 @@ export default function ChannelChatScreen() {
               </View>
             ) : null
           }
-          renderItem={({ item }) => {
+          renderItem={({ item, index }) => {
+            const showDateChip = isDifferentDay(index);
+
+            // CALL ITEM
             if (item.type === "CALL" || item.callDetails) {
               const cd = item.callDetails;
               const isMissed = cd?.status === "missed";
@@ -976,7 +1211,9 @@ export default function ChannelChatScreen() {
               let subtitle = "ጥሪ";
 
               if (isAnswered) {
-                subtitle = cd?.durationSec ? `የተመለሰ (${formatDuration(cd.durationSec)})` : "የተመለሰ";
+                subtitle = cd?.durationSec
+                  ? `የተመለሰ (${formatDuration(cd.durationSec)})`
+                  : "የተመለሰ";
               } else if (isMissed) {
                 subtitle = item.senderId === uid ? "ያልተመለሰ ጥሪ" : "ያመለጠ ጥሪ";
               } else if (isDeclined) {
@@ -988,192 +1225,217 @@ export default function ChannelChatScreen() {
               const isCallerMissed = isMissed || (isCancelled && item.senderId !== uid);
 
               return (
-                <View style={styles.callRowContainer}>
-                  <View style={styles.callBubbleBox}>
-                    <View
-                      style={[
-                        styles.callIconCircle,
-                        isCallerMissed
-                          ? styles.callIconMissed
-                          : isDeclined || isCancelled
-                          ? styles.callIconDeclined
-                          : styles.callIconAnswered,
-                      ]}
-                    >
-                      {isCallerMissed ? (
-                        <PhoneMissed size={18} color="#EF4444" />
-                      ) : isDeclined || isCancelled ? (
-                        <PhoneOff size={18} color="#94A3B8" />
-                      ) : (
-                        <Video size={18} color="#10B981" />
-                      )}
+                <View key={item.id}>
+                  {showDateChip && (
+                    <View style={styles.dateChipContainer}>
+                      <View style={styles.dateChip}>
+                        <Text style={styles.dateChipText}>{formatDateChip(item.createdAt)}</Text>
+                      </View>
                     </View>
-                    <View style={styles.callDetailsCol}>
-                      <Text style={styles.callTitleText} numberOfLines={1}>
-                        {title}
-                      </Text>
-                      <Text
+                  )}
+                  <View style={styles.callRowContainer}>
+                    <View style={styles.callBubbleBox}>
+                      <View
                         style={[
-                          styles.callSubtitleText,
-                          isCallerMissed && styles.callMissedText,
+                          styles.callIconCircle,
+                          isCallerMissed
+                            ? styles.callIconMissed
+                            : isDeclined || isCancelled
+                            ? styles.callIconDeclined
+                            : styles.callIconAnswered,
                         ]}
                       >
-                        {subtitle} · {formatTime(item.createdAt)}
-                      </Text>
+                        {isCallerMissed ? (
+                          <PhoneMissed size={18} color="#EF4444" />
+                        ) : isDeclined || isCancelled ? (
+                          <PhoneOff size={18} color="#94A3B8" />
+                        ) : (
+                          <VideoIcon size={18} color="#10B981" />
+                        )}
+                      </View>
+                      <View style={styles.callDetailsCol}>
+                        <Text style={styles.callTitleText} numberOfLines={1}>
+                          {title}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.callSubtitleText,
+                            isCallerMissed && styles.callMissedText,
+                          ]}
+                        >
+                          {subtitle} · {formatTime(item.createdAt)}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={() => router.push(`/call/${channelId}`)}
+                        style={styles.callRecallBtn}
+                      >
+                        <Text style={styles.callRecallBtnText}>ደውል</Text>
+                      </TouchableOpacity>
                     </View>
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={() => {
-                        router.push(`/call/${channelId}`);
-                      }}
-                      style={styles.callRecallBtn}
-                    >
-                      <Text style={styles.callRecallBtnText}>ደውል</Text>
-                    </TouchableOpacity>
                   </View>
                 </View>
               );
             }
 
+            // CHAT MESSAGE ITEM
             const isMe = item.senderId === uid || item.senderId === "me";
             const isFather = item.senderRole === "FATHER";
             const isDeleted = Boolean(item.deletedAt);
-            const locked =
-              item.isEncrypted &&
-              displayContent(item) === LOCKED_MESSAGE_PLACEHOLDER;
+            const isFailed = item.status === "FAILED";
             const hasMedia = Boolean(item.media?.url);
             const isImg =
-              item.media?.mimeType?.startsWith("image/") ||
-              item.type === "IMAGE";
+              item.media?.mimeType?.startsWith("image/") || item.type === "IMAGE";
             const isVid =
-              item.media?.mimeType?.startsWith("video/") ||
-              item.type === "VIDEO";
+              item.media?.mimeType?.startsWith("video/") || item.type === "VIDEO";
+            const isAud =
+              item.media?.mimeType?.startsWith("audio/") || item.type === "AUDIO";
+
+            const plainText = displayContent(item);
+            const detectedUrl = !isDeleted && plainText ? extractFirstHttpsUrl(plainText) : null;
+            const senderInitial = (item.senderName || "ተ").charAt(0) || "✞";
 
             return (
-              <View
-                style={[
-                  styles.msgRow,
-                  isMe ? styles.myMsgRow : styles.otherMsgRow,
-                ]}
-              >
+              <View key={item.id}>
+                {showDateChip && (
+                  <View style={styles.dateChipContainer}>
+                    <View style={styles.dateChip}>
+                      <Text style={styles.dateChipText}>{formatDateChip(item.createdAt)}</Text>
+                    </View>
+                  </View>
+                )}
+
                 <View
                   style={[
-                    styles.bubbleCol,
-                    isMe ? styles.myBubbleCol : styles.otherBubbleCol,
+                    styles.msgRow,
+                    isMe ? styles.myMsgRow : styles.otherMsgRow,
                   ]}
                 >
-                  <TouchableOpacity
-                    activeOpacity={0.88}
-                    delayLongPress={180}
-                    onLongPress={() => {
-                      if (!isDeleted) {
-                        setSelectedMessage(item);
-                        setActionMenuVisible(true);
-                      }
-                    }}
+                  {/* Circle Avatar on incoming message */}
+                  {!isMe && (
+                    <View style={styles.bubbleAvatarCircle}>
+                      {item.senderPhotoUrl ? (
+                        <Image
+                          source={{ uri: item.senderPhotoUrl }}
+                          style={styles.bubbleAvatarImg}
+                        />
+                      ) : (
+                        <Text style={styles.bubbleAvatarInitial}>{senderInitial}</Text>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Single Bubble: max ~80% width, mine dark right, theirs light left */}
+                  <View
                     style={[
-                      styles.bubble,
-                      isMe
-                        ? styles.myBubble
-                        : isFather
-                        ? styles.fatherBubble
-                        : styles.otherBubble,
-                      isDeleted && styles.deletedBubble,
+                      styles.bubbleWrapper,
+                      isMe ? styles.myBubbleWrapper : styles.otherBubbleWrapper,
                     ]}
                   >
-                  {!isMe && isFather && !isDeleted && (
-                    <View style={styles.fatherBadgeRow}>
-                      <Shield color={THEME.colors.sacredAmber} size={13} />
-                      <Text style={styles.fatherBadgeText}>
-                        {item.senderName || "የንስሐ አባት"}
-                      </Text>
-                    </View>
-                  )}
-
-                  {!isMe && !isFather && item.senderName && !isDeleted ? (
-                    <Text style={styles.senderName}>{item.senderName}</Text>
-                  ) : null}
-
-                  {/* Reply Quote Header in Bubble */}
-                  {!isDeleted && item.replyTo && (
-                    <View
+                    <TouchableOpacity
+                      activeOpacity={0.88}
+                      delayLongPress={180}
+                      onLongPress={() => {
+                        if (!isDeleted) {
+                          setSelectedMessage(item);
+                          setActionMenuVisible(true);
+                        }
+                      }}
                       style={[
-                        styles.bubbleReplyBox,
-                        isMe
-                          ? styles.myBubbleReplyBox
-                          : styles.otherBubbleReplyBox,
+                        styles.bubble,
+                        isMe ? styles.myBubble : styles.otherBubble,
+                        isDeleted && styles.deletedBubble,
                       ]}
                     >
-                      <View
-                        style={[
-                          styles.bubbleReplyBar,
-                          {
-                            backgroundColor: isMe
-                              ? THEME.colors.sacredAmber
-                              : THEME.colors.sacredCrimson,
-                          },
-                        ]}
-                      />
-                      <View style={styles.bubbleReplyContent}>
-                        <Text
-                          style={[
-                            styles.bubbleReplyAuthor,
-                            isMe
-                              ? styles.myBubbleReplyAuthor
-                              : styles.otherBubbleReplyAuthor,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {item.replyTo.senderName}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.bubbleReplySnippet,
-                            isMe
-                              ? styles.myBubbleReplySnippet
-                              : styles.otherBubbleReplySnippet,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {item.replyTo.contentSnippet}
-                        </Text>
-                      </View>
-                    </View>
-                  )}
+                      {/* Sender Name & Father Title */}
+                      {!isMe && !isDeleted && (
+                        <View style={styles.senderHeaderRow}>
+                          {isFather && (
+                            <Shield color={THEME.colors.sacredCrimson} size={12} />
+                          )}
+                          <Text
+                            style={[
+                              styles.senderHeaderName,
+                              isFather && styles.fatherHeaderName,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {item.senderName || (isFather ? "የንስሐ አባት" : "ተጠቃሚ")}
+                          </Text>
+                        </View>
+                      )}
 
-                  {isDeleted ? (
-                    <View style={styles.deletedRow}>
-                      <XCircle
-                        color={
-                          isMe
-                            ? "rgba(255,255,255,0.6)"
-                            : THEME.colors.inkSubtle
-                        }
-                        size={14}
-                      />
-                      <Text
-                        style={[
-                          styles.deletedText,
-                          isMe
-                            ? styles.myDeletedText
-                            : styles.otherDeletedText,
-                        ]}
-                      >
-                        ይህ መልዕክት ተሰርዟል
-                      </Text>
-                    </View>
-                  ) : (
-                    <>
-                      {/* Media Content */}
-                      {hasMedia && item.media?.url && (
-                        <View style={styles.mediaContainer}>
-                          {isImg ? (
+                      {/* Reply Quote Excerpt */}
+                      {!isDeleted && item.replyTo && (
+                        <View
+                          style={[
+                            styles.bubbleReplyBox,
+                            isMe
+                              ? styles.myBubbleReplyBox
+                              : styles.otherBubbleReplyBox,
+                          ]}
+                        >
+                          <View
+                            style={[
+                              styles.bubbleReplyBar,
+                              {
+                                backgroundColor: isMe
+                                  ? THEME.colors.sacredAmber
+                                  : THEME.colors.sacredCrimson,
+                              },
+                            ]}
+                          />
+                          <View style={styles.bubbleReplyContent}>
+                            <Text
+                              style={[
+                                styles.bubbleReplyAuthor,
+                                isMe
+                                  ? styles.myBubbleReplyAuthor
+                                  : styles.otherBubbleReplyAuthor,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {item.replyTo.senderName}
+                            </Text>
+                            <Text
+                              style={[
+                                styles.bubbleReplySnippet,
+                                isMe
+                                  ? styles.myBubbleReplySnippet
+                                  : styles.otherBubbleReplySnippet,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {item.replyTo.contentSnippet}
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+
+                      {/* Deleted Message State */}
+                      {isDeleted ? (
+                        <View style={styles.deletedRow}>
+                          <XCircle
+                            color={isMe ? "rgba(255,255,255,0.6)" : THEME.colors.inkSubtle}
+                            size={14}
+                          />
+                          <Text
+                            style={[
+                              styles.deletedText,
+                              isMe ? styles.myDeletedText : styles.otherDeletedText,
+                            ]}
+                          >
+                            ይህ መልዕክት ተሰርዟል
+                          </Text>
+                        </View>
+                      ) : (
+                        <>
+                          {/* Media: Image */}
+                          {hasMedia && isImg && item.media?.url && (
                             <TouchableOpacity
                               activeOpacity={0.9}
-                              onPress={() =>
-                                item.media?.url &&
-                                Linking.openURL(item.media.url)
-                              }
+                              onPress={() => handleOpenFile(item.media)}
                               style={styles.imageCard}
                             >
                               <Image
@@ -1182,13 +1444,13 @@ export default function ChannelChatScreen() {
                                 resizeMode="cover"
                               />
                             </TouchableOpacity>
-                          ) : isVid ? (
+                          )}
+
+                          {/* Media: Video */}
+                          {hasMedia && isVid && item.media?.url && (
                             <TouchableOpacity
                               activeOpacity={0.9}
-                              onPress={() =>
-                                item.media?.url &&
-                                Linking.openURL(item.media.url)
-                              }
+                              onPress={() => handleOpenFile(item.media)}
                               style={styles.videoCard}
                             >
                               {item.media.thumbnailUrl ? (
@@ -1199,37 +1461,37 @@ export default function ChannelChatScreen() {
                                 />
                               ) : (
                                 <View style={styles.videoPlaceholder}>
-                                  <Video color="#FFFFFF" size={32} />
+                                  <VideoIcon color="#FFFFFF" size={32} />
                                 </View>
                               )}
                               <View style={styles.playIconOverlay}>
-                                <Play
-                                  color="#FFFFFF"
-                                  size={24}
-                                  fill="#FFFFFF"
-                                />
+                                <Play color="#FFFFFF" size={24} fill="#FFFFFF" />
                               </View>
                               {item.media.durationSeconds ? (
                                 <View style={styles.durationBadge}>
                                   <Text style={styles.durationText}>
-                                    {Math.floor(
-                                      item.media.durationSeconds / 60
-                                    )}
-                                    :
-                                    {String(
-                                      item.media.durationSeconds % 60
-                                    ).padStart(2, "0")}
+                                    {Math.floor(item.media.durationSeconds / 60)}:
+                                    {String(item.media.durationSeconds % 60).padStart(2, "0")}
                                   </Text>
                                 </View>
                               ) : null}
                             </TouchableOpacity>
-                          ) : (
+                          )}
+
+                          {/* Media: Audio In-Bubble Player */}
+                          {hasMedia && isAud && item.media?.url && (
+                            <BubbleAudioPlayer
+                              url={item.media.url}
+                              isMe={isMe}
+                              durationSeconds={item.media.durationSeconds}
+                            />
+                          )}
+
+                          {/* Media: Other File/PDF Card */}
+                          {hasMedia && !isImg && !isVid && !isAud && item.media?.url && (
                             <TouchableOpacity
                               activeOpacity={0.8}
-                              onPress={() =>
-                                item.media?.url &&
-                                Linking.openURL(item.media.url)
-                              }
+                              onPress={() => handleOpenFile(item.media)}
                               style={[
                                 styles.docCard,
                                 isMe ? styles.myDocCard : styles.otherDocCard,
@@ -1237,10 +1499,10 @@ export default function ChannelChatScreen() {
                             >
                               {(() => {
                                 const fileName = resolveFilename(item.media);
-                                const badge = getFileBadge(
-                                  fileName,
-                                  item.media.mimeType
-                                );
+                                const badge = getFileBadge(fileName, item.media.mimeType);
+                                const isDownloaded = Boolean(downloadedFiles[item.media.url]);
+                                const prog = downloadProgress[item.media.url];
+
                                 return (
                                   <>
                                     <View
@@ -1260,12 +1522,10 @@ export default function ChannelChatScreen() {
                                     </View>
                                     <View style={styles.docInfo}>
                                       <Text
-                                        numberOfLines={2}
+                                        numberOfLines={1}
                                         style={[
                                           styles.docName,
-                                          isMe
-                                            ? styles.myDocName
-                                            : styles.otherDocName,
+                                          isMe ? styles.myDocName : styles.otherDocName,
                                         ]}
                                       >
                                         {fileName}
@@ -1273,9 +1533,7 @@ export default function ChannelChatScreen() {
                                       <Text
                                         style={[
                                           styles.docSize,
-                                          isMe && {
-                                            color: "rgba(255,255,255,0.7)",
-                                          },
+                                          isMe && { color: "rgba(255,255,255,0.7)" },
                                         ]}
                                       >
                                         {item.media.sizeBytes
@@ -1283,130 +1541,155 @@ export default function ChannelChatScreen() {
                                           : "ፋይል"}
                                       </Text>
                                     </View>
-                                    <Download
-                                      color={
-                                        isMe ? "#FFFFFF" : THEME.colors.inkMuted
-                                      }
-                                      size={16}
-                                    />
+                                    {prog !== undefined ? (
+                                      <ActivityIndicator
+                                        size="small"
+                                        color={isMe ? "#FFFFFF" : THEME.colors.sacredAmber}
+                                      />
+                                    ) : isDownloaded ? (
+                                      <Check
+                                        size={16}
+                                        color={isMe ? "#10B981" : "#059669"}
+                                      />
+                                    ) : (
+                                      <Download
+                                        color={isMe ? "#FFFFFF" : THEME.colors.inkMuted}
+                                        size={16}
+                                      />
+                                    )}
                                   </>
                                 );
                               })()}
                             </TouchableOpacity>
                           )}
-                        </View>
-                      )}
 
-                      {/* Caption / Text Content */}
-                      {item.content ? (
-                        <View style={styles.contentRow}>
-                          {locked && (
-                            <Lock
-                              color={
-                                isMe
-                                  ? "rgba(255,255,255,0.7)"
-                                  : THEME.colors.inkSubtle
-                              }
-                              size={12}
-                            />
-                          )}
-                          <Text
-                            style={[
-                              styles.msgText,
-                              isMe ? styles.myMsgText : styles.otherMsgText,
-                              locked && styles.lockedText,
-                            ]}
-                          >
-                            {displayContent(item)}
-                          </Text>
-                        </View>
-                      ) : null}
-                    </>
-                  )}
-
-                  <View style={styles.footerRow}>
-                    {Boolean(item.editedAt) && !isDeleted && (
-                      <Text
-                        style={[
-                          styles.editedTag,
-                          isMe && { color: "rgba(255, 255, 255, 0.6)" },
-                        ]}
-                      >
-                        (የታረመ)
-                      </Text>
-                    )}
-                    <Text
-                      style={[
-                        styles.timeText,
-                        isMe && { color: "rgba(255, 255, 255, 0.6)" },
-                      ]}
-                    >
-                      {formatTime(item.createdAt)}
-                    </Text>
-                    {isMe && (
-                      <View style={styles.statusIcon}>
-                        {item.status === "PENDING" ? (
-                          <Clock color="rgba(255, 255, 255, 0.5)" size={11} />
-                        ) : (
-                          <Check color={THEME.colors.sacredAmber} size={12} />
-                        )}
-                      </View>
-                    )}
-                  </View>
-                </TouchableOpacity>
-
-                {/* Reaction Badges Row */}
-                {!isDeleted &&
-                  item.reactions &&
-                  Object.keys(item.reactions).length > 0 && (
-                    <View
-                      style={[
-                        styles.reactionsRow,
-                        isMe
-                          ? styles.myReactionsRow
-                          : styles.otherReactionsRow,
-                      ]}
-                    >
-                      {Object.entries(item.reactions).map(([emoji, uids]) => {
-                        if (!Array.isArray(uids) || uids.length === 0)
-                          return null;
-                        const didReact = uids.includes(uid || "");
-                        return (
-                          <TouchableOpacity
-                            key={emoji}
-                            activeOpacity={0.7}
-                            onPress={() =>
-                              reactMutation.mutate({
-                                messageId: item.id,
-                                emoji,
-                              })
-                            }
-                            style={[
-                              styles.reactionPill,
-                              didReact && styles.reactionPillActive,
-                            ]}
-                          >
-                            <Text style={styles.reactionPillEmoji}>
-                              {emoji}
-                            </Text>
+                          {/* Message Text */}
+                          {item.content ? (
                             <Text
                               style={[
-                                styles.reactionPillCount,
-                                didReact && styles.reactionPillCountActive,
+                                styles.msgText,
+                                isMe ? styles.myMsgText : styles.otherMsgText,
                               ]}
                             >
-                              {uids.length}
+                              {plainText}
                             </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  )}
+                          ) : null}
+
+                          {/* Safe Link Preview inside bubble */}
+                          {detectedUrl && <BubbleLinkPreview url={detectedUrl} />}
+                        </>
+                      )}
+
+                      {/* Inside Bubble State & Time */}
+                      <View style={styles.bubbleFooter}>
+                        {Boolean(item.editedAt) && !isDeleted && (
+                          <Text
+                            style={[
+                              styles.editedTag,
+                              isMe && { color: "rgba(255, 255, 255, 0.6)" },
+                            ]}
+                          >
+                            (የታረመ)
+                          </Text>
+                        )}
+                        <Text
+                          style={[
+                            styles.timeText,
+                            isMe && { color: "rgba(255, 255, 255, 0.6)" },
+                          ]}
+                        >
+                          {formatTime(item.createdAt)}
+                        </Text>
+                        {isMe && (
+                          <View style={styles.statusIcon}>
+                            {isFailed ? (
+                              <TouchableOpacity
+                                hitSlop={6}
+                                onPress={() =>
+                                  sendMutation.mutate({
+                                    content: item.content,
+                                    type: item.type as any,
+                                    media: item.media,
+                                    clientMessageId: item.id,
+                                    replyTo: item.replyTo,
+                                  })
+                                }
+                              >
+                                <RotateCcw size={12} color="#EF4444" />
+                              </TouchableOpacity>
+                            ) : item.status === "PENDING" ? (
+                              <Clock color="rgba(255, 255, 255, 0.5)" size={11} />
+                            ) : (
+                              <CheckCheck color={THEME.colors.sacredAmber} size={13} />
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+
+                    {/* Reactions Docked below bubble */}
+                    {!isDeleted &&
+                      item.reactions &&
+                      Object.keys(item.reactions).length > 0 && (
+                        <View
+                          style={[
+                            styles.reactionsRow,
+                            isMe ? styles.myReactionsRow : styles.otherReactionsRow,
+                          ]}
+                        >
+                          {Object.entries(item.reactions).map(([emoji, uids]) => {
+                            if (!Array.isArray(uids) || uids.length === 0) return null;
+                            const didReact = uids.includes(uid || "");
+                            return (
+                              <TouchableOpacity
+                                key={emoji}
+                                activeOpacity={0.7}
+                                onPress={() =>
+                                  reactMutation.mutate({
+                                    messageId: item.id,
+                                    emoji,
+                                  })
+                                }
+                                style={[
+                                  styles.reactionPill,
+                                  didReact && styles.reactionPillActive,
+                                ]}
+                              >
+                                <Text style={styles.reactionPillEmoji}>{emoji}</Text>
+                                <Text
+                                  style={[
+                                    styles.reactionPillCount,
+                                    didReact && styles.reactionPillCountActive,
+                                  ]}
+                                >
+                                  {uids.length}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      )}
+                  </View>
                 </View>
               </View>
             );
           }}
         />
+      )}
+
+      {/* Floating "New Message" Pill */}
+      {showNewMsgPill && (
+        <TouchableOpacity
+          style={styles.newMsgPill}
+          activeOpacity={0.85}
+          onPress={() => {
+            flatListRef.current?.scrollToEnd({ animated: true });
+            setShowNewMsgPill(false);
+          }}
+        >
+          <Text style={styles.newMsgPillText}>አዲስ መልእክት</Text>
+          <ArrowDown size={14} color="#FFFFFF" />
+        </TouchableOpacity>
       )}
 
       {/* Uploading progress indicator */}
@@ -1417,7 +1700,7 @@ export default function ChannelChatScreen() {
         </View>
       )}
 
-      {/* Modern Composer Bar with Staged Attachment Preview & Reply/Edit Banners */}
+      {/* Modern Composer Bar */}
       <View style={styles.composerContainer}>
         {/* Reply Quote Banner */}
         {replyingTo && (
@@ -1487,7 +1770,7 @@ export default function ChannelChatScreen() {
           </View>
         )}
 
-        {/* Staged Attachment Preview Card with Cancel/Delete Button */}
+        {/* Staged Attachment Preview */}
         {stagedAttachment && (
           <View style={styles.stagedCard}>
             {stagedAttachment.isImage ? (
@@ -1496,21 +1779,11 @@ export default function ChannelChatScreen() {
                 style={styles.stagedThumb}
               />
             ) : stagedAttachment.isVideo ? (
-              <View
-                style={[
-                  styles.stagedIconBox,
-                  { backgroundColor: "#E0E7FF" },
-                ]}
-              >
-                <Video color="#4F46E5" size={20} />
+              <View style={[styles.stagedIconBox, { backgroundColor: "#E0E7FF" }]}>
+                <VideoIcon color="#4F46E5" size={20} />
               </View>
             ) : (
-              <View
-                style={[
-                  styles.stagedIconBox,
-                  { backgroundColor: "#FEE2E2" },
-                ]}
-              >
+              <View style={[styles.stagedIconBox, { backgroundColor: "#FEE2E2" }]}>
                 <FileText color="#DC2626" size={20} />
               </View>
             )}
@@ -1541,7 +1814,21 @@ export default function ChannelChatScreen() {
           </View>
         )}
 
-        {/* Input Row: Attachment Paperclip inside the input bar */}
+        {/* Character Count Warning near 4,000 limit */}
+        {inputText.length >= CHAR_WARNING_THRESHOLD && (
+          <View style={styles.charCounterRow}>
+            <Text
+              style={[
+                styles.charCounterText,
+                inputText.length > MAX_CHAR_LIMIT && styles.charCounterOver,
+              ]}
+            >
+              {inputText.length.toLocaleString()} / {MAX_CHAR_LIMIT.toLocaleString()}
+            </Text>
+          </View>
+        )}
+
+        {/* Composer Input Row */}
         <View style={styles.inputRow}>
           <TouchableOpacity
             style={styles.attachInsideBtn}
@@ -1560,25 +1847,27 @@ export default function ChannelChatScreen() {
                 ? "የታረመውን መልዕክት ይጻፉ..."
                 : stagedAttachment
                 ? "መግለጫ ይጻፉ... (አማራጭ)"
-                : "መልእክት ይጻፉ... (ምክርና መመሪያ)"
+                : "መልእክት ይጻፉ..."
             }
             placeholderTextColor={THEME.colors.inkSubtle}
             value={inputText}
             onChangeText={setInputText}
             multiline
-            maxLength={1000}
+            maxLength={MAX_CHAR_LIMIT + 50}
           />
 
           <TouchableOpacity
             style={[
               styles.sendBtn,
-              !inputText.trim() &&
-                !stagedAttachment &&
-                styles.sendBtnDisabled,
+              (!inputText.trim() && !stagedAttachment) ||
+              inputText.length > MAX_CHAR_LIMIT
+                ? styles.sendBtnDisabled
+                : null,
             ]}
             onPress={handlePressSend}
             disabled={
               (!inputText.trim() && !stagedAttachment) ||
+              inputText.length > MAX_CHAR_LIMIT ||
               isUploading ||
               sendMutation.isPending ||
               editMutation.isPending
@@ -1594,7 +1883,132 @@ export default function ChannelChatScreen() {
         </View>
       </View>
 
-      {/* Message Long Press Action Sheet Modal */}
+      {/* In-App Fullscreen Image Modal */}
+      <Modal
+        visible={Boolean(viewingImageUrl)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setViewingImageUrl(null)}
+      >
+        <View style={styles.fullscreenModalBg}>
+          <TouchableOpacity
+            style={styles.fullscreenCloseBtn}
+            onPress={() => setViewingImageUrl(null)}
+            hitSlop={12}
+          >
+            <X size={26} color="#FFFFFF" />
+          </TouchableOpacity>
+          {viewingImageUrl && (
+            <Image
+              source={{ uri: viewingImageUrl }}
+              style={styles.fullscreenImage}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
+
+      {/* In-App Fullscreen Video Modal */}
+      <Modal
+        visible={Boolean(viewingVideoUrl)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setViewingVideoUrl(null)}
+      >
+        <View style={styles.fullscreenModalBg}>
+          <TouchableOpacity
+            style={styles.fullscreenCloseBtn}
+            onPress={() => setViewingVideoUrl(null)}
+            hitSlop={12}
+          >
+            <X size={26} color="#FFFFFF" />
+          </TouchableOpacity>
+          {viewingVideoUrl && (
+            <Video
+              source={{ uri: viewingVideoUrl }}
+              style={styles.fullscreenVideo}
+              useNativeControls
+              resizeMode={ResizeMode.CONTAIN}
+              shouldPlay
+            />
+          )}
+        </View>
+      </Modal>
+
+      {/* Attachment Bottom Sheet Modal */}
+      <Modal
+        visible={showAttachModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAttachModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowAttachModal(false)}
+        >
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>ፋይል አያይዝ</Text>
+              <TouchableOpacity onPress={() => setShowAttachModal(false)} hitSlop={8}>
+                <X color={THEME.colors.inkMuted} size={20} />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={() => handlePickImage(false)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.modalOptionIcon, { backgroundColor: "#EFF6FF" }]}>
+                <FileText color="#2563EB" size={20} />
+              </View>
+              <View style={styles.modalOptionText}>
+                <Text style={styles.modalOptionLabel}>ፎቶ ወይም ቪዲዮ</Text>
+                <Text style={styles.modalOptionSub}>ከስልክ ጋለሪ ይምረጡ</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={() => handlePickImage(true)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.modalOptionIcon, { backgroundColor: "#FEF3C7" }]}>
+                <Camera color="#D97706" size={20} />
+              </View>
+              <View style={styles.modalOptionText}>
+                <Text style={styles.modalOptionLabel}>ካሜራ</Text>
+                <Text style={styles.modalOptionSub}>በቀጥታ ፎቶ ያንሱ</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalOption}
+              onPress={handlePickDocument}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.modalOptionIcon, { backgroundColor: "#FEE2E2" }]}>
+                <FileText color="#DC2626" size={20} />
+              </View>
+              <View style={styles.modalOptionText}>
+                <Text style={styles.modalOptionLabel}>ሰነድ (PDF, Word, ወዘተ)</Text>
+                <Text style={styles.modalOptionSub}>እስከ 25MB የሚደርስ ፋይል</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalCancelBtn}
+              onPress={() => setShowAttachModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.modalCancelText}>ተመለስ</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Action Sheet Modal */}
       <Modal
         visible={actionMenuVisible}
         transparent
@@ -1613,12 +2027,12 @@ export default function ChannelChatScreen() {
           }}
         >
           <View style={styles.actionModalSheet}>
-            {/* 1. Floating Quick Reactions Capsule */}
+            {/* Quick Reactions Capsule */}
             <View style={styles.floatingReactionCapsule}>
               {DIGNIFIED_REACTIONS.map((r) => {
-                const isSelected = selectedMessage?.reactions?.[
-                  r.emoji
-                ]?.includes(uid || "");
+                const isSelected = selectedMessage?.reactions?.[r.emoji]?.includes(
+                  uid || ""
+                );
                 return (
                   <TouchableOpacity
                     key={r.emoji}
@@ -1644,7 +2058,7 @@ export default function ChannelChatScreen() {
               })}
             </View>
 
-            {/* 2. Message Snippet Card */}
+            {/* Message Preview */}
             {selectedMessage && (
               <View style={styles.actionPreviewCard}>
                 <View style={styles.actionPreviewBar} />
@@ -1652,10 +2066,7 @@ export default function ChannelChatScreen() {
                   <Text style={styles.actionPreviewAuthor} numberOfLines={1}>
                     {selectedMessage.senderId === uid
                       ? "የእርስዎ መልዕክት"
-                      : selectedMessage.senderName ||
-                        (selectedMessage.senderRole === "FATHER"
-                          ? "የንስሐ አባት"
-                          : "መልዕክት")}
+                      : selectedMessage.senderName || "መልዕክት"}
                   </Text>
                   <Text style={styles.actionPreviewText} numberOfLines={2}>
                     {displayContent(selectedMessage) ||
@@ -1665,9 +2076,8 @@ export default function ChannelChatScreen() {
               </View>
             )}
 
-            {/* 3. Grouped Action Menu */}
+            {/* Action Group */}
             <View style={styles.actionGroupCard}>
-              {/* Action: Reply */}
               <TouchableOpacity
                 style={styles.actionRowItem}
                 onPress={() => {
@@ -1680,18 +2090,12 @@ export default function ChannelChatScreen() {
                 }}
                 activeOpacity={0.7}
               >
-                <View
-                  style={[
-                    styles.actionRowIcon,
-                    { backgroundColor: "#EFF6FF" },
-                  ]}
-                >
+                <View style={[styles.actionRowIcon, { backgroundColor: "#EFF6FF" }]}>
                   <CornerUpLeft color="#2563EB" size={17} />
                 </View>
                 <Text style={styles.actionRowText}>መልስ ስጥ (Reply)</Text>
               </TouchableOpacity>
 
-              {/* Action: Copy Text */}
               {selectedMessage?.content ? (
                 <>
                   <View style={styles.actionRowDivider} />
@@ -1701,22 +2105,14 @@ export default function ChannelChatScreen() {
                       if (selectedMessage) {
                         const textToCopy = displayContent(selectedMessage);
                         await Clipboard.setStringAsync(textToCopy);
-                        Alert.alert(
-                          "ተገልብጧል",
-                          "የመልዕክቱ ጽሑፍ ተገልብጧል።"
-                        );
+                        Alert.alert("ተገልብጧል", "የመልዕክቱ ጽሑፍ ተገልብጧል።");
                       }
                       setActionMenuVisible(false);
                       setSelectedMessage(null);
                     }}
                     activeOpacity={0.7}
                   >
-                    <View
-                      style={[
-                        styles.actionRowIcon,
-                        { backgroundColor: "#F1F5F9" },
-                      ]}
-                    >
+                    <View style={[styles.actionRowIcon, { backgroundColor: "#F1F5F9" }]}>
                       <Copy color="#475569" size={17} />
                     </View>
                     <Text style={styles.actionRowText}>ጽሑፍ ቅዳ (Copy)</Text>
@@ -1724,10 +2120,8 @@ export default function ChannelChatScreen() {
                 </>
               ) : null}
 
-              {/* Action: Edit (isMe only) */}
               {selectedMessage &&
-              (selectedMessage.senderId === uid ||
-                selectedMessage.senderId === "me") &&
+              (selectedMessage.senderId === uid || selectedMessage.senderId === "me") &&
               !selectedMessage.deletedAt ? (
                 <>
                   <View style={styles.actionRowDivider} />
@@ -1742,27 +2136,16 @@ export default function ChannelChatScreen() {
                     }}
                     activeOpacity={0.7}
                   >
-                    <View
-                      style={[
-                        styles.actionRowIcon,
-                        { backgroundColor: "#FEF3C7" },
-                      ]}
-                    >
+                    <View style={[styles.actionRowIcon, { backgroundColor: "#FEF3C7" }]}>
                       <Edit2 color="#D97706" size={17} />
                     </View>
-                    <Text
-                      style={[
-                        styles.actionRowText,
-                        { color: THEME.colors.sacredAmber },
-                      ]}
-                    >
+                    <Text style={[styles.actionRowText, { color: THEME.colors.sacredAmber }]}>
                       አርትዕ (Edit)
                     </Text>
                   </TouchableOpacity>
                 </>
               ) : null}
 
-              {/* Action: Delete (isMe or Father) */}
               {selectedMessage &&
               !selectedMessage.deletedAt &&
               (selectedMessage.senderId === uid ||
@@ -1792,20 +2175,10 @@ export default function ChannelChatScreen() {
                     }}
                     activeOpacity={0.7}
                   >
-                    <View
-                      style={[
-                        styles.actionRowIcon,
-                        { backgroundColor: "#FEE2E2" },
-                      ]}
-                    >
-                      <Trash2 color="#DC2626" size={17} />
+                    <View style={[styles.actionRowIcon, { backgroundColor: "#FEE2E2" }]}>
+                      <XCircle color="#DC2626" size={17} />
                     </View>
-                    <Text
-                      style={[
-                        styles.actionRowText,
-                        { color: THEME.colors.error },
-                      ]}
-                    >
+                    <Text style={[styles.actionRowText, { color: THEME.colors.error }]}>
                       ሰርዝ (Delete)
                     </Text>
                   </TouchableOpacity>
@@ -1813,113 +2186,15 @@ export default function ChannelChatScreen() {
               ) : null}
             </View>
 
-            {/* Cancel Button */}
             <TouchableOpacity
               style={styles.actionModalDismissBtn}
               onPress={() => {
                 setActionMenuVisible(false);
                 setSelectedMessage(null);
               }}
-              activeOpacity={0.8}
+              activeOpacity={0.7}
             >
               <Text style={styles.actionModalDismissText}>ተመለስ</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Attachment Bottom Sheet Modal */}
-      <Modal
-        visible={showAttachModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowAttachModal(false)}
-      >
-        <TouchableOpacity
-          style={styles.modalBackdrop}
-          activeOpacity={1}
-          onPress={() => setShowAttachModal(false)}
-        >
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>ፋይል አጋራ</Text>
-              <TouchableOpacity
-                onPress={() => setShowAttachModal(false)}
-                hitSlop={8}
-              >
-                <X color={THEME.colors.inkSubtle} size={20} />
-              </TouchableOpacity>
-            </View>
-
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={handleTakePhoto}
-              activeOpacity={0.7}
-            >
-              <View
-                style={[
-                  styles.modalOptionIcon,
-                  { backgroundColor: "#FEF3C7" },
-                ]}
-              >
-                <Camera color="#B45309" size={20} />
-              </View>
-              <View style={styles.modalOptionText}>
-                <Text style={styles.modalOptionLabel}>ካሜራ (Camera)</Text>
-                <Text style={styles.modalOptionSub}>
-                  በቀጥታ ፎቶ አንስተው ያጋሩ
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={handlePickMedia}
-              activeOpacity={0.7}
-            >
-              <View
-                style={[
-                  styles.modalOptionIcon,
-                  { backgroundColor: "#DBEAFE" },
-                ]}
-              >
-                <ImageIcon color="#1D4ED8" size={20} />
-              </View>
-              <View style={styles.modalOptionText}>
-                <Text style={styles.modalOptionLabel}>ምስል እና ቪዲዮ (Gallery)</Text>
-                <Text style={styles.modalOptionSub}>
-                  ከስልክዎ ማዕከለ-ስዕላት ፎቶ ወይም ቪዲዮ ይምረጡ
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={handlePickDocument}
-              activeOpacity={0.7}
-            >
-              <View
-                style={[
-                  styles.modalOptionIcon,
-                  { backgroundColor: "#D1FAE5" },
-                ]}
-              >
-                <FileText color="#059669" size={20} />
-              </View>
-              <View style={styles.modalOptionText}>
-                <Text style={styles.modalOptionLabel}>ፋይሎች እና ሰነዶች (Files)</Text>
-                <Text style={styles.modalOptionSub}>
-                  PDF፣ Word፣ Excel፣ ድምፅና ሌሎች ሰነዶች (ከ25MB በታች)
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.modalCancelBtn}
-              onPress={() => setShowAttachModal(false)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.modalCancelText}>ሰርዝ</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1929,66 +2204,6 @@ export default function ChannelChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  callRowContainer: {
-    width: "100%",
-    alignItems: "center",
-    marginVertical: 8,
-  },
-  callBubbleBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#1E293B",
-    borderColor: "#334155",
-    borderWidth: 1,
-    borderRadius: 20,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    gap: 10,
-    maxWidth: "90%",
-  },
-  callIconCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  callIconAnswered: {
-    backgroundColor: "rgba(16, 185, 129, 0.15)",
-  },
-  callIconMissed: {
-    backgroundColor: "rgba(239, 68, 68, 0.15)",
-  },
-  callIconDeclined: {
-    backgroundColor: "rgba(148, 163, 184, 0.15)",
-  },
-  callDetailsCol: {
-    flex: 1,
-  },
-  callTitleText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  callSubtitleText: {
-    color: "#94A3B8",
-    fontSize: 11,
-    marginTop: 2,
-  },
-  callMissedText: {
-    color: "#F87171",
-  },
-  callRecallBtn: {
-    backgroundColor: "#D97706",
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 14,
-  },
-  callRecallBtnText: {
-    color: "#FFFFFF",
-    fontSize: 11,
-    fontWeight: "700",
-  },
   container: {
     flex: 1,
     backgroundColor: THEME.colors.sanctuaryBg,
@@ -1998,66 +2213,59 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  errorBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: THEME.colors.errorBg,
-    borderBottomWidth: 1,
-    borderBottomColor: THEME.colors.errorBorder,
+  listContent: {
+    paddingHorizontal: 12,
     paddingVertical: 10,
-    paddingHorizontal: 16,
-  },
-  errorBannerText: {
-    flex: 1,
-    color: THEME.colors.error,
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  retryText: {
-    color: THEME.colors.sacredCrimson,
-    fontSize: 12,
-    fontWeight: "800",
+    flexGrow: 1,
   },
   emptyBox: {
     alignItems: "center",
-    gap: 8,
-    paddingVertical: 40,
-    paddingHorizontal: 24,
+    justifyContent: "center",
+    paddingTop: 80,
+    gap: 10,
   },
   emptyText: {
-    color: THEME.colors.inkMuted,
+    color: THEME.colors.inkSubtle,
     fontSize: 13,
-    textAlign: "center",
-    lineHeight: 19,
   },
-  headerCallBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    marginRight: 4,
-  },
-  callIconBox: {
-    backgroundColor: THEME.colors.sacredCrimson,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 16,
-    flexDirection: "row",
+  dateChipContainer: {
     alignItems: "center",
-    gap: 5,
-    ...THEME.shadows.button,
+    marginVertical: 12,
   },
-  callIconText: {
-    color: "#FFFFFF",
+  dateChip: {
+    backgroundColor: "#E2E8F0",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  dateChipText: {
+    color: "#475569",
     fontSize: 11,
     fontWeight: "700",
   },
-  listContent: {
-    padding: 16,
-    paddingBottom: 20,
+  newMsgPill: {
+    position: "absolute",
+    bottom: 80,
+    alignSelf: "center",
+    backgroundColor: THEME.colors.buttonDark,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+    ...THEME.shadows.button,
+    zIndex: 99,
+  },
+  newMsgPillText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
   },
   msgRow: {
     flexDirection: "row",
-    marginBottom: 10,
+    marginBottom: 8,
+    alignItems: "flex-end",
   },
   myMsgRow: {
     justifyContent: "flex-end",
@@ -2065,79 +2273,174 @@ const styles = StyleSheet.create({
   otherMsgRow: {
     justifyContent: "flex-start",
   },
-  bubbleCol: {
-    maxWidth: "84%",
-    flexDirection: "column",
+  bubbleAvatarCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: THEME.colors.sacredAmber,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 8,
+    marginBottom: 2,
+    overflow: "hidden",
   },
-  myBubbleCol: {
+  bubbleAvatarImg: {
+    width: 32,
+    height: 32,
+  },
+  bubbleAvatarInitial: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  bubbleWrapper: {
+    maxWidth: "80%",
+  },
+  myBubbleWrapper: {
     alignItems: "flex-end",
   },
-  otherBubbleCol: {
+  otherBubbleWrapper: {
     alignItems: "flex-start",
   },
   bubble: {
-    maxWidth: "84%",
-    borderRadius: THEME.radii.lg,
+    borderRadius: 18,
     paddingHorizontal: 12,
     paddingVertical: 9,
+    minWidth: 80,
     ...THEME.shadows.card,
   },
   myBubble: {
-    backgroundColor: THEME.colors.inkPrimary,
-    borderBottomRightRadius: 3,
+    backgroundColor: "#0F172A", // Dark right bubble
+    borderBottomRightRadius: 4,
   },
   otherBubble: {
-    backgroundColor: THEME.colors.surface,
-    borderBottomLeftRadius: 3,
+    backgroundColor: "#FFFFFF", // Light left bubble
+    borderBottomLeftRadius: 4,
     borderWidth: 1,
-    borderColor: THEME.colors.border,
+    borderColor: "#E2E8F0",
   },
-  fatherBubble: {
-    backgroundColor: THEME.colors.surface,
-    borderLeftWidth: 3.5,
-    borderLeftColor: THEME.colors.sacredAmber,
-    borderBottomLeftRadius: 3,
-    borderTopWidth: 1,
-    borderRightWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: THEME.colors.amberBorder,
-  },
-  fatherBadgeRow: {
+  senderHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
     marginBottom: 4,
   },
-  fatherBadgeText: {
-    color: THEME.colors.sacredAmber,
+  senderHeaderName: {
     fontSize: 12,
+    fontWeight: "700",
+    color: THEME.colors.inkMuted,
+  },
+  fatherHeaderName: {
+    color: THEME.colors.sacredCrimson,
     fontWeight: "800",
   },
-  senderName: {
-    color: THEME.colors.inkSubtle,
-    fontSize: 11,
-    fontWeight: "700",
-    marginBottom: 4,
+  msgText: {
+    fontSize: 14.5,
+    lineHeight: 20,
   },
-  mediaContainer: {
+  myMsgText: {
+    color: "#FFFFFF",
+  },
+  otherMsgText: {
+    color: THEME.colors.inkPrimary,
+  },
+  bubbleFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 4,
+    marginTop: 4,
+  },
+  timeText: {
+    fontSize: 10,
+    color: THEME.colors.inkSubtle,
+    fontWeight: "500",
+  },
+  statusIcon: {
+    marginLeft: 2,
+  },
+  editedTag: {
+    fontSize: 9.5,
+    fontStyle: "italic",
+    color: THEME.colors.inkSubtle,
+  },
+  deletedBubble: {
+    backgroundColor: "#F1F5F9",
+    borderColor: "#CBD5E1",
+  },
+  deletedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  deletedText: {
+    fontSize: 13,
+    fontStyle: "italic",
+  },
+  myDeletedText: {
+    color: "rgba(255,255,255,0.7)",
+  },
+  otherDeletedText: {
+    color: THEME.colors.inkSubtle,
+  },
+  bubbleReplyBox: {
+    flexDirection: "row",
+    borderRadius: 8,
+    padding: 6,
     marginBottom: 6,
   },
+  myBubbleReplyBox: {
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+  },
+  otherBubbleReplyBox: {
+    backgroundColor: "rgba(0, 0, 0, 0.04)",
+  },
+  bubbleReplyBar: {
+    width: 3.5,
+    borderRadius: 2,
+    marginRight: 6,
+  },
+  bubbleReplyContent: {
+    flex: 1,
+  },
+  bubbleReplyAuthor: {
+    fontSize: 11,
+    fontWeight: "700",
+    marginBottom: 1,
+  },
+  myBubbleReplyAuthor: {
+    color: THEME.colors.sacredAmber,
+  },
+  otherBubbleReplyAuthor: {
+    color: THEME.colors.sacredCrimson,
+  },
+  bubbleReplySnippet: {
+    fontSize: 11.5,
+  },
+  myBubbleReplySnippet: {
+    color: "rgba(255, 255, 255, 0.8)",
+  },
+  otherBubbleReplySnippet: {
+    color: THEME.colors.inkSubtle,
+  },
   imageCard: {
-    borderRadius: 10,
+    borderRadius: 12,
     overflow: "hidden",
+    marginBottom: 4,
   },
   msgImage: {
-    width: 230,
+    width: 220,
     height: 160,
-    borderRadius: 10,
+    borderRadius: 12,
   },
   videoCard: {
-    width: 230,
+    width: 220,
     height: 160,
-    borderRadius: 10,
+    borderRadius: 12,
     overflow: "hidden",
     position: "relative",
     backgroundColor: "#000000",
+    marginBottom: 4,
   },
   videoPlaceholder: {
     width: "100%",
@@ -2167,21 +2470,68 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
   },
+  audioContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 8,
+    borderRadius: 12,
+    gap: 8,
+    minWidth: 190,
+    marginBottom: 4,
+  },
+  myAudioBg: {
+    backgroundColor: "rgba(255, 255, 255, 0.12)",
+  },
+  otherAudioBg: {
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  audioPlayBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  myAudioPlayBtn: {
+    backgroundColor: THEME.colors.sacredAmber,
+  },
+  otherAudioPlayBtn: {
+    backgroundColor: THEME.colors.sacredCrimson,
+  },
+  audioWaveform: {
+    flex: 1,
+    height: 6,
+    backgroundColor: "rgba(148, 163, 184, 0.3)",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  audioProgressBar: {
+    height: "100%",
+    borderRadius: 3,
+  },
+  audioTimeText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: THEME.colors.inkMuted,
+  },
   docCard: {
     flexDirection: "row",
     alignItems: "center",
     padding: 10,
-    borderRadius: 10,
+    borderRadius: 12,
     gap: 10,
-    minWidth: 210,
+    minWidth: 200,
+    marginBottom: 4,
   },
   myDocCard: {
     backgroundColor: "rgba(255, 255, 255, 0.12)",
   },
   otherDocCard: {
-    backgroundColor: "#F9FAFB",
+    backgroundColor: "#F8FAFC",
     borderWidth: 1,
-    borderColor: "#E5E7EB",
+    borderColor: "#E2E8F0",
   },
   docBadgeBox: {
     paddingHorizontal: 8,
@@ -2189,12 +2539,10 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
-    minWidth: 42,
   },
   docBadgeText: {
     fontSize: 11,
     fontWeight: "900",
-    letterSpacing: 0.5,
   },
   docInfo: {
     flex: 1,
@@ -2202,7 +2550,6 @@ const styles = StyleSheet.create({
   docName: {
     fontSize: 13,
     fontWeight: "700",
-    marginBottom: 2,
   },
   myDocName: {
     color: "#FFFFFF",
@@ -2213,64 +2560,136 @@ const styles = StyleSheet.create({
   docSize: {
     fontSize: 10,
     color: THEME.colors.inkSubtle,
+    marginTop: 2,
   },
-  contentRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
+  linkCard: {
+    backgroundColor: "rgba(0, 0, 0, 0.05)",
+    borderRadius: 10,
+    overflow: "hidden",
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: "rgba(0, 0, 0, 0.08)",
   },
-  msgText: {
-    fontSize: 14.5,
-    lineHeight: 20,
-    flexShrink: 1,
+  linkImage: {
+    width: "100%",
+    height: 110,
   },
-  myMsgText: {
-    color: "#FFFFFF",
+  linkInfo: {
+    padding: 8,
   },
-  otherMsgText: {
+  linkDomain: {
+    fontSize: 10.5,
+    fontWeight: "700",
+    color: THEME.colors.sacredAmber,
+    marginBottom: 2,
+    textTransform: "uppercase",
+  },
+  linkTitle: {
+    fontSize: 12.5,
+    fontWeight: "700",
     color: THEME.colors.inkPrimary,
+    marginBottom: 2,
   },
-  lockedText: {
-    fontStyle: "italic",
-  },
-  footerRow: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    alignItems: "center",
-    gap: 4,
-    marginTop: 4,
-  },
-  timeText: {
+  linkDesc: {
+    fontSize: 11,
     color: THEME.colors.inkSubtle,
-    fontSize: 10,
-    fontWeight: "600",
   },
-  statusIcon: {
-    marginLeft: 2,
+  reactionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 4,
+    marginTop: -8,
+    marginHorizontal: 6,
+    zIndex: 10,
   },
-  uploadingBar: {
+  myReactionsRow: {
+    justifyContent: "flex-end",
+  },
+  otherReactionsRow: {
+    justifyContent: "flex-start",
+  },
+  reactionPill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    gap: 3,
+    ...THEME.shadows.card,
+  },
+  reactionPillActive: {
     backgroundColor: "#FEF3C7",
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-    borderTopWidth: 1,
-    borderTopColor: "#FDE68A",
+    borderColor: THEME.colors.sacredAmber,
   },
-  uploadingText: {
-    color: "#92400E",
-    fontSize: 12,
-    fontWeight: "600",
+  reactionPillEmoji: {
+    fontSize: 13,
   },
-
-  /* Modern Composer Styles */
+  reactionPillCount: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: THEME.colors.inkMuted,
+  },
+  reactionPillCountActive: {
+    color: "#B45309",
+    fontWeight: "800",
+  },
   composerContainer: {
     backgroundColor: THEME.colors.navigationBg,
     borderTopWidth: 1,
     borderTopColor: THEME.colors.sacredCrimsonBorder,
     paddingHorizontal: 10,
     paddingVertical: 8,
+  },
+  charCounterRow: {
+    alignItems: "flex-end",
+    paddingRight: 6,
+    marginBottom: 4,
+  },
+  charCounterText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: THEME.colors.sacredAmber,
+  },
+  charCounterOver: {
+    color: "#EF4444",
+    fontWeight: "800",
+  },
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  attachInsideBtn: {
+    padding: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  textInput: {
+    flex: 1,
+    backgroundColor: THEME.colors.surface,
+    color: THEME.colors.inkPrimary,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    maxHeight: 110,
+    fontSize: 14,
+  },
+  sendBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: THEME.colors.buttonDark,
+    alignItems: "center",
+    justifyContent: "center",
+    ...THEME.shadows.button,
+  },
+  sendBtnDisabled: {
+    opacity: 0.35,
   },
   stagedCard: {
     flexDirection: "row",
@@ -2311,42 +2730,99 @@ const styles = StyleSheet.create({
   stagedRemoveBtn: {
     padding: 4,
   },
-  inputRow: {
+  uploadingBar: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    backgroundColor: "#FEF3C7",
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#FDE68A",
   },
-  attachInsideBtn: {
-    padding: 8,
+  uploadingText: {
+    color: "#92400E",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  replyBannerContainer: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-  },
-  textInput: {
-    flex: 1,
     backgroundColor: THEME.colors.surface,
-    color: THEME.colors.inkPrimary,
-    borderRadius: 22,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
     borderWidth: 1,
     borderColor: THEME.colors.border,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    maxHeight: 100,
-    fontSize: 14,
   },
-  sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: THEME.colors.buttonDark,
+  replyBannerBar: {
+    width: 3.5,
+    height: "100%",
+    backgroundColor: THEME.colors.sacredCrimson,
+    borderRadius: 2,
+    marginRight: 8,
+  },
+  replyBannerContent: {
+    flex: 1,
+  },
+  replyBannerHeader: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: 4,
+  },
+  replyBannerUser: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: THEME.colors.sacredCrimson,
+  },
+  replyBannerText: {
+    fontSize: 11.5,
+    color: THEME.colors.inkMuted,
+    marginTop: 1,
+  },
+  replyBannerClose: {
+    padding: 4,
+  },
+  editingBannerContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFBEB",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  editingBannerBar: {
+    width: 3.5,
+    height: "100%",
+    backgroundColor: THEME.colors.sacredAmber,
+    borderRadius: 2,
+    marginRight: 8,
+  },
+  fullscreenModalBg: {
+    flex: 1,
+    backgroundColor: "#000000",
     justifyContent: "center",
-    ...THEME.shadows.button,
+    alignItems: "center",
   },
-  sendBtnDisabled: {
-    opacity: 0.35,
+  fullscreenCloseBtn: {
+    position: "absolute",
+    top: 48,
+    right: 20,
+    zIndex: 99,
+    padding: 8,
   },
-
-  /* Attachment Modal Styles */
+  fullscreenImage: {
+    width: "100%",
+    height: "85%",
+  },
+  fullscreenVideo: {
+    width: "100%",
+    height: "80%",
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.45)",
@@ -2414,187 +2890,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: THEME.colors.inkMuted,
   },
-
-  /* Reply Quote in Bubble */
-  bubbleReplyBox: {
-    flexDirection: "row",
-    backgroundColor: "rgba(0, 0, 0, 0.06)",
-    borderRadius: 8,
-    padding: 6,
-    marginBottom: 6,
-    overflow: "hidden",
-  },
-  myBubbleReplyBox: {
-    backgroundColor: "rgba(255, 255, 255, 0.12)",
-  },
-  otherBubbleReplyBox: {
-    backgroundColor: "rgba(0, 0, 0, 0.04)",
-  },
-  bubbleReplyBar: {
-    width: 3.5,
-    borderRadius: 2,
-    marginRight: 6,
-  },
-  bubbleReplyContent: {
-    flex: 1,
-  },
-  bubbleReplyAuthor: {
-    fontSize: 11,
-    fontWeight: "700",
-    marginBottom: 1,
-  },
-  myBubbleReplyAuthor: {
-    color: THEME.colors.sacredAmber,
-  },
-  otherBubbleReplyAuthor: {
-    color: THEME.colors.sacredCrimson,
-  },
-  bubbleReplySnippet: {
-    fontSize: 11.5,
-  },
-  myBubbleReplySnippet: {
-    color: "rgba(255, 255, 255, 0.8)",
-  },
-  otherBubbleReplySnippet: {
-    color: THEME.colors.inkSubtle,
-  },
-
-  /* Deleted Message State */
-  deletedBubble: {
-    opacity: 0.75,
-    backgroundColor: "#F3F4F6",
-    borderColor: "#E5E7EB",
-    borderWidth: 1,
-  },
-  deletedRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 2,
-  },
-  deletedText: {
-    fontSize: 13,
-    fontStyle: "italic",
-  },
-  myDeletedText: {
-    color: "rgba(255, 255, 255, 0.7)",
-  },
-  otherDeletedText: {
-    color: THEME.colors.inkMuted,
-  },
-  editedTag: {
-    fontSize: 9.5,
-    fontStyle: "italic",
-    color: THEME.colors.inkSubtle,
-    marginRight: 3,
-  },
-
-  /* Reaction Badges Docked on Bubble */
-  reactionsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 4,
-    marginTop: -8,
-    marginHorizontal: 6,
-    zIndex: 10,
-  },
-  myReactionsRow: {
-    justifyContent: "flex-end",
-  },
-  otherReactionsRow: {
-    justifyContent: "flex-start",
-  },
-  reactionPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 8,
-    paddingVertical: 3.5,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    gap: 3,
-    ...THEME.shadows.card,
-  },
-  reactionPillActive: {
-    backgroundColor: "#FEF3C7",
-    borderColor: THEME.colors.sacredAmber,
-  },
-  reactionPillEmoji: {
-    fontSize: 13,
-  },
-  reactionPillCount: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: THEME.colors.inkMuted,
-  },
-  reactionPillCountActive: {
-    color: "#B45309",
-    fontWeight: "800",
-  },
-
-  /* Reply & Edit Composer Banners */
-  replyBannerContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: THEME.colors.surface,
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: THEME.colors.border,
-  },
-  replyBannerBar: {
-    width: 3.5,
-    height: "100%",
-    backgroundColor: THEME.colors.sacredCrimson,
-    borderRadius: 2,
-    marginRight: 8,
-  },
-  editingBannerContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFBEB",
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: "#FDE68A",
-  },
-  editingBannerBar: {
-    width: 3.5,
-    height: "100%",
-    backgroundColor: THEME.colors.sacredAmber,
-    borderRadius: 2,
-    marginRight: 8,
-  },
-  replyBannerContent: {
-    flex: 1,
-  },
-  replyBannerHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  replyBannerUser: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: THEME.colors.sacredCrimson,
-  },
-  replyBannerText: {
-    fontSize: 11.5,
-    color: THEME.colors.inkMuted,
-    marginTop: 1,
-  },
-  replyBannerClose: {
-    padding: 4,
-  },
-
-  /* Sleek Modern Action Modal (Telegram/WhatsApp Style) */
   actionModalSheet: {
     backgroundColor: THEME.colors.surface,
     borderTopLeftRadius: 24,
@@ -2702,5 +2997,87 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     color: THEME.colors.inkMuted,
+  },
+  callRowContainer: {
+    alignItems: "center",
+    marginVertical: 6,
+  },
+  callBubbleBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: THEME.colors.surface,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: THEME.colors.border,
+    gap: 10,
+    minWidth: 260,
+    ...THEME.shadows.card,
+  },
+  callIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  callIconMissed: {
+    backgroundColor: "#FEE2E2",
+  },
+  callIconDeclined: {
+    backgroundColor: "#F1F5F9",
+  },
+  callIconAnswered: {
+    backgroundColor: "#D1FAE5",
+  },
+  callDetailsCol: {
+    flex: 1,
+  },
+  callTitleText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: THEME.colors.inkPrimary,
+  },
+  callSubtitleText: {
+    fontSize: 11,
+    color: THEME.colors.inkMuted,
+    marginTop: 2,
+  },
+  callMissedText: {
+    color: "#EF4444",
+    fontWeight: "700",
+  },
+  callRecallBtn: {
+    backgroundColor: THEME.colors.sacredCrimson,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  callRecallBtnText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: THEME.colors.errorBg,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.errorBorder,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+  },
+  errorBannerText: {
+    flex: 1,
+    color: THEME.colors.error,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  retryText: {
+    color: THEME.colors.sacredCrimson,
+    fontSize: 12,
+    fontWeight: "800",
   },
 });

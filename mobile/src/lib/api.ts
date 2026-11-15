@@ -45,8 +45,11 @@ export async function apiRequest<T = any>(
       authEvents.emitUnauthorized();
     }
 
-    const errorMessage =
+    let errorMessage =
       data?.error || data?.message || `Request failed with status ${response.status}`;
+    if (typeof errorMessage === "string" && errorMessage.toUpperCase().includes("FORBIDDEN")) {
+      errorMessage = "ይህንን ክፍል ለማየት ፈቃድ የለዎትም";
+    }
     const error: any = new Error(errorMessage);
     error.status = response.status;
     error.code = data?.code;
@@ -84,8 +87,11 @@ export async function apiUpload<T = any>(
       authEvents.emitUnauthorized();
     }
 
-    const errorMessage =
+    let errorMessage =
       data?.error || data?.message || `Upload failed with status ${response.status}`;
+    if (typeof errorMessage === "string" && errorMessage.toUpperCase().includes("FORBIDDEN")) {
+      errorMessage = "ይህንን ፋይል ለመጫን ፈቃድ የለዎትም";
+    }
     const error: any = new Error(errorMessage);
     error.status = response.status;
     error.code = data?.code;
