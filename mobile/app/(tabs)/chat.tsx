@@ -46,6 +46,9 @@ interface Conversation {
     } | null;
     callDetails?: any;
     isEncrypted?: boolean;
+    deletedAt?: number;
+    decryptedPreview?: string;
+    decryptionFailed?: boolean;
   } | null;
   unreadCount?: number;
 }
@@ -97,7 +100,9 @@ export default function ChatScreen() {
         const channel = pusher.subscribe(chName);
 
         channel.bind("new-message", (msg: any) => {
-          // Update room row locally without full Firestore refetch
+          // Update room row locally without full Firestore refetch.
+          // Never persist ciphertext into visible preview fields.
+          const safePreviewContent = msg?.isEncrypted === true ? "" : (typeof msg?.content === "string" ? msg.content : "");
           queryClient.setQueryData<Conversation[]>(["conversations"], (old) => {
             if (!old) return old;
             return old.map((room) => {
@@ -108,16 +113,17 @@ export default function ChatScreen() {
                   ...room,
                   lastMessage: {
                     id: msg.id,
-                    content: msg.content,
+                    content: safePreviewContent,
                     createdAt: msg.createdAt,
                     senderId: msg.senderId,
                     type: msg.type,
-                    media: msg.media,
-                    isEncrypted: msg.isEncrypted,
+                    media: msg.media || null,
+                    callDetails: msg.callDetails || null,
+                    isEncrypted: msg.isEncrypted === true,
                   },
                   unreadCount:
                     isCurrentMe || isOpen
-                      ? room.unreadCount
+                      ? (room.unreadCount || 0)
                       : (room.unreadCount || 0) + 1,
                 };
               }
@@ -263,8 +269,11 @@ export default function ChatScreen() {
           } else if (lm.type === "FILE" || lm.media?.url) {
             const fname = lm.media?.originalName || "ፋይል";
             lastMessageText = `📎 ${fname}`;
-          } else if (lm.isEncrypted && !lm.content) {
-            lastMessageText = "🔒 የተቆለፈ መልእክት";
+          } else if (lm.isEncrypted) {
+            const decrypted = (lm as any).decryptedPreview?.trim?.() || "";
+            lastMessageText = decrypted || "አዲስ መልዕክት";
+          } else if ((lm as any).decryptionFailed) {
+            lastMessageText = "⚠️ መልዕክቱን መክፈት አልተቻለም";
           } else {
             lastMessageText = (lm.content || "").trim() || "መልእክት";
           }

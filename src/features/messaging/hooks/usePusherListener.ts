@@ -42,7 +42,8 @@ export function usePusherListener(channelId: ChannelID) {
      * 1. Handle New Messages
      * Dual Responsibility: Update Identity Registry + Commit Message
      */
-    channel.bind("new-message", async (payload: EnrichedMessagePayload) => {
+    const handleNewMessage = async (payload: EnrichedMessagePayload) => {
+      if (!payload?.id) return;
       try {
         // --- STEP A: Identity Registry Update ---
         // Ensure Name/Photo/Role shows up even if this is a new contact
@@ -64,9 +65,14 @@ export function usePusherListener(channelId: ChannelID) {
           if (existing.status === "sending") {
             await db.messages.update(payload.id, {
               status: "sent",
-              // Ensure we use server's official timestamp/URL if they changed
-              createdAt: payload.createdAt,
+              createdAt: payload.createdAt || existing.createdAt,
+              updatedAt: (payload as any).updatedAt || existing.updatedAt || payload.createdAt,
               media: payload.media || existing.media,
+              callDetails: payload.callDetails || existing.callDetails,
+              content: payload.content ?? existing.content,
+              type: payload.type || existing.type,
+              isEncrypted: payload.isEncrypted ?? existing.isEncrypted,
+              encryption: payload.encryption || existing.encryption,
             });
           }
           return;
@@ -77,32 +83,49 @@ export function usePusherListener(channelId: ChannelID) {
           status: "sent",
           isRead: false,
           version: "v1", // Mandatory Ledger Contract
+          updatedAt: (payload as any).updatedAt || payload.createdAt,
         };
 
         await db.messages.add(ledgerEntry);
       } catch (err) {
         console.error("❌ [PUSHER_NEW_MSG] Ledger commit failed:", err);
       }
-    });
+    };
 
     /**
-     * 2. Handle Updates (Edits)
+     * 2. Handle Updates (Edits / call detail transitions)
+     * Merge with existing to avoid dropping fields on partial payloads.
      */
-    channel.bind("message-updated", async (payload: Message) => {
+    const handleMessageUpdated = async (payload: Partial<Message> & { id?: MessageID }) => {
+      if (!payload?.id) return;
       try {
+        const existing = await db.messages.get(payload.id);
+        if (!existing) {
+          await db.messages.put({
+            ...(payload as Message),
+            status: "sent",
+            version: "v1",
+            createdAt: (payload.createdAt as number) || Date.now(),
+            updatedAt: (payload.updatedAt as number) || Date.now(),
+          } as LocalLedgerMessage);
+          return;
+        }
         await db.messages.update(payload.id, {
+          ...existing,
           ...payload,
           status: "sent",
+          updatedAt: (payload.updatedAt as number) || existing.updatedAt || Date.now(),
         });
       } catch (err) {
         console.error("❌ [PUSHER_EDIT] Update failed:", err);
       }
-    });
+    };
 
     /**
      * 3. Handle Deletions (Tombstone pattern)
      */
-    channel.bind("message-deleted", async (data: { messageId: MessageID }) => {
+    const handleMessageDeleted = async (data: { messageId: MessageID }) => {
+      if (!data?.messageId) return;
       try {
         await db.messages.update(data.messageId, {
           deletedAt: Date.now(),
@@ -112,28 +135,29 @@ export function usePusherListener(channelId: ChannelID) {
       } catch (err) {
         console.error("❌ [PUSHER_DELETE] Tombstone failed:", err);
       }
-    });
+    };
 
     /**
      * 4. Handle Reactions
      */
-    channel.bind(
-      "message-reaction",
-      async (data: { messageId: MessageID; reactions: Record<string, string[]> }) => {
-        try {
-          await db.messages.update(data.messageId, {
-            reactions: data.reactions,
-          });
-        } catch (err) {
-          console.error("❌ [PUSHER_REACTION] Reaction update failed:", err);
-        }
+    const handleMessageReaction = async (data: {
+      messageId: MessageID;
+      reactions: Record<string, string[]>;
+    }) => {
+      if (!data?.messageId) return;
+      try {
+        await db.messages.update(data.messageId, {
+          reactions: data.reactions || {},
+        });
+      } catch (err) {
+        console.error("❌ [PUSHER_REACTION] Reaction update failed:", err);
       }
-    );
+    };
 
     /**
      * 5. Handle Read Receipts (Frugal/Batch Update)
      */
-    channel.bind("message-seen", async (data: { lastMessageId: MessageID }) => {
+    const handleMessageSeen = async (_data: { lastMessageId: MessageID }) => {
       try {
         await db.messages
           .where("channelId")
@@ -143,12 +167,22 @@ export function usePusherListener(channelId: ChannelID) {
       } catch (err) {
         console.error("❌ [PUSHER_READ] Status sync failed:", err);
       }
-    });
+    };
 
-    // Cleanup: Prevent memory leaks and redundant listeners
+    channel.bind("new-message", handleNewMessage);
+    channel.bind("message-updated", handleMessageUpdated);
+    channel.bind("message-deleted", handleMessageDeleted);
+    channel.bind("message-reaction", handleMessageReaction);
+    channel.bind("message-seen", handleMessageSeen);
+
+    // Cleanup: unbind only this hook's handlers. Do NOT unsubscribe the shared
+    // channel because MessagingClient also relies on the same subscription.
     return () => {
-      channel.unbind_all();
-      pusher.unsubscribe(channelName);
+      channel.unbind("new-message", handleNewMessage);
+      channel.unbind("message-updated", handleMessageUpdated);
+      channel.unbind("message-deleted", handleMessageDeleted);
+      channel.unbind("message-reaction", handleMessageReaction);
+      channel.unbind("message-seen", handleMessageSeen);
     };
   }, [channelId]);
 }

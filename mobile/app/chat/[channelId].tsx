@@ -403,7 +403,7 @@ function BubbleAudioPlayer({
 }
 
 export default function ChannelChatScreen() {
-  const { channelId } = useLocalSearchParams<{ channelId: string }>();
+  const { channelId, targetMessageId } = useLocalSearchParams<{ channelId: string; targetMessageId?: string }>();
   const navigation = useNavigation();
   const router = useRouter();
   const { role, uid } = useAuth();
@@ -467,6 +467,48 @@ export default function ChannelChatScreen() {
     () => offlineCache.getMessages<MessageItem>(channelId)
   );
 
+  // Exact-message recovery for notification tap (G): fetch targeted message if missing locally.
+  // Must be idempotent and must NOT advance ordinary sync cursor.
+  useEffect(() => {
+    const mid = typeof targetMessageId === "string" ? targetMessageId.trim() : "";
+    if (!channelId || !mid) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const cached = await offlineCache.getMessages<MessageItem>(channelId, 500);
+        const exists = cached.some((m) => m.id === mid);
+        if (exists) return;
+        const res = await apiRequest<any[]>(`/api/message/list?channelId=${encodeURIComponent(channelId)}&messageId=${encodeURIComponent(mid)}`);
+        if (cancelled) return;
+        const msg = Array.isArray(res) ? res[0] : null;
+        if (!msg || !msg.id) {
+          Alert.alert("መልዕክት አልተገኘም", "የተመረጠው መልዕክት ማግኘት አልተቻለም። እባክዎ እንደገና ይሞክሩ።");
+          return;
+        }
+        if (msg.deletedAt) {
+          await offlineCache.saveMessages(channelId, [{ ...msg, content: "", media: null, status: "SENT" }]);
+        } else {
+          await offlineCache.saveMessages(channelId, [{ ...msg, status: "SENT" }]);
+        }
+        if (!cancelled) {
+          queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
+        }
+      } catch (e: any) {
+        if (cancelled) return;
+        const m = String(e?.message || "");
+        if (/404|not found/i.test(m)) {
+          Alert.alert("መልዕክት አልተገኘም", "የተመረጠው መልዕክት ተሰርዟል ወይም አይገኝም።");
+        } else if (/403|forbidden|unauthorized/i.test(m)) {
+          Alert.alert("ፈቃድ የለም", "ይህን መልዕክት ለማየት ፈቃድ የለዎትም።");
+        } else {
+          Alert.alert("መልዕክት መጫን አልተቻለም", "የተመረጠው መልዕክት ማምጣት አልተቻለም። እባክዎ እንደገና ይሞክሩ።");
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [channelId, targetMessageId, queryClient]);
+
+
   // 2. Fetch conversations to know channel title / recipient name
   const { data: convos } = useQuery<any[]>({
     queryKey: ["conversations"],
@@ -495,8 +537,20 @@ export default function ChannelChatScreen() {
   useEffect(() => {
     navigation.setOptions({
       title: cleanHeaderTitle,
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => {
+            if (!channelId) return;
+            router.push(`/call/${channelId}`);
+          }}
+          style={{ paddingHorizontal: 8, paddingVertical: 4 }}
+          accessibilityLabel="Start video call"
+        >
+          <VideoIcon color={THEME.colors.sacredAmber} size={22} />
+        </TouchableOpacity>
+      ),
     });
-  }, [navigation, cleanHeaderTitle]);
+  }, [navigation, cleanHeaderTitle, channelId, router]);
 
   // 3. Decrypt incoming ciphertext once per message id
   useEffect(() => {
@@ -554,118 +608,127 @@ export default function ChannelChatScreen() {
 
     mobileSyncService.syncChannelMessages(channelId).catch(() => {});
 
-    const pusher = getMobilePusher();
-    const chName = `private-chat-${channelId}`;
-    const ch = pusher.subscribe(chName);
+    let pusher: any;
+    let ch: any;
+    let chName = `private-chat-${channelId}`;
+    try {
+      pusher = getMobilePusher();
+      ch = pusher.subscribe(chName);
 
-    ch.bind("new-message", async (msg: any) => {
-      if (!msg || !msg.id) return;
+      ch.bind("new-message", async (msg: any) => {
+        if (!msg || !msg.id) return;
 
-      let content = msg.content;
-      if (msg.isEncrypted && msg.encryption) {
-        try {
-          content = await decryptMessage(msg.content, msg.encryption);
-          setDecryptedContent((prev) => ({ ...prev, [msg.id]: content }));
-        } catch {
-          setDecryptedContent((prev) => ({
-            ...prev,
-            [msg.id]: LOCKED_MESSAGE_PLACEHOLDER,
-          }));
-        }
-      }
-
-      const normalized: MessageItem = { ...msg, status: "SENT" };
-      await offlineCache.saveMessages(channelId, [normalized]);
-      queryClient.setQueryData<MessageItem[]>(
-        ["messages", channelId],
-        (old = []) => {
-          if (old.some((m) => m.id === normalized.id)) {
-            return old.map((m) => (m.id === normalized.id ? normalized : m));
+        let content = msg.content;
+        if (msg.isEncrypted && msg.encryption) {
+          try {
+            content = await decryptMessage(msg.content, msg.encryption);
+            setDecryptedContent((prev) => ({ ...prev, [msg.id]: content }));
+          } catch {
+            setDecryptedContent((prev) => ({
+              ...prev,
+              [msg.id]: LOCKED_MESSAGE_PLACEHOLDER,
+            }));
           }
-          return [...old, normalized].sort((a, b) => a.createdAt - b.createdAt);
+        }
+
+        const normalized: MessageItem = { ...msg, status: "SENT" };
+        await offlineCache.saveMessages(channelId, [normalized]);
+        queryClient.setQueryData<MessageItem[]>(
+          ["messages", channelId],
+          (old = []) => {
+            if (old.some((m) => m.id === normalized.id)) {
+              return old.map((m) => (m.id === normalized.id ? normalized : m));
+            }
+            return [...old, normalized].sort((a, b) => a.createdAt - b.createdAt);
+          }
+        );
+      });
+
+      ch.bind("message-updated", async (data: any) => {
+        // Supports both text edit shape {messageId, content, updatedAt}
+        // and call/artifact shape {id/callId, channelId, callDetails, editedAt, ...}
+        const messageId = data?.messageId || data?.id || data?.callId || data?.callDetails?.callId;
+        if (!messageId) return;
+        const editedAt = data?.editedAt || data?.updatedAt || Date.now();
+        const patch: Partial<MessageItem> = { editedAt };
+        if (typeof data?.content === "string") patch.content = data.content;
+        if (data?.callDetails) patch.callDetails = data.callDetails;
+        if (data?.deletedAt) {
+          patch.deletedAt = data.deletedAt;
+          patch.content = "";
+          patch.media = null;
+        }
+        // Preserve existing encrypted payload/content unless explicitly replaced.
+        await offlineCache.updateMessage(channelId, messageId, (m) => ({
+          ...m,
+          ...patch,
+        }));
+        queryClient.setQueryData<MessageItem[]>(
+          ["messages", channelId],
+          (old = []) =>
+            old.map((m) => (m.id === messageId ? { ...m, ...patch } : m))
+        );
+      });
+
+      ch.bind(
+        "message-deleted",
+        async (data: { messageId: string; deletedAt?: number }) => {
+          if (!data?.messageId) return;
+          await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
+            ...m,
+            deletedAt: data.deletedAt || Date.now(),
+            content: "",
+            media: null,
+          }));
+          queryClient.setQueryData<MessageItem[]>(
+            ["messages", channelId],
+            (old = []) =>
+              old.map((m) =>
+                m.id === data.messageId
+                  ? {
+                      ...m,
+                      deletedAt: data.deletedAt || Date.now(),
+                      content: "",
+                      media: null,
+                    }
+                  : m
+              )
+          );
         }
       );
-    });
 
-    ch.bind(
-      "message-updated",
-      async (data: { messageId: string; content: string; updatedAt?: number }) => {
-        if (!data?.messageId) return;
-        await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
-          ...m,
-          content: data.content,
-          editedAt: data.updatedAt || Date.now(),
-        }));
-        queryClient.setQueryData<MessageItem[]>(
-          ["messages", channelId],
-          (old = []) =>
-            old.map((m) =>
-              m.id === data.messageId
-                ? {
-                    ...m,
-                    content: data.content,
-                    editedAt: data.updatedAt || Date.now(),
-                  }
-                : m
-            )
-        );
-      }
-    );
+      ch.bind(
+        "message-reaction",
+        async (data: { messageId: string; reactions: Record<string, string[]> }) => {
+          if (!data?.messageId) return;
+          await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
+            ...m,
+            reactions: data.reactions,
+          }));
+          queryClient.setQueryData<MessageItem[]>(
+            ["messages", channelId],
+            (old = []) =>
+              old.map((m) =>
+                m.id === data.messageId
+                  ? { ...m, reactions: data.reactions }
+                  : m
+              )
+          );
+        }
+      );
 
-    ch.bind(
-      "message-deleted",
-      async (data: { messageId: string; deletedAt?: number }) => {
-        if (!data?.messageId) return;
-        await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
-          ...m,
-          deletedAt: data.deletedAt || Date.now(),
-          content: "",
-          media: null,
-        }));
-        queryClient.setQueryData<MessageItem[]>(
-          ["messages", channelId],
-          (old = []) =>
-            old.map((m) =>
-              m.id === data.messageId
-                ? {
-                    ...m,
-                    deletedAt: data.deletedAt || Date.now(),
-                    content: "",
-                    media: null,
-                  }
-                : m
-            )
-        );
-      }
-    );
-
-    ch.bind(
-      "message-reaction",
-      async (data: { messageId: string; reactions: Record<string, string[]> }) => {
-        if (!data?.messageId) return;
-        await offlineCache.updateMessage(channelId, data.messageId, (m) => ({
-          ...m,
-          reactions: data.reactions,
-        }));
-        queryClient.setQueryData<MessageItem[]>(
-          ["messages", channelId],
-          (old = []) =>
-            old.map((m) =>
-              m.id === data.messageId
-                ? { ...m, reactions: data.reactions }
-                : m
-            )
-        );
-      }
-    );
-
-    ch.bind("message-seen", () => {
-      // Read state acknowledged
-    });
+      ch.bind("message-seen", () => {
+        // Read state acknowledged
+      });
+    } catch (e) {
+      console.warn("[ChannelChat] Realtime subscription setup failed:", e);
+    }
 
     return () => {
-      ch.unbind_all();
-      pusher.unsubscribe(chName);
+      try {
+        if (ch) ch.unbind_all();
+        if (pusher) pusher.unsubscribe(chName);
+      } catch {}
     };
   }, [channelId, queryClient]);
 

@@ -48,6 +48,78 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    // 1b. TARGETED FETCH: exact message recovery (authorized, idempotent source).
+    // Separate from delta sync; must not be used to advance ordinary sync cursors.
+    const messageIdParam = (searchParams.get("messageId") || "").trim();
+    if (messageIdParam) {
+      const msgDoc = await adminDb
+        .collection("Channels")
+        .doc(channelId)
+        .collection("Messages")
+        .doc(messageIdParam)
+        .get();
+
+      if (!msgDoc.exists) {
+        return NextResponse.json({ error: "Message not found" }, { status: 404 });
+      }
+
+      const target = { id: msgDoc.id, ...msgDoc.data() } as any;
+      if (target.deletedAt) {
+        return NextResponse.json(
+          [
+            {
+              ...target,
+              content: "",
+              media: null,
+              senderName: "የቤተሰብ አባል",
+              senderRole: "CHILD",
+              senderPhoto: null,
+            },
+          ],
+          { status: 200, headers: { "Cache-Control": "private, no-store", "x-ledger-target": "deleted" } }
+        );
+      }
+
+      const senderIds: UID[] = target.senderId ? [target.senderId as UID] : [];
+      const profileMap = new Map<UID, SenderProfile>();
+      if (senderIds.length > 0) {
+        const [studentsSnap, fathersSnap] = await Promise.all([
+          adminDb.collection("Students").where("uid", "in", senderIds).get(),
+          adminDb.collection("Fathers").where("uid", "in", senderIds).get(),
+        ]);
+        studentsSnap.docs.forEach((d) => {
+          const data = d.data();
+          profileMap.set(data.uid as UID, {
+            name: data.fullName || "የቤተሰብ አባል",
+            photo: data.photoUrl || null,
+            role: "CHILD",
+          });
+        });
+        fathersSnap.docs.forEach((d) => {
+          const data = d.data();
+          profileMap.set(data.uid as UID, {
+            name: data.fullName || "መምህር",
+            photo: data.photoUrl || null,
+            role: "FATHER",
+          });
+        });
+      }
+      const profile = profileMap.get(target.senderId as UID);
+      return NextResponse.json(
+        [
+          {
+            ...target,
+            media: target.media || null,
+            // Preserve encrypted payload/content as stored for client-side authorized decryption.
+            senderName: profile?.name || "የቤተሰብ አባል",
+            senderRole: profile?.role || "CHILD",
+            senderPhoto: profile?.photo || null,
+          },
+        ],
+        { status: 200, headers: { "Cache-Control": "private, no-store", "x-ledger-target": "exact" } }
+      );
+    }
+
     // 2. FETCH MESSAGES: Supports delta sync via ?since= and initial limit via ?limit=
     const sinceParam = searchParams.get("since");
     const afterId = searchParams.get("afterId");

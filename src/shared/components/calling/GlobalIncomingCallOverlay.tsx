@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Phone, PhoneOff, Video, Users, Shield } from "lucide-react";
 import { getPusherClient } from "@/services/pusher";
 
@@ -17,248 +17,452 @@ interface IncomingCallPayload {
   startedAt: number;
 }
 
+type CallTerminalStatus = "declined" | "missed" | "cancelled" | "ended" | "answered";
+
+function terminalFromMessageStatus(status: unknown): CallTerminalStatus | null {
+  if (status === "declined" || status === "missed" || status === "cancelled" || status === "ended") {
+    return status;
+  }
+  if (status === "answered") return "answered";
+  return null;
+}
+
 export function GlobalIncomingCallOverlay() {
   const router = useRouter();
+  const pathname = usePathname();
   const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null);
+  const [audioBlocked, setAudioBlocked] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const activeCallIdRef = useRef<string | null>(null);
+  const channelSubsRef = useRef<Set<string>>(new Set());
+  const userChannelRef = useRef<string | null>(null);
+  const uidRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const refreshingRef = useRef(false);
 
-  // Initialize ringtone audio
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const audio = new Audio("/sounds/call-ring.mp3");
-      audio.loop = true;
-      audio.preload = "auto";
-      audioRef.current = audio;
-    }
-  }, []);
+    activeCallIdRef.current = incomingCall?.callId || null;
+  }, [incomingCall]);
 
-  const stopAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
-  };
-
-  const playAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch((err) => {
-        // Autoplay may be blocked until user interacts with the page
-        console.warn("[IncomingCall] Ringtone audio playback blocked:", err);
-      });
-    }
-  };
-
-  // Subscribe to Pusher incoming calls
+  // Initialize ringtone audio (single instance)
   useEffect(() => {
-    let activeSubscriptions: string[] = [];
-
-    async function setupListeners() {
-      try {
-        const res = await fetch("/api/message/conversation", {
-          credentials: "include",
-        });
-        if (!res.ok) return;
-
-        const data = await res.json();
-        const convos = data.conversations || [];
-        const pusher = getPusherClient();
-
-        // Also retrieve current user uid from session to avoid ringing own device
-        const sessionRes = await fetch("/api/auth/refresh", { credentials: "include" });
-        const sessionData = sessionRes.ok ? await sessionRes.json() : null;
-        const currentUid = sessionData?.uid || "";
-
-        // 1. Subscribe to User's private channel
-        if (currentUid) {
-          const userChName = `private-user-${currentUid}`;
-          activeSubscriptions.push(userChName);
-          const userChannel = pusher.subscribe(userChName);
-
-          userChannel.bind("incoming-call", (payload: IncomingCallPayload) => {
-            if (payload.callerId !== currentUid) {
-              handleIncomingCall(payload);
-            }
-          });
-        }
-
-        // 2. Subscribe to conversation channels
-        convos.forEach((c: any) => {
-          const chName = `private-chat-${c.id}`;
-          activeSubscriptions.push(chName);
-          const channel = pusher.subscribe(chName);
-
-          channel.bind("incoming-call", (payload: IncomingCallPayload) => {
-            if (payload.callerId !== currentUid) {
-              handleIncomingCall(payload);
-            }
-          });
-
-          channel.bind("call-declined", () => {
-            dismissCall();
-          });
-
-          channel.bind("call-answered", () => {
-            dismissCall();
-          });
-
-          channel.bind("call-ended", () => {
-            dismissCall();
-          });
-
-          channel.bind("call-missed", () => {
-            dismissCall();
-          });
-        });
-      } catch (err) {
-        console.warn("[GlobalIncomingCall] Setup error:", err);
-      }
-    }
-
-    setupListeners();
-
+    if (typeof window === "undefined") return;
+    const audio = new Audio("/sounds/call-ring.mp3");
+    audio.loop = true;
+    audio.preload = "auto";
+    audioRef.current = audio;
     return () => {
       try {
-        const pusher = getPusherClient();
-        activeSubscriptions.forEach((chName) => pusher.unsubscribe(chName));
+        audio.pause();
+        audio.currentTime = 0;
+        audio.src = "";
       } catch {}
+      audioRef.current = null;
     };
   }, []);
 
-  const handleIncomingCall = (payload: IncomingCallPayload) => {
-    setIncomingCall(payload);
-    playAudio();
-
-    // Show Web Notification if page is in background
-    if (typeof window !== "undefined" && "Notification" in window) {
-      if (Notification.permission === "granted" && document.visibilityState === "hidden") {
-        try {
-          new Notification(
-            payload.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ",
-            {
-              body: `${payload.callerName} ጥሪ አድርገዋል`,
-              icon: payload.callerPhotoUrl || "/assets/icons/favicon-for-app/icon1.png",
-              tag: payload.callId,
-              requireInteraction: true,
-            }
-          );
-        } catch {}
+  const stopRingtone = () => {
+    try {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
       }
-    }
-
-    // 45s Ringing Timeout
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(async () => {
-      stopAudio();
-      setIncomingCall(null);
-      await fetch("/api/livekit/timeout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelId: payload.channelId, callId: payload.callId }),
-      }).catch(() => {});
-    }, 45000);
+    } catch {}
+    setAudioBlocked(false);
   };
 
-  const dismissCall = () => {
-    stopAudio();
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+  const dismissIncoming = (callId?: string | null) => {
+    if (callId && activeCallIdRef.current && callId !== activeCallIdRef.current) return;
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    stopRingtone();
+    activeCallIdRef.current = null;
     setIncomingCall(null);
   };
 
-  const handleAnswer = async () => {
-    if (!incomingCall) return;
-    const { channelId, callId } = incomingCall;
-    dismissCall();
+  // Start/stop ringtone based on incoming call
+  useEffect(() => {
+    if (incomingCall) {
+      let cancelled = false;
+      setAudioBlocked(false);
+      const playPromise = audioRef.current?.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            if (cancelled) stopRingtone();
+          })
+          .catch(() => {
+            // Autoplay blocked: keep full-screen UI visible; never pretend audible ringing works.
+            if (!cancelled) setAudioBlocked(true);
+          });
+      }
 
-    await fetch("/api/livekit/answer", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channelId, callId }),
-    }).catch(() => {});
+      // Auto-dismiss after 45 seconds (client-side fallback; server remains authoritative)
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => {
+        dismissIncoming(incomingCall.callId);
+      }, 45000);
 
-    router.push(`/call/${channelId}?incoming=1&callId=${callId}`);
-  };
+      return () => {
+        cancelled = true;
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+        }
+      };
+    } else {
+      stopRingtone();
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    }
+  }, [incomingCall?.callId]);
 
-  const handleDecline = async () => {
-    if (!incomingCall) return;
-    const { channelId, callId } = incomingCall;
-    dismissCall();
+  // Keep tab title in sync (small UX aid)
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const original = document.title;
+    if (incomingCall) document.title = "📞 ጥሪ እየመጣ ነው...";
+    return () => {
+      document.title = original;
+    };
+  }, [incomingCall?.callId]);
 
-    await fetch("/api/livekit/decline", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channelId, callId }),
-    }).catch(() => {});
-  };
+  // App-wide Pusher subscriptions with reconnect/recovery
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    mountedRef.current = true;
+    let pusher: ReturnType<typeof getPusherClient> | null = null;
+    let connectionHandler: (() => void) | null = null;
+
+    const isOnCallRoute = (channelId: string) => {
+      try {
+        return window.location.pathname.includes(`/call/${channelId}`);
+      } catch {
+        return false;
+      }
+    };
+
+    const handleIncomingCall = (data: IncomingCallPayload) => {
+      if (!mountedRef.current || !data?.callId || !data?.channelId) return;
+      // Ignore if already viewing this call
+      if (isOnCallRoute(data.channelId)) return;
+      // One active incoming call at a time per device (client-side guard; server enforces busy)
+      if (activeCallIdRef.current && activeCallIdRef.current !== data.callId) return;
+
+      setIncomingCall((prev) => {
+        if (prev?.callId === data.callId) return prev;
+        if (prev && prev.callId !== data.callId) return prev; // keep existing active incoming call
+        return data;
+      });
+
+      // Browser notification when tab hidden (best-effort)
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden" &&
+        "Notification" in window &&
+        Notification.permission === "granted"
+      ) {
+        try {
+          const n = new Notification(data.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ", {
+            body: `${data.callerName} ጥሪ አድርገዋል`,
+            icon: data.callerPhotoUrl || "/icons/icon-192x192.png",
+            tag: `incoming-call-${data.callId}`,
+            requireInteraction: true,
+          } as NotificationOptions);
+          n.onclick = () => {
+            window.focus();
+            n.close();
+          };
+        } catch {}
+      }
+    };
+
+    const handleCallTerminal = (eventCallId: unknown, status: CallTerminalStatus) => {
+      const cid = typeof eventCallId === "string" ? eventCallId : null;
+      if (!cid) return;
+      // answered means this incoming call UI should dismiss (someone answered/joined elsewhere)
+      dismissIncoming(cid);
+    };
+
+    const bindChannel = (channelName: string) => {
+      if (!pusher || channelSubsRef.current.has(channelName)) return;
+      const ch = pusher.subscribe(channelName);
+      channelSubsRef.current.add(channelName);
+
+      // Avoid duplicate bindings by unbinding our known handlers first (pusher-js allows named binds; keep simple)
+      ch.unbind("incoming-call");
+      ch.unbind("call-declined");
+      ch.unbind("call-ended");
+      ch.unbind("call-missed");
+      ch.unbind("call-answered");
+      ch.unbind("message-updated");
+
+      ch.bind("incoming-call", handleIncomingCall);
+      ch.bind("call-declined", (d: any) => handleCallTerminal(d?.callId, "declined"));
+      ch.bind("call-ended", (d: any) => handleCallTerminal(d?.callId, "ended"));
+      ch.bind("call-missed", (d: any) => handleCallTerminal(d?.callId, "missed"));
+      ch.bind("call-answered", (d: any) => handleCallTerminal(d?.callId, "answered"));
+      ch.bind("message-updated", (d: any) => {
+        const st = terminalFromMessageStatus(d?.callDetails?.status);
+        if (st) handleCallTerminal(d?.id || d?.callId || d?.callDetails?.callId, st);
+      });
+    };
+
+    const unbindAllChannels = () => {
+      if (!pusher) return;
+      channelSubsRef.current.forEach((name) => {
+        try {
+          const ch = pusher!.channel(name);
+          if (ch) {
+            ch.unbind("incoming-call", handleIncomingCall);
+            // other handlers anonymous per bind; unsubscribe ensures cleanup
+          }
+          pusher!.unsubscribe(name);
+        } catch {}
+      });
+      channelSubsRef.current.clear();
+      userChannelRef.current = null;
+    };
+
+    const refreshSubscriptions = async () => {
+      if (!mountedRef.current || !pusher || refreshingRef.current) return;
+      refreshingRef.current = true;
+      try {
+        // Ensure session/user
+        if (!uidRef.current) {
+          const sessionRes = await fetch("/api/auth/session", { cache: "no-store" }).catch(() => null);
+          if (sessionRes?.ok) {
+            const session = await sessionRes.json().catch(() => null);
+            uidRef.current = session?.uid || null;
+          }
+        }
+        const uid = uidRef.current;
+        if (!uid) return;
+
+        // User channel (global incoming-call delivery)
+        const userChName = `private-user-${uid}`;
+        if (userChannelRef.current !== userChName) {
+          if (userChannelRef.current) {
+            try { pusher.unsubscribe(userChannelRef.current); } catch {}
+            channelSubsRef.current.delete(userChannelRef.current);
+          }
+          userChannelRef.current = userChName;
+        }
+        bindChannel(userChName);
+
+        // Current channel memberships
+        const convRes = await fetch("/api/message/conversation", { cache: "no-store" }).catch(() => null);
+        if (!convRes?.ok) return;
+        const conversations = await convRes.json().catch(() => []);
+        if (!Array.isArray(conversations)) return;
+
+        const desired = new Set<string>([userChName]);
+        conversations.forEach((c: any) => {
+          const cid = c?.channel?.id || c?.id;
+          if (cid) desired.add(`private-chat-${cid}`);
+        });
+
+        // Subscribe missing
+        desired.forEach((name) => bindChannel(name));
+        // Unsubscribe stale chat channels (keep user channel)
+        [...channelSubsRef.current].forEach((name) => {
+          if (!desired.has(name)) {
+            try { pusher!.unsubscribe(name); } catch {}
+            channelSubsRef.current.delete(name);
+          }
+        });
+      } catch (e) {
+        // best-effort; will retry on reconnect/interval
+      } finally {
+        refreshingRef.current = false;
+      }
+    };
+
+    const setup = async () => {
+      try {
+        pusher = getPusherClient();
+      } catch {
+        return;
+      }
+
+      await refreshSubscriptions();
+
+      // Reconnect recovery: ensure connected and resubscribe/refresh
+      connectionHandler = () => {
+        if (!mountedRef.current) return;
+        void refreshSubscriptions();
+      };
+      try {
+        pusher.connection.bind("connected", connectionHandler);
+      } catch {}
+
+      // Periodic refresh to pick up membership changes/new channels while app stays open
+      const interval = window.setInterval(() => {
+        if (document.visibilityState === "visible") void refreshSubscriptions();
+      }, 30000);
+
+      const onVis = () => {
+        if (document.visibilityState === "visible") void refreshSubscriptions();
+      };
+      document.addEventListener("visibilitychange", onVis);
+
+      return () => {
+        window.clearInterval(interval);
+        document.removeEventListener("visibilitychange", onVis);
+      };
+    };
+
+    let extraCleanup: (() => void) | undefined;
+    setup().then((c) => {
+      extraCleanup = c;
+    });
+
+    return () => {
+      mountedRef.current = false;
+      try { extraCleanup?.(); } catch {}
+      if (pusher && connectionHandler) {
+        try { pusher.connection.unbind("connected", connectionHandler); } catch {}
+      }
+      unbindAllChannels();
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      stopRingtone();
+    };
+  }, [router]);
 
   if (!incomingCall) return null;
 
-  return (
-    <div className="fixed inset-0 z-[9999] bg-slate-950/92 backdrop-blur-md flex flex-col items-center justify-between py-12 px-6 animate-in fade-in duration-200">
-      {/* Top Banner */}
-      <div className="flex flex-col items-center text-center mt-4">
-        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-black tracking-wide uppercase">
-          {incomingCall.isGroup ? <Users className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
-          {incomingCall.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቀጥታ የቪዲዮ ጥሪ"}
-        </span>
-        <p className="text-slate-400 text-xs mt-2">የንስሐ ሚስጥር ጥሪ እየቀረበ ነው (ታሕተ ማኅተም)</p>
-      </div>
+  const isOnCallPage =
+    typeof pathname === "string" && pathname.includes(`/call/${incomingCall.channelId}`);
 
-      {/* Center Caller Profile */}
-      <div className="flex flex-col items-center text-center my-auto">
-        <div className="relative mb-6">
-          <div className="w-28 h-28 sm:w-36 sm:h-36 rounded-full bg-slate-900 border-4 border-amber-500/80 shadow-[0_0_35px_rgba(217,119,6,0.4)] flex items-center justify-center overflow-hidden animate-pulse">
-            {incomingCall.callerPhotoUrl ? (
-              <img
-                src={incomingCall.callerPhotoUrl}
-                alt={incomingCall.callerName}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <span className="text-amber-400 text-4xl sm:text-5xl font-black">✞</span>
+  // If already on this call page, do not show incoming overlay
+  if (isOnCallPage) return null;
+
+  const handleAnswer = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    stopRingtone();
+    const call = incomingCall;
+    setIncomingCall(null);
+    activeCallIdRef.current = null;
+    router.push(
+      `/call/${call.channelId}?incoming=1&callId=${encodeURIComponent(call.callId)}&callerName=${encodeURIComponent(call.callerName)}&callerPhoto=${encodeURIComponent(call.callerPhotoUrl || "")}&callerRole=${encodeURIComponent(call.callerRole || "")}&isGroup=${call.isGroup ? "1" : "0"}`
+    );
+  };
+
+  const handleDecline = async () => {
+    const call = incomingCall;
+    dismissIncoming(call.callId);
+    try {
+      await fetch("/api/livekit/decline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channelId: call.channelId, callId: call.callId }),
+      });
+    } catch {
+      // best-effort
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+      {/* Full-screen sacred backdrop */}
+      <div className="absolute inset-0 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(217,119,6,0.12)_0%,_transparent_60%)]" />
+
+      <div className="relative z-10 flex flex-col items-center justify-between h-full w-full max-w-md mx-auto py-16 px-6">
+        {/* Top: Call Type Badge */}
+        <div className="flex flex-col items-center gap-2">
+          <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30">
+            <Shield className="w-4 h-4 text-amber-400" />
+            <span className="text-xs font-extrabold text-amber-300 tracking-wide">
+              {incomingCall.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቀጥታ የቪዲዮ ጥሪ"}
+            </span>
+          </div>
+          <p className="text-[11px] text-slate-500 font-medium">
+            የንስሐ ሚስጥር ጥሪ እየቀረበ ነው
+          </p>
+          {audioBlocked && (
+            <p className="text-[10px] text-amber-400/90 font-semibold text-center max-w-xs">
+              የጥሪ ድምጽ በአሳሹ ተከልክሏል፤ ጥሪው እየመጣ ነው።
+            </p>
+          )}
+        </div>
+
+        {/* Center: Caller Identity */}
+        <div className="flex flex-col items-center gap-5">
+          {/* Pulsing ring animation */}
+          <div className="relative">
+            <div className="absolute inset-0 w-32 h-32 rounded-full border-2 border-amber-500/30 animate-ping" />
+            <div className="absolute -inset-3 w-[152px] h-[152px] rounded-full border border-amber-500/15 animate-pulse" />
+            <div className="relative w-32 h-32 rounded-full overflow-hidden border-4 border-amber-500/60 shadow-2xl shadow-amber-900/40 bg-slate-800 flex items-center justify-center">
+              {incomingCall.callerPhotoUrl ? (
+                <img
+                  src={incomingCall.callerPhotoUrl}
+                  alt={incomingCall.callerName}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <span className="text-4xl font-black text-amber-400 font-serif">
+                  {incomingCall.callerName.charAt(0) || "✞"}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="text-center space-y-1.5">
+            <h2 className="text-2xl font-black text-slate-100 tracking-tight">
+              {incomingCall.callerName}
+            </h2>
+            {incomingCall.callerRole && (
+              <p className="text-sm text-amber-400/80 font-semibold">
+                {incomingCall.callerRole === "FATHER" ? "የንስሐ አባት" : incomingCall.callerRole === "STUDENT" ? "የንስሐ ልጅ" : "አባል"}
+              </p>
             )}
+            <div className="flex items-center justify-center gap-2 mt-2">
+              {incomingCall.isGroup ? (
+                <Users className="w-4 h-4 text-slate-400" />
+              ) : (
+                <Video className="w-4 h-4 text-slate-400" />
+              )}
+              <span className="text-xs text-slate-400 font-medium animate-pulse">
+                እየጠራ ነው...
+              </span>
+            </div>
           </div>
         </div>
 
-        <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-          {incomingCall.callerName}
-        </h2>
-        <span className="text-amber-400/90 text-sm font-bold mt-1">
-          {incomingCall.callerRole === "FATHER" ? "የንስሐ አባት" : "የንስሐ ልጅ"}
-        </span>
-        <p className="text-slate-400 text-xs sm:text-sm mt-3 animate-pulse">
-          ጥሪ በመደወል ላይ...
-        </p>
-      </div>
+        {/* Bottom: Answer / Decline */}
+        <div className="flex items-center justify-center gap-16 sm:gap-20">
+          {/* Decline */}
+          <div className="flex flex-col items-center gap-2">
+            <button
+              onClick={handleDecline}
+              className="w-16 h-16 sm:w-[72px] sm:h-[72px] rounded-full bg-red-600 hover:bg-red-500 active:scale-95 flex items-center justify-center shadow-xl shadow-red-900/40 transition-all duration-200 border-2 border-red-400/30"
+              aria-label="Decline call"
+            >
+              <PhoneOff className="w-7 h-7 sm:w-8 sm:h-8 text-white" />
+            </button>
+            <span className="text-xs font-bold text-red-400">አትቀበል</span>
+          </div>
 
-      {/* Bottom Actions: Answer and Decline */}
-      <div className="flex items-center justify-center gap-12 sm:gap-16 mb-8 w-full max-w-sm">
-        {/* Decline */}
-        <div className="flex flex-col items-center gap-2">
-          <button
-            onClick={handleDecline}
-            className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-lg shadow-red-600/40 transition-transform active:scale-95"
-            title="አትቀበል"
-          >
-            <PhoneOff className="w-7 h-7 sm:w-9 sm:h-9" />
-          </button>
-          <span className="text-xs font-bold text-slate-300">አትቀበል</span>
-        </div>
-
-        {/* Answer */}
-        <div className="flex flex-col items-center gap-2">
-          <button
-            onClick={handleAnswer}
-            className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center shadow-lg shadow-emerald-600/40 transition-transform active:scale-95 animate-bounce"
-            title="ተቀበል"
-          >
-            <Phone className="w-7 h-7 sm:w-9 sm:h-9" />
-          </button>
-          <span className="text-xs font-bold text-emerald-400">ተቀበል</span>
+          {/* Answer */}
+          <div className="flex flex-col items-center gap-2">
+            <button
+              onClick={handleAnswer}
+              className="w-16 h-16 sm:w-[72px] sm:h-[72px] rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 flex items-center justify-center shadow-xl shadow-emerald-900/40 transition-all duration-200 border-2 border-emerald-400/30 animate-bounce"
+              aria-label="Answer call"
+              style={{ animationDuration: "2s" }}
+            >
+              <Phone className="w-7 h-7 sm:w-8 sm:h-8 text-white" />
+            </button>
+            <span className="text-xs font-bold text-emerald-400">ተቀበል</span>
+          </div>
         </div>
       </div>
     </div>
   );
 }
-

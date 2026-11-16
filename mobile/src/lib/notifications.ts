@@ -101,15 +101,20 @@ function routeFromNotification(
 
   const channelId = typeof data.channelId === "string" ? data.channelId : null;
   const callId = typeof data.callId === "string" ? data.callId : "";
+  const messageId = typeof data.messageId === "string" ? data.messageId : "";
 
   if (data.type === "incoming_call" && channelId) {
     // If the user tapped Decline directly on the notification action
     if (response.actionIdentifier === "DECLINE_CALL") {
-      apiRequest("/api/livekit/decline", {
-        method: "POST",
-        body: JSON.stringify({ channelId, callId }),
-      }).catch(() => {});
+      if (callId) {
+        apiRequest("/api/livekit/decline", {
+          method: "POST",
+          body: JSON.stringify({ channelId, callId }),
+        }).catch(() => {});
+      }
       Notifications.dismissNotificationAsync(response.notification.request.identifier).catch(() => {});
+      // Best-effort: clear other call notifications for this tag/call
+      Notifications.dismissAllNotificationsAsync().catch(() => {});
       return;
     }
 
@@ -119,7 +124,7 @@ function routeFromNotification(
     const isGroup = data.isGroup === "true" || data.isGroup === true ? "1" : "0";
 
     onNavigate(
-      `/call/${channelId}?incoming=1&callId=${callId}&callerName=${encodeURIComponent(
+      `/call/${channelId}?incoming=1&callId=${encodeURIComponent(callId)}&callerName=${encodeURIComponent(
         callerName
       )}&callerRole=${encodeURIComponent(
         callerRole
@@ -129,7 +134,8 @@ function routeFromNotification(
   }
 
   if (channelId) {
-    onNavigate(`/chat/${channelId}`);
+    const suffix = messageId ? `?targetMessageId=${encodeURIComponent(messageId)}` : "";
+    onNavigate(`/chat/${channelId}${suffix}`);
     return;
   }
 
@@ -202,20 +208,30 @@ export const notificationService = {
       routeFromNotification(response, onNavigate);
     };
 
+    let lastIncomingNavKey = "";
+    let lastIncomingNavAt = 0;
     const subReceived = Notifications.addNotificationReceivedListener(
       (notification) => {
-        const data = notification.request.content.data;
+        const data = notification.request.content.data as any;
         if (data?.type === "incoming_call" && data.channelId) {
-          // If in foreground and not already in call, navigate to call screen
           const channelId = String(data.channelId);
           const callId = String(data.callId || "");
+          const navKey = `${channelId}:${callId}`;
+          const now = Date.now();
+          // Dedupe foreground re-delivery/navigation for the same incoming call.
+          if (navKey === lastIncomingNavKey && now - lastIncomingNavAt < 15000) {
+            return;
+          }
+          lastIncomingNavKey = navKey;
+          lastIncomingNavAt = now;
+
           const callerName = String(data.callerName || "");
           const callerRole = String(data.callerRole || "");
           const callerPhoto = String(data.callerPhotoUrl || "");
           const isGroup = data.isGroup === "true" || data.isGroup === true ? "1" : "0";
 
           onNavigate(
-            `/call/${channelId}?incoming=1&callId=${callId}&callerName=${encodeURIComponent(
+            `/call/${channelId}?incoming=1&callId=${encodeURIComponent(callId)}&callerName=${encodeURIComponent(
               callerName
             )}&callerRole=${encodeURIComponent(
               callerRole

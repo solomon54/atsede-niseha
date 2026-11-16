@@ -57,6 +57,15 @@ const MessagingClient: FC<MessagingClientProps> = ({
     callerName: string;
   } | null>(null);
 
+  // Foreground in-app message banner (web): never expose ciphertext.
+  // Show decrypted text only when safely available; otherwise show exactly አዲስ መልዕክት.
+  const [foregroundBanner, setForegroundBanner] = useState<{
+    channelId: string;
+    senderName: string;
+    body: string;
+  } | null>(null);
+  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const streamRef = useRef<MessageStreamHandle>(null);
 
   // Track the open room without re-subscribing every time it changes.
@@ -64,6 +73,72 @@ const MessagingClient: FC<MessagingClientProps> = ({
   useEffect(() => {
     activeChannelIdRef.current = activeChannelId;
   }, [activeChannelId]);
+
+  const conversationsRef = useRef<ConversationSummary[]>(conversations);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  const showForegroundBanner = useCallback(
+    (payload: { channelId: string; senderName: string; body: string }) => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+      setForegroundBanner(payload);
+      bannerTimerRef.current = setTimeout(() => {
+        setForegroundBanner(null);
+        bannerTimerRef.current = null;
+      }, 4500);
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    };
+  }, []);
+
+  const getSafeForegroundBannerBody = useCallback((payload: any): string => {
+    if (!payload) return "አዲስ መልዕክት";
+    if (payload.deletedAt) return "አዲስ መልዕክት";
+    if (payload.callDetails || payload.type === "CALL") {
+      const st = payload.callDetails?.status;
+      if (st === "answered") return "📞 የቪዲዮ ጥሪ ተደርጓል";
+      if (st === "missed") return "📞 ያልተመለሰ ጥሪ";
+      if (st === "declined") return "📞 ጥሪው ተቀባይነት አላገኘም";
+      if (st === "cancelled") return "📞 ጥሪው ተሰርዟል";
+      return "📞 የቪዲዮ ጥሪ";
+    }
+    if (payload.type === "IMAGE") return "📷 ፎቶ";
+    if (payload.type === "VIDEO") return "🎥 ቪዲዮ";
+    if (payload.type === "AUDIO") return "🎙 የድምጽ መልዕክት";
+    if (payload.type === "FILE") return `📎 ${payload.media?.originalName || "ፋይል"}`;
+
+    const isEncrypted = payload.isEncrypted === true;
+    if (isEncrypted) {
+      // Show decrypted text only when safely available; never expose ciphertext.
+      const safeDecrypted =
+        typeof payload.decryptedPreview === "string" && payload.decryptedPreview.trim()
+          ? payload.decryptedPreview.trim()
+          : typeof payload.decryptedContent === "string" && payload.decryptedContent.trim()
+          ? payload.decryptedContent.trim()
+          : typeof payload.plaintext === "string" && payload.plaintext.trim()
+          ? payload.plaintext.trim()
+          : "";
+      if (safeDecrypted) {
+        const oneLine = safeDecrypted.replace(/\s+/g, " ").trim();
+        return oneLine.length > 80 ? oneLine.slice(0, 80) + "..." : oneLine;
+      }
+      return "አዲስ መልዕክት";
+    }
+
+    if (payload.decryptionFailed) return "አዲስ መልዕክት";
+    const text = typeof payload.content === "string" ? payload.content.replace(/\s+/g, " ").trim() : "";
+    if (!text) return "አዲስ መልዕክት";
+    return text.length > 80 ? text.slice(0, 80) + "..." : text;
+  }, []);
 
   // Opening a room counts as reading it; the server read receipt still runs
   // from MessageStream. This keeps the local badge in sync without waiting
@@ -148,12 +223,24 @@ const MessagingClient: FC<MessagingClientProps> = ({
       const cleanups = channelIds.map((channelId) => {
         const channel = pusher.subscribe(`private-chat-${channelId}`);
 
-        const handleNewMessage = (payload: Message) => {
+        const handleNewMessage = (payload: Message & { senderName?: string; decryptedPreview?: string }) => {
           if (!payload?.id) return;
 
           const isActive = activeChannelIdRef.current === channelId;
           const isOwn = payload.senderId === currentUserId;
 
+          // Never persist ciphertext in conversation snippets/previews.
+          const safeSnippetPayload = {
+            ...payload,
+            content:
+              payload.isEncrypted === true
+                ? ""
+                : typeof payload.content === "string"
+                  ? payload.content
+                  : "",
+          } as Message;
+
+          let accepted = false;
           setConversations((prev) =>
             prev.map((conversation) => {
               if (conversation.channel.id !== channelId) return conversation;
@@ -173,9 +260,10 @@ const MessagingClient: FC<MessagingClientProps> = ({
                 return conversation;
               }
 
+              accepted = true;
               return {
                 ...conversation,
-                lastMessage: payload,
+                lastMessage: safeSnippetPayload,
                 unreadCount:
                   isOwn || isActive
                     ? conversation.unreadCount || 0
@@ -188,6 +276,17 @@ const MessagingClient: FC<MessagingClientProps> = ({
               };
             })
           );
+
+          // Foreground in-app message banner (web): safe content only.
+          if (accepted && !isOwn) {
+            const conv = conversationsRef.current.find((c) => c.channel.id === channelId);
+            const senderName =
+              (payload as any).senderName ||
+              conv?.fullName ||
+              "አዲስ መልዕክት";
+            const body = getSafeForegroundBannerBody(payload);
+            showForegroundBanner({ channelId, senderName, body });
+          }
         };
 
         channel.bind("new-message", handleNewMessage);
@@ -203,7 +302,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
     } catch (e) {
       console.warn("Pusher conversation subscription error:", e);
     }
-  }, [conversationChannelIds, currentUserId]);
+  }, [conversationChannelIds, currentUserId, getSafeForegroundBannerBody, showForegroundBanner]);
 
   // Persist realtime snippet changes so an offline reload does not show stale
   // unread/last-message metadata for this account.
@@ -591,6 +690,27 @@ const MessagingClient: FC<MessagingClientProps> = ({
           </section>
         </div>
       </main>
+
+      {/* Foreground in-app message banner (web, safe only) */}
+      {foregroundBanner && (
+        <button
+          type="button"
+          onClick={() => {
+            setActiveChannelId(foregroundBanner.channelId as ChannelID);
+            setMobilePane("chat");
+            setForegroundBanner(null);
+          }}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[min(92vw,28rem)] text-left bg-white/95 backdrop-blur border border-slate-200 shadow-xl rounded-2xl px-4 py-3 hover:bg-white transition-colors"
+          aria-label="Open new message"
+        >
+          <p className="text-[11px] font-black uppercase tracking-widest text-amber-700 truncate">
+            {foregroundBanner.senderName}
+          </p>
+          <p className="text-sm text-slate-700 mt-0.5 line-clamp-2 break-words">
+            {foregroundBanner.body}
+          </p>
+        </button>
+      )}
 
       {/* Incoming call is now handled globally by GlobalIncomingCallOverlay in layout.tsx */}
     </div>

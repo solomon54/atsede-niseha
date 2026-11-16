@@ -37,6 +37,7 @@ import {
   useTracks,
   useLocalParticipant,
 } from "@livekit/react-native";
+import { Audio } from "expo-av";
 import { Track } from "livekit-client";
 import {
   Mic,
@@ -53,6 +54,64 @@ import {
 } from "lucide-react-native";
 import { apiRequest } from "../../src/lib/api";
 import { notificationService } from "../../src/lib/notifications";
+import { getMobilePusher } from "../../src/lib/pusher";
+
+
+function makeRingbackWavDataUri(): string {
+  // 8kHz mono 16-bit PCM, 2s tone (440Hz + 480Hz) followed by 3s silence pattern in one loopable segment
+  const sampleRate = 8000;
+  const toneSec = 2.0;
+  const silenceSec = 3.0;
+  const totalSamples = Math.floor(sampleRate * (toneSec + silenceSec));
+  const dataSize = totalSamples * 2;
+  const buffer = new Uint8Array(44 + dataSize);
+  const view = new DataView(buffer.buffer);
+  const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) buffer[off + i] = s.charCodeAt(i); };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, dataSize, true);
+  const toneSamples = Math.floor(sampleRate * toneSec);
+  for (let i = 0; i < totalSamples; i++) {
+    let sample = 0;
+    if (i < toneSamples) {
+      const t = i / sampleRate;
+      // Telephone-style ringback dual tone, modest amplitude
+      sample = (Math.sin(2 * Math.PI * 440 * t) + Math.sin(2 * Math.PI * 480 * t)) * 0.12;
+    }
+    const s = Math.max(-1, Math.min(1, sample));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  // base64 encode in chunks
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < buffer.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from(buffer.subarray(i, i + chunk)) as any);
+  }
+  // btoa may exist in RN Hermes; fallback simple implementation
+  const btoaFn = typeof globalThis.btoa === "function" ? globalThis.btoa.bind(globalThis) : (str: string) => {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let out = ""; let i = 0;
+    while (i < str.length) {
+      const b1 = str.charCodeAt(i++); const b2 = i < str.length ? str.charCodeAt(i++) : NaN; const b3 = i < str.length ? str.charCodeAt(i++) : NaN;
+      const e1 = b1 >> 2; const e2 = ((b1 & 3) << 4) | (isNaN(b2) ? 0 : b2 >> 4);
+      const e3 = isNaN(b2) ? 64 : ((b2 & 15) << 2) | (isNaN(b3) ? 0 : b3 >> 6);
+      const e4 = isNaN(b3) ? 64 : (b3 & 63);
+      out += chars[e1] + chars[e2] + (e3 === 64 ? "=" : chars[e3]) + (e4 === 64 ? "=" : chars[e4]);
+    }
+    return out;
+  };
+  return "data:audio/wav;base64," + btoaFn(binary);
+}
 
 interface TokenResponse {
   success: boolean;
@@ -82,6 +141,10 @@ export default function ChannelCallScreen() {
   const callerPhoto = params.callerPhoto ? decodeURIComponent(params.callerPhoto) : "";
   const isGroup = params.isGroup === "1";
 
+  useEffect(() => {
+    callIdRef.current = callId;
+  }, [callId]);
+
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
@@ -89,23 +152,78 @@ export default function ChannelCallScreen() {
   const [tokenData, setTokenData] = useState<TokenResponse | null>(null);
   const [hasAnswered, setHasAnswered] = useState<boolean>(!isIncoming);
   const [answeredAt, setAnsweredAt] = useState<number | null>(!isIncoming ? Date.now() : null);
+  const [callTerminal, setCallTerminal] = useState<{ status: string; message: string } | null>(null);
 
   const hasRung = useRef(false);
   const timeoutTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const terminalRef = useRef(false);
+  const callIdRef = useRef<string>(params.callId || "");
+  const ringbackSoundRef = useRef<Audio.Sound | null>(null);
+  const ringbackPlayingRef = useRef(false);
+
+  const stopRingback = async () => {
+    ringbackPlayingRef.current = false;
+    const snd = ringbackSoundRef.current;
+    ringbackSoundRef.current = null;
+    if (snd) {
+      try { await snd.stopAsync(); } catch {}
+      try { await snd.unloadAsync(); } catch {}
+    }
+  };
+
+  const startRingback = async () => {
+    if (terminalRef.current || ringbackPlayingRef.current) return;
+    try {
+      ringbackPlayingRef.current = true;
+      const uri = makeRingbackWavDataUri();
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
+        { shouldPlay: true, isLooping: true, volume: 0.6 }
+      );
+      // If stopped while loading
+      if (!ringbackPlayingRef.current || terminalRef.current) {
+        try { await sound.stopAsync(); } catch {}
+        try { await sound.unloadAsync(); } catch {}
+        return;
+      }
+      ringbackSoundRef.current = sound;
+    } catch (e) {
+      console.warn("[Call] ringback start failed:", e);
+      ringbackPlayingRef.current = false;
+    }
+  };
+
+  const finishTerminal = (status: string, message: string) => {
+    if (terminalRef.current) return;
+    terminalRef.current = true;
+    stopRingback().catch(() => {});
+    if (timeoutTimerRef.current) {
+      clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
+    }
+    notificationService.dismissCallNotifications().catch(() => {});
+    setCallTerminal({ status, message });
+    // Do not join/open empty room; return to previous screen.
+    setTimeout(() => {
+      try { handleBack(); } catch {}
+    }, 2200);
+  };
 
   // 45s Ringing Timeout Handler
   useEffect(() => {
+    if (terminalRef.current) return;
     // If we're waiting for answer (either incoming or caller waiting)
     timeoutTimerRef.current = setTimeout(async () => {
+      if (terminalRef.current) return;
       if (!hasAnswered) {
-        if (channelId && callId) {
+        const cid = callIdRef.current || callId;
+        if (channelId && cid) {
           apiRequest("/api/livekit/timeout", {
             method: "POST",
-            body: JSON.stringify({ channelId, callId }),
+            body: JSON.stringify({ channelId, callId: cid }),
           }).catch(() => {});
         }
-        notificationService.dismissCallNotifications();
-        handleBack();
+        finishTerminal("missed", "ጥሪው አልተመለሰም");
       }
     }, 45000);
 
@@ -118,6 +236,61 @@ export default function ChannelCallScreen() {
 
   useEffect(() => {
     let isMounted = true;
+    let pusher: any = null;
+    let pChannel: any = null;
+    const handlers: Array<[string, (d: any) => void]> = [];
+
+    const bindCallState = () => {
+      try {
+        pusher = getMobilePusher();
+        pChannel = pusher.subscribe(`private-chat-${channelId}`);
+        const on = (ev: string, h: (d: any) => void) => {
+          handlers.push([ev, h]);
+          pChannel.bind(ev, h);
+        };
+        const matches = (d: any) => {
+          const evId = d?.callId || d?.id || d?.callDetails?.callId;
+          const cur = callIdRef.current;
+          return !cur || !evId || evId === cur;
+        };
+        on("call-declined", (d: any) => {
+          if (!matches(d)) return;
+          const st = d?.status || "declined";
+          finishTerminal(st === "busy" ? "busy" : "declined", st === "busy" ? "ተቀባዩ በሌላ ጥሪ ላይ ነው" : "ጥሪው ተቀባይነት አላገኘም");
+        });
+        on("call-ended", (d: any) => {
+          if (!matches(d)) return;
+          const st = d?.status;
+          if (st === "missed") finishTerminal("missed", "ጥሪው አልተመለሰም");
+          else if (st === "cancelled") finishTerminal("cancelled", "ጥሪው ተሰርዟል");
+          else finishTerminal("ended", "ጥሪው ተጠናቋል");
+        });
+        on("call-missed", (d: any) => {
+          if (!matches(d)) return;
+          finishTerminal("missed", "ጥሪው አልተመለሰም");
+        });
+        on("call-answered", (d: any) => {
+          if (!matches(d)) return;
+          // Stop caller ringback immediately on authoritative answer.
+          stopRingback().catch(() => {});
+          if (timeoutTimerRef.current) {
+            clearTimeout(timeoutTimerRef.current);
+            timeoutTimerRef.current = null;
+          }
+          setAnsweredAt((prev) => prev || Date.now());
+        });
+        on("message-updated", (d: any) => {
+          const st = d?.callDetails?.status;
+          const id = d?.callDetails?.callId || d?.id;
+          if (!matches({ callId: id })) return;
+          if (st === "declined") finishTerminal("declined", "ጥሪው ተቀባይነት አላገኘም");
+          else if (st === "missed") finishTerminal("missed", "ጥሪው አልተመለሰም");
+          else if (st === "cancelled") finishTerminal("cancelled", "ጥሪው ተሰርዟል");
+        });
+      } catch (e) {
+        console.warn("[Call] Failed to bind call state listeners:", e);
+      }
+    };
 
     async function initCall() {
       if (!channelId) return;
@@ -125,13 +298,38 @@ export default function ChannelCallScreen() {
         setLoading(true);
         setError(null);
 
+        // Authoritative pre-join validation for incoming/specific call joins
+        if (isIncoming || params.callId) {
+          const cid = String(params.callId || "").trim();
+          if (!cid) {
+            finishTerminal("ended", "የጥሪ መለያ አልተገኘም። ጥሪውን መቀላቀል አይቻልም።");
+            return;
+          }
+          const st = await apiRequest<any>(`/api/livekit/status?callId=${encodeURIComponent(cid)}&channelId=${encodeURIComponent(channelId)}`).catch((e) => {
+            throw e;
+          });
+          if (!isMounted || terminalRef.current) return;
+          if (!st?.joinable || !(st.status === "ringing" || st.status === "answered")) {
+            const s = st?.status;
+            if (s === "declined") finishTerminal("declined", "ጥሪው ተቀባይነት አላገኘም");
+            else if (s === "missed") finishTerminal("missed", "ጥሪው አልተመለሰም");
+            else if (s === "cancelled") finishTerminal("cancelled", "ጥሪው ተሰርዟል");
+            else finishTerminal("ended", "ጥሪው ተጠናቋል");
+            return;
+          }
+          setCallId(cid);
+          callIdRef.current = cid;
+        }
+
+        bindCallState();
+
         // Fetch LiveKit Token
         const res = await apiRequest<TokenResponse>("/api/livekit/token", {
           method: "POST",
           body: JSON.stringify({ channelId }),
         });
 
-        if (!isMounted) return;
+        if (!isMounted || terminalRef.current) return;
 
         if (res.token && res.url) {
           setTokenData(res);
@@ -140,27 +338,53 @@ export default function ChannelCallScreen() {
           // Only the caller rings the other members
           if (!isIncoming && !hasRung.current) {
             hasRung.current = true;
-            const ringRes = await apiRequest<{ success: boolean; callId: string }>(
-              "/api/livekit/ring",
-              {
-                method: "POST",
-                body: JSON.stringify({ channelId }),
-              }
-            ).catch((ringErr) => {
+            const ringRes = await apiRequest<any>("/api/livekit/ring", {
+              method: "POST",
+              body: JSON.stringify({ channelId }),
+            }).catch((ringErr) => {
               console.warn("Failed to ring channel members:", ringErr);
-              return null;
+              return { __error: ringErr };
             });
 
+            if (ringRes?.__error) {
+              finishTerminal("unreachable", "ጥሪው ተቀባዩን አልደረሰም። እባክዎ እንደገና ይሞክሩ።");
+              return;
+            }
+            if (ringRes?.error === "busy" || ringRes?.status === "busy") {
+              finishTerminal("busy", "ተቀባዩ በሌላ ጥሪ ላይ ነው");
+              return;
+            }
+            if (!ringRes?.success || ringRes?.status !== "ringing") {
+              finishTerminal("unreachable", "ጥሪው ተቀባዩን አልደረሰም። እባክዎ እንደገና ይሞክሩ።");
+              return;
+            }
             if (ringRes?.callId) {
               setCallId(ringRes.callId);
+              callIdRef.current = ringRes.callId;
             }
+            // Caller ringback: telephone-style local audio while authoritatively ringing.
+            // Must not reuse incoming call ringtone.
+            startRingback().catch(() => {});
+          } else if ((isIncoming || params.callId) && (params.callId || callIdRef.current)) {
+            // Joiner: mark answered (authoritative/idempotent)
+            const cid = String(params.callId || callIdRef.current);
+            apiRequest("/api/livekit/answer", {
+              method: "POST",
+              body: JSON.stringify({ channelId, callId: cid }),
+            }).catch(() => {});
           }
         } else {
           setError("የቪዲዮ ጥሪ ፈቃድ ማግኘት አልተቻለም");
         }
       } catch (err: any) {
         if (!isMounted) return;
-        setError(err.message || "የኔትወርክ ወይም የክፍል ስህተት");
+        // Distinguish not-found/forbidden as call-ended/unavailable vs generic error
+        const msg = err?.message || "የኔትወርክ ወይም የክፍል ስህተት";
+        if (/404|not found/i.test(msg)) {
+          finishTerminal("ended", "ጥሪው አልተገኘም ወይም ተጠናቋል");
+          return;
+        }
+        setError(msg);
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -170,7 +394,18 @@ export default function ChannelCallScreen() {
 
     return () => {
       isMounted = false;
+      stopRingback().catch(() => {});
+      if (timeoutTimerRef.current) clearTimeout(timeoutTimerRef.current);
+      try {
+        if (pChannel && handlers.length) {
+          handlers.forEach(([ev, h]) => {
+            try { pChannel.unbind(ev, h); } catch {}
+          });
+        }
+        // Do not unsubscribe channel globally; other listeners may rely on it.
+      } catch {}
       AudioSession.stopAudioSession().catch(() => {});
+      notificationService.dismissCallNotifications().catch(() => {});
     };
   }, [channelId, isIncoming]);
 
@@ -183,58 +418,68 @@ export default function ChannelCallScreen() {
   };
 
   const handleAnswer = async () => {
+    if (terminalRef.current) return;
+    stopRingback().catch(() => {});
     if (timeoutTimerRef.current) {
       clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
     }
     setHasAnswered(true);
     setAnsweredAt(Date.now());
 
-    if (channelId) {
+    const cid = callIdRef.current || callId;
+    if (channelId && cid) {
       apiRequest("/api/livekit/answer", {
         method: "POST",
-        body: JSON.stringify({ channelId, callId }),
+        body: JSON.stringify({ channelId, callId: cid }),
       }).catch(() => {});
     }
-    notificationService.dismissCallNotifications();
+    notificationService.dismissCallNotifications().catch(() => {});
   };
 
   const handleDecline = async () => {
+    if (terminalRef.current) { handleBack(); return; }
+    terminalRef.current = true;
+    stopRingback().catch(() => {});
     if (timeoutTimerRef.current) {
       clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
     }
-    if (channelId) {
+    const cid = callIdRef.current || callId;
+    if (channelId && cid) {
       apiRequest("/api/livekit/decline", {
         method: "POST",
-        body: JSON.stringify({ channelId, callId }),
+        body: JSON.stringify({ channelId, callId: cid }),
       }).catch(() => {});
     }
-    notificationService.dismissCallNotifications();
-    try {
-      await AudioSession.stopAudioSession();
-    } catch {}
+    notificationService.dismissCallNotifications().catch(() => {});
+    try { await AudioSession.stopAudioSession(); } catch {}
     handleBack();
   };
 
   const handleEndCall = async () => {
+    if (terminalRef.current) { handleBack(); return; }
+    terminalRef.current = true;
+    stopRingback().catch(() => {});
     if (timeoutTimerRef.current) {
       clearTimeout(timeoutTimerRef.current);
+      timeoutTimerRef.current = null;
     }
     const durationSec = answeredAt ? Math.max(1, Math.floor((Date.now() - answeredAt) / 1000)) : 0;
-    if (channelId) {
+    const cid = callIdRef.current || callId;
+    if (channelId && cid) {
       apiRequest("/api/livekit/end", {
         method: "POST",
         body: JSON.stringify({
           channelId,
-          callId,
+          callId: cid,
           durationSec,
           status: hasAnswered ? "answered" : "cancelled",
         }),
       }).catch(() => {});
     }
-    notificationService.dismissCallNotifications();
-    try {
-      await AudioSession.stopAudioSession();
-    } catch {}
+    notificationService.dismissCallNotifications().catch(() => {});
+    try { await AudioSession.stopAudioSession(); } catch {}
     handleBack();
   };
 
@@ -289,6 +534,20 @@ export default function ChannelCallScreen() {
           </TouchableOpacity>
         </View>
       </SafeAreaView>
+    );
+  }
+
+  if (callTerminal) {
+    return (
+      <View style={styles.centerContainer}>
+        <StatusBar barStyle="light-content" />
+        <PhoneOff color="#D97706" size={48} />
+        <Text style={styles.errorTitle}>ጥሪው ተጠናቋል</Text>
+        <Text style={styles.errorSubtitle}>{callTerminal.message}</Text>
+        <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
+          <Text style={styles.backBtnText}>ወደ ውይይት ተመለስ</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 

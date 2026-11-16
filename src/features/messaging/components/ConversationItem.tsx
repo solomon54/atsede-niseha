@@ -55,8 +55,12 @@ export function ConversationItem({ convo, active, onSelect, currentUserId }: Pro
     } else if (lm.type === "FILE" || lm.media?.url) {
       const fname = lm.media?.originalName || "ፋይል";
       messageText = `📎 ${fname}`;
-    } else if (lm.isEncrypted && !lm.content) {
-      messageText = "🔒 የተቆለፈ መልእክት";
+    } else if (lm.isEncrypted) {
+      // Never expose ciphertext in previews. Show decrypted preview only if explicitly available.
+      const decrypted = (lm as any).decryptedPreview?.trim?.() || "";
+      messageText = decrypted || "አዲስ መልዕክት";
+    } else if ((lm as any).decryptionFailed) {
+      messageText = "⚠️ መልዕክቱን መክፈት አልተቻለም";
     } else {
       messageText = lm.content?.trim() || "መልእክት";
     }

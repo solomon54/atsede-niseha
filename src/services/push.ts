@@ -34,6 +34,8 @@ export interface PushPayload {
   urgent?: boolean;
   sound?: string;
   tag?: string;
+  /** Optional notification image (e.g. sender/caller photo). */
+  imageUrl?: string | null;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -112,11 +114,13 @@ export async function sendPushToUsers(
     let failed = 0;
 
     for (const batch of chunk(targets, MULTICAST_LIMIT)) {
+      const imageUrl = payload.imageUrl || undefined;
       const response = await getMessaging().sendEachForMulticast({
         tokens: batch.map((t) => t.token),
         notification: {
           title: payload.title,
           body: payload.body,
+          ...(imageUrl ? { imageUrl } : {}),
         },
         data: payload.data ?? {},
         android: {
@@ -127,6 +131,7 @@ export async function sendPushToUsers(
             priority: payload.urgent ? "max" : "default",
             visibility: "public",
             ...(payload.tag ? { tag: payload.tag } : {}),
+            ...(imageUrl ? { imageUrl } : {}),
           },
         },
         apns: {
@@ -138,6 +143,7 @@ export async function sendPushToUsers(
                 : {}),
             },
           },
+          ...(imageUrl ? { fcmOptions: { imageUrl } } : {}),
         },
       });
 

@@ -277,7 +277,11 @@ export const syncService = {
         lastMessage: c.lastMessage
           ? {
               id: c.lastMessage.id,
-              content: c.lastMessage.content || "",
+              // Never persist/surface ciphertext in conversation previews.
+              content:
+                c.lastMessage.isEncrypted === true
+                  ? ((c.lastMessage as any).decryptedPreview || "")
+                  : (c.lastMessage.content || ""),
               createdAt: c.lastMessage.createdAt,
               senderId: c.lastMessage.senderId,
               type: c.lastMessage.type,

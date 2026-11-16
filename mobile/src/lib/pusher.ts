@@ -1,4 +1,4 @@
-import Pusher from "pusher-js";
+import PusherImport from "pusher-js/react-native";
 import { authStorage } from "./storage";
 
 const API_BASE_URL =
@@ -8,15 +8,17 @@ const PUSHER_KEY =
 const PUSHER_CLUSTER =
   process.env.EXPO_PUBLIC_PUSHER_CLUSTER || "ap2";
 
-let pusherInstance: Pusher | null = null;
+const PusherClient: any = (PusherImport as any)?.default ?? PusherImport;
 
-export function getMobilePusher(): Pusher {
+let pusherInstance: any = null;
+
+export function getMobilePusher(): any {
   if (!pusherInstance) {
-    pusherInstance = new Pusher(PUSHER_KEY, {
+    pusherInstance = new PusherClient(PUSHER_KEY, {
       cluster: PUSHER_CLUSTER,
-      authorizer: (channel) => {
+      authorizer: (channel: any) => {
         return {
-          authorize: async (socketId, callback) => {
+          authorize: async (socketId: string, callback: (err: any, data: any) => void) => {
             try {
               const token = await authStorage.getToken();
               const formData = new FormData();

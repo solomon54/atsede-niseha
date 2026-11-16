@@ -171,26 +171,49 @@ export async function POST(req: NextRequest) {
     });
 
     // 6. PUSH NOTIFICATION (best-effort — failures never break the send)
+    // Server cannot decrypt E2EE content: never expose ciphertext in notifications.
+    // Generic text-message fallback must be exactly አዲስ መልዕክት where required.
     const recipients = await getChannelRecipientUids(
       body.channelId,
       session.uid
     );
     if (recipients.length > 0) {
       const senderName = await getDisplayName(session.uid);
-      const pushBody =
-        typeof body.content === "string" && body.content.trim()
-          ? body.content.length > 120
-            ? body.content.slice(0, 117) + "..."
-            : body.content
-          : "አዲስ መልእክት ልከዋል";
+      const isEncryptedMessage = message.isEncrypted === true || body.isEncrypted === true;
+
+      let pushBody = "አዲስ መልዕክት";
+      if (body.type === "IMAGE") pushBody = "📷 ፎቶ";
+      else if (body.type === "VIDEO") pushBody = "🎥 ቪዲዮ";
+      else if (body.type === "AUDIO") pushBody = "🎙 የድምጽ መልዕክት";
+      else if (body.type === "FILE") pushBody = `📎 ${finalMedia?.originalName || "ፋይል"}`;
+      else if (body.type === "CALL") pushBody = "📞 ጥሪ";
+      else if (!isEncryptedMessage && sanitizedContent) {
+        pushBody =
+          sanitizedContent.length > 120
+            ? sanitizedContent.slice(0, 117) + "..."
+            : sanitizedContent;
+      } else if (!isEncryptedMessage && !sanitizedContent) {
+        pushBody = "አዲስ መልዕክት";
+      } else if (isEncryptedMessage) {
+        pushBody = "አዲስ መልዕክት";
+      }
+
+      let senderPhotoUrl: string | null = null;
+      try {
+        const profileColl = session.role === "FATHER" ? "Fathers" : "Students";
+        const profileSnap = await adminDb.collection(profileColl).doc(session.uid).get();
+        senderPhotoUrl = profileSnap.data()?.photoUrl || null;
+      } catch {}
 
       await sendPushToUsers(recipients, {
         title: senderName,
         body: pushBody,
         channelId: "atsede-messages",
+        imageUrl: senderPhotoUrl,
         data: {
           type: "message",
           channelId: body.channelId,
+          messageId: String(message.id),
         },
       });
     }

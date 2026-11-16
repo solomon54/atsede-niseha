@@ -8,14 +8,23 @@ import {
   getUserSummary,
   sendPushToUsers,
 } from "@/services/push";
-import { CallDetails } from "@/features/messaging/types/messaging.types";
+import {
+  CallRecord,
+  buildCallMessageData,
+  claimUserForCall,
+  getCallRecord,
+  isRingingStale,
+  reconcileCallAsFailed,
+  releaseUserCallStateIfMatch,
+  upsertCallArtifacts,
+} from "@/services/call-state";
 
 /**
- * Ring the other members of a channel.
- *
- * 1. Creates a call record in `Channels/${channelId}/Messages/${callId}` and `Calls/${callId}`
- * 2. High-priority FCM push with custom ringtone to wake Android lock screen
- * 3. Instant in-app Pusher alert with rich caller info (photo, role, name, callId)
+ * Authoritative ring:
+ * - Enforces per-user busy rule (race-safe claims, stale-ringing aware)
+ * - Creates a call in ringing state only when at least one eligible recipient can be rung
+ * - Fans out incoming-call (Pusher + best-effort push) only to non-busy recipients
+ * - Returns strongest available reachability info without claiming delivery
  */
 export async function POST(req: NextRequest) {
   try {
@@ -23,15 +32,17 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null);
 
     if (!body || typeof body.channelId !== "string" || !body.channelId.trim()) {
-      return NextResponse.json(
-        { error: "channelId is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "channelId is required" }, { status: 400 });
     }
 
     const channelId = body.channelId.trim();
+    const requestedCallId =
+      typeof body.callId === "string" && body.callId.trim() ? body.callId.trim() : null;
+    const callId =
+      requestedCallId || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
 
-    // 1. Check channel membership
+    // Membership/authz
     const memberSnap = await adminDb
       .collection("ChannelMembers")
       .where("channelId", "==", channelId)
@@ -41,149 +52,289 @@ export async function POST(req: NextRequest) {
       .get();
 
     if (memberSnap.empty) {
-      return NextResponse.json(
-        { error: "ፈቃድ የለዎትም (Access Denied to this room)" },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // 2. Fetch Channel Document to determine type & isGroup
+    // Idempotent: if this callId already exists, return its authoritative state.
+    const existing = await getCallRecord(callId);
+    if (existing) {
+      if (existing.callerId !== session.uid && existing.channelId !== channelId) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+      const stale = isRingingStale(existing.status, existing.startedAt, now);
+      const status = stale ? "missed" : existing.status;
+      return NextResponse.json({
+        success: status === "ringing",
+        redundant: true,
+        callId: existing.callId,
+        channelId: existing.channelId,
+        status,
+        joinable: status === "ringing" || status === "answered",
+        notified: (existing.notifiedRecipientIds || []).length,
+        busy: (existing.busyRecipientIds || []).length,
+        reachability: {
+          authoritative: status === "ringing",
+          recipients: (existing.notifiedRecipientIds || []).length,
+        },
+      });
+    }
+
     const channelDoc = await adminDb.collection("Channels").doc(channelId).get();
     const channelData = channelDoc.data() || {};
-    const channelType = channelData.type || "DIRECT";
-    const isGroup = channelType === "COMMON_HOUSE";
+    const isGroup = (channelData.type || "DIRECT") === "COMMON_HOUSE";
 
-    // 3. Resolve caller info & callId
     const callerSummary = await getUserSummary(session.uid);
     const callerName = callerSummary.displayName;
     const callerPhotoUrl = callerSummary.photoUrl || "";
     const callerRole = callerSummary.role;
 
-    const callId =
-      typeof body.callId === "string" && body.callId.trim()
-        ? body.callId.trim()
-        : `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-    const now = Date.now();
-
-    const callDetails: CallDetails = {
+    // Caller busy check/claim (race-safe). Caller cannot place/receive conflicting call.
+    const callerClaim = await claimUserForCall({
+      uid: session.uid,
       callId,
       channelId,
-      callerId: session.uid,
-      callerName,
-      callerPhotoUrl,
-      callerRole,
+      role: "caller",
       status: "ringing",
       startedAt: now,
-      answeredAt: null,
-      endedAt: null,
-      durationSec: 0,
-      isGroup,
-    };
-
-    // 4. Save call message to Channels/${channelId}/Messages/${callId}
-    const messageDocRef = adminDb
-      .collection("Channels")
-      .doc(channelId)
-      .collection("Messages")
-      .doc(callId);
-
-    const callMessageData = {
-      id: callId,
-      channelId,
-      senderId: session.uid,
-      senderName: callerName,
-      senderRole: callerRole,
-      type: "CALL",
-      content: isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ",
-      version: "v1",
-      isEncrypted: false,
-      createdAt: now,
-      callDetails,
-    };
-
-    await messageDocRef.set(callMessageData, { merge: true });
-
-    // Also persist in global Calls collection for fast state lookups
-    await adminDb.collection("Calls").doc(callId).set({
-      ...callDetails,
-      updatedAt: now,
-    }, { merge: true });
-
-    // Update Channel lastMessageAt
-    await adminDb.collection("Channels").doc(channelId).update({
-      lastMessageId: callId,
-      lastMessageAt: now,
-    }).catch(() => {});
-
-    // 5. Notify recipients via Push & Pusher
-    const recipients = await getChannelRecipientUids(channelId, session.uid);
-
-    if (recipients.length > 0) {
-      await sendPushToUsers(recipients, {
-        title: isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ",
-        body: `${callerName} ጥሪ አድርገዋል`,
-        channelId: "atsede-call",
-        sound: "call_ring",
-        urgent: true,
-        tag: callId,
-        data: {
-          type: "incoming_call",
-          callId,
-          channelId,
-          callerId: session.uid,
-          callerName,
-          callerPhotoUrl: callerPhotoUrl || "",
-          callerRole,
-          isGroup: isGroup ? "true" : "false",
+      now,
+    });
+    if (!callerClaim.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "busy",
+          reason: "caller_busy",
+          callId: callerClaim.current?.activeCallId || null,
+          status: "busy",
         },
-      });
+        { status: 409 }
+      );
     }
 
-    // 6. Broadcast Pusher events
+    const acquiredClaimUids = new Set<string>([session.uid]);
+    const notifiedRecipientIds: string[] = [];
+    const busyRecipientIds: string[] = [];
+
     try {
-      // Broadcast incoming call event on channel
-      await pusherServer.trigger(`private-chat-${channelId}`, "incoming-call", {
+      // Resolve recipients and evaluate busy per user (race-safe per-recipient claims)
+      const recipients = await getChannelRecipientUids(channelId, session.uid);
+
+      for (const uid of recipients) {
+        const claim = await claimUserForCall({
+          uid,
+          callId,
+          channelId,
+          role: "callee",
+          status: "ringing",
+          startedAt: now,
+          now,
+        });
+        if (claim.ok) {
+          notifiedRecipientIds.push(uid);
+          acquiredClaimUids.add(uid);
+        } else {
+          busyRecipientIds.push(uid);
+        }
+      }
+
+      // If no eligible recipients can be rung, do not leave a ringing call.
+      if (notifiedRecipientIds.length === 0) {
+        await releaseUserCallStateIfMatch({ uid: session.uid, callId, now }).catch(() => {});
+        const outcome = recipients.length === 0 ? "no_recipients" : "all_busy";
+        return NextResponse.json(
+          {
+            success: false,
+            error: outcome === "all_busy" ? "busy" : "unreachable",
+            reason: outcome,
+            status: outcome === "all_busy" ? "busy" : "failed",
+            callId,
+            channelId,
+            notified: 0,
+            busy: busyRecipientIds.length,
+            reachability: {
+              authoritative: false,
+              recipientReached: false,
+              eligibleRecipients: 0,
+              totalRecipients: recipients.length,
+              message:
+                outcome === "all_busy"
+                  ? "Recipients are busy"
+                  : "No eligible recipients to reach",
+            },
+          },
+          { status: outcome === "all_busy" ? 409 : 422 }
+        );
+      }
+
+      const call: CallRecord = {
         callId,
         channelId,
         callerId: session.uid,
         callerName,
         callerPhotoUrl,
         callerRole,
-        isGroup,
+        status: "ringing",
         startedAt: now,
+        answeredAt: null,
+        endedAt: null,
+        durationSec: 0,
+        isGroup,
+        notifiedRecipientIds,
+        busyRecipientIds,
+        updatedAt: now,
+      };
+
+      const callMessageData = buildCallMessageData(call);
+
+      // Critical establishment step: if artifacts cannot be persisted, reconcile and do not leave
+      // acquired participant claims or an active/joinable call behind for this callId.
+      try {
+        await upsertCallArtifacts({ callId, channelId, call, messageData: callMessageData, now });
+      } catch (persistErr) {
+        console.error("[LiveKit Ring] Artifact persistence failed, reconciling call", callId, persistErr);
+        const reconciliation = await reconcileCallAsFailed({
+          callId,
+          channelId,
+          participantUids: [...acquiredClaimUids],
+          status: "cancelled",
+          reason: "artifact_persist_failed",
+          now,
+        });
+        return NextResponse.json(
+          {
+            success: false,
+            error: "call_setup_failed",
+            status: "cancelled",
+            callId,
+            channelId,
+            joinable: false,
+            reconciliation,
+          },
+          { status: 500 }
+        );
+      }
+
+      // Best-effort push/fanout only after a joinable authoritative record exists.
+      // Partial fanout does not make the call unjoinable by itself; claims/record remain consistent.
+      let pushSent = 0;
+      let pushFailed = 0;
+      try {
+        const pushRes = await sendPushToUsers(notifiedRecipientIds, {
+          title: isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ",
+          body: `${callerName} ጥሪ አድርገዋል`,
+          channelId: "atsede-call",
+          sound: "call_ring",
+          urgent: true,
+          tag: callId,
+          imageUrl: callerPhotoUrl || undefined,
+          data: {
+            type: "incoming_call",
+            callId,
+            channelId,
+            callerId: session.uid,
+            callerName,
+            callerPhotoUrl: callerPhotoUrl || "",
+            callerRole,
+            isGroup: isGroup ? "true" : "false",
+          },
+        });
+        pushSent = pushRes?.sent || 0;
+        pushFailed = pushRes?.failed || 0;
+      } catch (e) {
+        console.warn("[LiveKit Ring] Push fanout error:", e);
+        pushFailed = notifiedRecipientIds.length;
+      }
+
+      let pusherChannelOk = false;
+      let pusherUserOk = 0;
+      try {
+        await pusherServer.trigger(`private-chat-${channelId}`, "incoming-call", {
+          callId,
+          channelId,
+          callerId: session.uid,
+          callerName,
+          callerPhotoUrl,
+          callerRole,
+          isGroup,
+          startedAt: now,
+        });
+        pusherChannelOk = true;
+
+        const results = await Promise.all(
+          notifiedRecipientIds.map((recipUid) =>
+            pusherServer
+              .trigger(`private-user-${recipUid}`, "incoming-call", {
+                callId,
+                channelId,
+                callerId: session.uid,
+                callerName,
+                callerPhotoUrl,
+                callerRole,
+                isGroup,
+                startedAt: now,
+              })
+              .then(() => true)
+              .catch(() => false)
+          )
+        );
+        pusherUserOk = results.filter(Boolean).length;
+
+        await pusherServer
+          .trigger(`private-chat-${channelId}`, "new-message", callMessageData)
+          .catch(() => {});
+      } catch (pusherErr) {
+        console.warn("[LiveKit Ring] Pusher alert error:", pusherErr);
+      }
+
+      // Strongest available info: we know authoritative ringing + fanout attempts/results we observed.
+      // Do NOT claim device delivery/recipient reach beyond this.
+      const reachability = {
+        authoritative: true,
+        recipientReached: undefined as boolean | undefined, // unknown from server alone
+        eligibleRecipients: notifiedRecipientIds.length,
+        totalRecipients: recipients.length,
+        busyRecipients: busyRecipientIds.length,
+        pusher: { channelTriggered: pusherChannelOk, userChannelsTriggered: pusherUserOk },
+        push: {
+          attempted: notifiedRecipientIds.length,
+          sent: pushSent,
+          failed: pushFailed,
+        },
+      };
+
+      return NextResponse.json({
+        success: true,
+        callId,
+        channelId,
+        status: "ringing",
+        joinable: true,
+        notified: notifiedRecipientIds.length,
+        busy: busyRecipientIds.length,
+        reachability,
       });
-
-      // Also trigger on each recipient's private user channel for instant delivery anywhere in the app
-      await Promise.all(
-        recipients.map((recipUid) =>
-          pusherServer
-            .trigger(`private-user-${recipUid}`, "incoming-call", {
-              callId,
-              channelId,
-              callerId: session.uid,
-              callerName,
-              callerPhotoUrl,
-              callerRole,
-              isGroup,
-              startedAt: now,
-            })
-            .catch(() => {})
-        )
+    } catch (setupErr) {
+      console.error("[LiveKit Ring] Ring setup failed after claim acquisition, reconciling", callId, setupErr);
+      const reconciliation = await reconcileCallAsFailed({
+        callId,
+        channelId,
+        participantUids: [...acquiredClaimUids],
+        status: "cancelled",
+        reason: "ring_setup_failed",
+        now,
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error: "call_setup_failed",
+          status: "cancelled",
+          callId,
+          channelId,
+          joinable: false,
+          reconciliation,
+        },
+        { status: 500 }
       );
-
-      // Also trigger new-message event so the chat stream renders the call bubble in real time
-      await pusherServer.trigger(`private-chat-${channelId}`, "new-message", callMessageData);
-    } catch (pusherErr) {
-      console.warn("[LiveKit Ring] Pusher alert error:", pusherErr);
     }
-
-    return NextResponse.json({
-      success: true,
-      callId,
-      channelId,
-      notified: recipients.length,
-    });
   } catch (err) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

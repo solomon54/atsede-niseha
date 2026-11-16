@@ -160,8 +160,21 @@ export const mobileSyncService = {
     try {
       const res = await apiRequest<any[]>("/api/message/conversation");
       if (Array.isArray(res)) {
-        await offlineCache.setQuery("conversations", res);
-        return res;
+        // Never cache ciphertext in visible preview fields.
+        const safe = res.map((c: any) => ({
+          ...c,
+          lastMessage: c?.lastMessage
+            ? {
+                ...c.lastMessage,
+                content:
+                  c.lastMessage.isEncrypted === true
+                    ? (typeof c.lastMessage.decryptedPreview === "string" ? c.lastMessage.decryptedPreview : "")
+                    : c.lastMessage.content,
+              }
+            : c?.lastMessage ?? null,
+        }));
+        await offlineCache.setQuery("conversations", safe);
+        return safe;
       }
       return [];
     } catch {

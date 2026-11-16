@@ -38,7 +38,11 @@ export function useConversations() {
             id: c.lastMessage.id as any,
             channelId: c.id as any,
             senderId: c.lastMessage.senderId as any,
-            content: c.lastMessage.content,
+            // Never expose ciphertext in previews.
+            content:
+              c.lastMessage.isEncrypted === true
+                ? ((c.lastMessage as any).decryptedPreview || "")
+                : c.lastMessage.content,
             createdAt: c.lastMessage.createdAt,
             type: (c.lastMessage.type as any) || "TEXT",
             media: c.lastMessage.media,
