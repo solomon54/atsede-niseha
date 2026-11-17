@@ -86,6 +86,9 @@ function SyncBridge() {
 
     return () => {
       subscription.remove();
+      // Logout, account switch, or root unmount: remove recovery handlers so
+      // the next authenticated session binds once with its own account.
+      mobileSyncService.teardownRealtimeRecovery();
     };
   }, [isAuthenticated, isLoading, uid]);
 

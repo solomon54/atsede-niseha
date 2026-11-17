@@ -5,6 +5,21 @@ import { getMobilePusher } from "./pusher";
 let activeSyncPromise: Promise<void> | null = null;
 let pusherConnected = false;
 
+/**
+ * Recovery listeners are registered once per Pusher connection. The signed-in
+ * account is read at event time so a re-login or account switch never reuses a
+ * stale closure, and the owning view can remove the handlers on logout.
+ */
+type RealtimeRecoveryHandlers = {
+  connected: () => void;
+  disconnected: () => void;
+  error: () => void;
+};
+
+let recoveryConnection: any = null;
+let recoveryHandlers: RealtimeRecoveryHandlers | null = null;
+let recoveryUserId: string | undefined;
+
 export const mobileSyncService = {
   /**
    * Single-flight coordinator for mobile synchronization.
@@ -296,25 +311,75 @@ export const mobileSyncService = {
   },
 
   /**
-   * Initialize Pusher reconnect listener for auto-healing missed events
+   * Initialize Pusher reconnect listener for auto-healing missed events.
+   * Idempotent: repeated calls update the account context but never bind the
+   * same connection twice, and handlers read the current account at event time.
    */
   initRealtimeRecovery(currentUserId?: string) {
     try {
       const pusher = getMobilePusher();
-      pusher.connection.bind("connected", () => {
-        if (!pusherConnected) {
-          pusherConnected = true;
-          this.sync(undefined, currentUserId).catch(() => {});
-        }
-      });
-      pusher.connection.bind("disconnected", () => {
-        pusherConnected = false;
-      });
-      pusher.connection.bind("error", () => {
-        pusherConnected = false;
-      });
+
+      if (recoveryConnection === pusher.connection && recoveryHandlers) {
+        recoveryUserId = currentUserId;
+        return;
+      }
+
+      // A previous connection (or a partially bound one) must be cleaned
+      // before new handlers are attached.
+      this.teardownRealtimeRecovery();
+      recoveryUserId = currentUserId;
+
+      const handlers: RealtimeRecoveryHandlers = {
+        connected: () => {
+          if (!pusherConnected) {
+            pusherConnected = true;
+            // Read the account at event time rather than capturing a closure
+            // that could outlive the session that registered it.
+            this.sync(undefined, recoveryUserId).catch(() => {});
+          }
+        },
+        disconnected: () => {
+          pusherConnected = false;
+        },
+        error: () => {
+          pusherConnected = false;
+        },
+      };
+
+      pusher.connection.bind("connected", handlers.connected);
+      pusher.connection.bind("disconnected", handlers.disconnected);
+      pusher.connection.bind("error", handlers.error);
+
+      recoveryConnection = pusher.connection;
+      recoveryHandlers = handlers;
     } catch (e) {
       console.warn("[MobileSync] Realtime recovery setup failed:", e);
+    }
+  },
+
+  /**
+   * Remove recovery handlers and forget the account context. Called when the
+   * authenticated session changes (logout/account switch) or its owning view
+   * unmounts. Safe to call repeatedly; never disconnects or replaces the
+   * shared Pusher client.
+   */
+  teardownRealtimeRecovery() {
+    const connection = recoveryConnection;
+    const handlers = recoveryHandlers;
+
+    recoveryConnection = null;
+    recoveryHandlers = null;
+    recoveryUserId = undefined;
+    pusherConnected = false;
+
+    if (!connection || !handlers) return;
+
+    try {
+      connection.unbind("connected", handlers.connected);
+      connection.unbind("disconnected", handlers.disconnected);
+      connection.unbind("error", handlers.error);
+    } catch {
+      // A destroyed connection needs no cleanup.
     }
   },
 };
