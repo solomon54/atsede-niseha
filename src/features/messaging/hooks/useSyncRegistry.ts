@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { appointmentOfflineService } from "@/features/appointments/services/appointmentOfflineService";
 import { getPusherClient } from "@/services/pusher";
 
 import { syncService } from "../services/sync.service";
@@ -14,12 +15,17 @@ export function useSyncRegistry(userId?: string) {
   useEffect(() => {
     if (!userId) return;
 
+    const runSync = () => {
+      syncService.sync(undefined, userId).catch(() => {});
+      appointmentOfflineService.drain(userId).catch(() => {});
+    };
+
     // 1. Initial sync on dashboard mount
-    syncService.sync(undefined, userId).catch(() => {});
+    runSync();
 
     // 2. Listen for network reconnection
     const handleOnline = () => {
-      syncService.sync(undefined, userId).catch(() => {});
+      runSync();
     };
 
     window.addEventListener("online", handleOnline);
@@ -29,7 +35,7 @@ export function useSyncRegistry(userId?: string) {
     try {
       const pusher = getPusherClient();
       handlePusherConnected = () => {
-        syncService.sync(undefined, userId).catch(() => {});
+        runSync();
       };
       pusher.connection.bind("connected", handlePusherConnected);
     } catch (e) {

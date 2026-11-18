@@ -27,6 +27,35 @@ export interface SQLiteOutboxItem {
   createdAt: number;
 }
 
+export type SQLiteAppointmentAction =
+  | "CONFIRM"
+  | "DECLINE"
+  | "RESCHEDULE"
+  | "CANCEL"
+  | "COMPLETE";
+
+export interface SQLiteAppointmentOutboxItem {
+  operationId: string;
+  ownerUid: string;
+  appointmentId: string;
+  action: SQLiteAppointmentAction;
+  expectedVersion: number;
+  payload: any;
+  status: "QUEUED" | "SENDING" | "FAILED";
+  createdAt: string;
+  updatedAt: string;
+  retryCount: number;
+  nextRetryAt?: string;
+  lastError?: string;
+  lastErrorCode?: string;
+  needsAttention: number; // 0 | 1
+  leaseUntil?: number;
+}
+
+export function appointmentSnapshotKey(ownerUid: string): string {
+  return `appointments:${ownerUid}`;
+}
+
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbInstance) {
     dbInstance = await SQLite.openDatabaseAsync("atsede_offline.db");
@@ -61,6 +90,29 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
         createdAt INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status, createdAt);
+
+      -- Account-scoped appointment action queue.
+      CREATE TABLE IF NOT EXISTS appointment_outbox (
+        operationId TEXT PRIMARY KEY,
+        ownerUid TEXT NOT NULL,
+        appointmentId TEXT NOT NULL,
+        action TEXT NOT NULL,
+        expectedVersion INTEGER NOT NULL,
+        payload TEXT,
+        status TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        retryCount INTEGER DEFAULT 0,
+        nextRetryAt TEXT,
+        lastError TEXT,
+        lastErrorCode TEXT,
+        needsAttention INTEGER DEFAULT 0,
+        leaseUntil INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_appointment_outbox_owner
+        ON appointment_outbox(ownerUid, status, createdAt);
+      CREATE INDEX IF NOT EXISTS idx_appointment_outbox_appt
+        ON appointment_outbox(ownerUid, appointmentId);
 
       -- Sync metadata table for cursors
       CREATE TABLE IF NOT EXISTS sync_meta (
@@ -118,6 +170,15 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
     } catch (e) {
       console.warn("Failed migrating outbox ownership:", e);
     }
+
+    // Legacy global appointment snapshot had no account ownership and must
+    // never be rendered. Delete it; account-scoped snapshots use `appointments:${uid}`.
+    try {
+      await dbInstance.runAsync(
+        "DELETE FROM query_cache WHERE key = ?",
+        ["appointments"]
+      );
+    } catch {}
   }
   return dbInstance;
 }
@@ -329,7 +390,7 @@ export const offlineCache = {
     });
   },
 
-  // ─── OUTBOX ────────────────────────────────────────────────
+  // ─── MESSAGE OUTBOX ────────────────────────────────────────
   async queueOutbox(
     channelId: string,
     type: SQLiteOutboxItem["type"],
@@ -442,6 +503,173 @@ export const offlineCache = {
       } catch (e) {
         console.warn("Failed marking outbox item failed:", e);
       }
+    });
+  },
+
+  // ─── APPOINTMENT SNAPSHOT & OUTBOX (account-scoped) ─────────
+  async getAppointmentSnapshot<T>(ownerUid: string): Promise<T | null> {
+    if (!ownerUid) return null;
+    return this.getQuery<T>(appointmentSnapshotKey(ownerUid));
+  },
+
+  async setAppointmentSnapshot<T>(ownerUid: string, data: T): Promise<void> {
+    if (!ownerUid) return;
+    return this.setQuery<T>(appointmentSnapshotKey(ownerUid), data);
+  },
+
+  async listAppointmentOutbox(
+    ownerUid: string
+  ): Promise<SQLiteAppointmentOutboxItem[]> {
+    if (!ownerUid) return [];
+    try {
+      const db = await getDb();
+      const rows = await db.getAllAsync<any>(
+        "SELECT * FROM appointment_outbox WHERE ownerUid = ? ORDER BY createdAt ASC",
+        [ownerUid]
+      );
+      return rows.map((r) => ({
+        ...r,
+        payload: r.payload ? JSON.parse(r.payload) : undefined,
+        needsAttention: Number(r.needsAttention) || 0,
+        retryCount: Number(r.retryCount) || 0,
+        expectedVersion: Number(r.expectedVersion),
+      }));
+    } catch (e) {
+      console.warn("Failed to list appointment outbox:", e);
+      return [];
+    }
+  },
+
+  async getAppointmentOutboxFor(
+    ownerUid: string,
+    appointmentId: string
+  ): Promise<SQLiteAppointmentOutboxItem | null> {
+    if (!ownerUid || !appointmentId) return null;
+    try {
+      const db = await getDb();
+      const rows = await db.getAllAsync<any>(
+        "SELECT * FROM appointment_outbox WHERE ownerUid = ? AND appointmentId = ? ORDER BY createdAt ASC",
+        [ownerUid, appointmentId]
+      );
+      if (!rows[0]) return null;
+      const r = rows[0];
+      return {
+        ...r,
+        payload: r.payload ? JSON.parse(r.payload) : undefined,
+        needsAttention: Number(r.needsAttention) || 0,
+        retryCount: Number(r.retryCount) || 0,
+        expectedVersion: Number(r.expectedVersion),
+      };
+    } catch {
+      return null;
+    }
+  },
+
+  async queueAppointmentAction(params: {
+    ownerUid: string;
+    operationId: string;
+    appointmentId: string;
+    action: SQLiteAppointmentAction;
+    expectedVersion: number;
+    payload?: any;
+  }): Promise<void> {
+    const {
+      ownerUid,
+      operationId,
+      appointmentId,
+      action,
+      expectedVersion,
+      payload,
+    } = params;
+    if (!ownerUid) throw new Error("No authenticated account.");
+
+    return enqueueWrite(async () => {
+      const db = await getDb();
+      // Only one unresolved action per appointment per owner.
+      const existing = await db.getAllAsync<{ operationId: string; status: string; needsAttention: number }>(
+        "SELECT operationId, status, needsAttention FROM appointment_outbox WHERE ownerUid = ? AND appointmentId = ?",
+        [ownerUid, appointmentId]
+      );
+      const blocking = existing.find(
+        (r) =>
+          r.operationId !== operationId &&
+          (r.status === "QUEUED" ||
+            r.status === "SENDING" ||
+            (r.status === "FAILED" && Number(r.needsAttention) === 1))
+      );
+      if (blocking) {
+        throw new Error("ACTION_ALREADY_QUEUED");
+      }
+
+      const now = new Date().toISOString();
+      await db.runAsync(
+        `INSERT OR REPLACE INTO appointment_outbox
+          (operationId, ownerUid, appointmentId, action, expectedVersion, payload, status, createdAt, updatedAt, retryCount, nextRetryAt, lastError, lastErrorCode, needsAttention, leaseUntil)
+         VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?, 0, NULL, NULL, NULL, 0, NULL)`,
+        [
+          operationId,
+          ownerUid,
+          appointmentId,
+          action,
+          expectedVersion,
+          payload ? JSON.stringify(payload) : null,
+          now,
+          now,
+        ]
+      );
+    });
+  },
+
+  async updateAppointmentOutbox(
+    operationId: string,
+    patch: Partial<SQLiteAppointmentOutboxItem>
+  ): Promise<void> {
+    return enqueueWrite(async () => {
+      const db = await getDb();
+      const fields: string[] = [];
+      const values: any[] = [];
+      const set = (col: string, val: any) => {
+        fields.push(`${col} = ?`);
+        values.push(val);
+      };
+      if (patch.status !== undefined) set("status", patch.status);
+      if (patch.retryCount !== undefined) set("retryCount", patch.retryCount);
+      if (patch.nextRetryAt !== undefined) set("nextRetryAt", patch.nextRetryAt ?? null);
+      if (patch.lastError !== undefined) set("lastError", patch.lastError ?? null);
+      if (patch.lastErrorCode !== undefined)
+        set("lastErrorCode", patch.lastErrorCode ?? null);
+      if (patch.needsAttention !== undefined)
+        set("needsAttention", patch.needsAttention ? 1 : 0);
+      if (patch.leaseUntil !== undefined) set("leaseUntil", patch.leaseUntil ?? null);
+      if (patch.updatedAt !== undefined) set("updatedAt", patch.updatedAt);
+      if (fields.length === 0) return;
+      values.push(operationId);
+      await db.runAsync(
+        `UPDATE appointment_outbox SET ${fields.join(", ")} WHERE operationId = ?`,
+        values
+      );
+    });
+  },
+
+  async removeAppointmentOutbox(operationId: string): Promise<void> {
+    return enqueueWrite(async () => {
+      const db = await getDb();
+      await db.runAsync(
+        "DELETE FROM appointment_outbox WHERE operationId = ?",
+        [operationId]
+      );
+    });
+  },
+
+  async recoverInterruptedAppointmentOutbox(ownerUid: string): Promise<void> {
+    if (!ownerUid) return;
+    return enqueueWrite(async () => {
+      const db = await getDb();
+      const now = new Date().toISOString();
+      await db.runAsync(
+        "UPDATE appointment_outbox SET status = 'QUEUED', leaseUntil = NULL, nextRetryAt = NULL, updatedAt = ? WHERE ownerUid = ? AND status = 'SENDING'",
+        [now, ownerUid]
+      );
     });
   },
 

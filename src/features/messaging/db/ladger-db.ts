@@ -7,6 +7,12 @@
 
 import Dexie, { type Table } from "dexie";
 
+import type {
+  AppointmentChildDirectoryEntry,
+  AppointmentOutboxOperation,
+  AppointmentRecord,
+} from "@/shared/domain/appointments";
+
 import { ChannelRole, Message, MessageID, UID } from "../types/messaging.types";
 
 export interface LocalLedgerMessage extends Message {
@@ -37,8 +43,10 @@ export interface LocalConversation {
     createdAt: number;
     senderId: string;
     type?: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     media?: any;
     isEncrypted?: boolean;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     callDetails?: any;
   } | null;
   lastMessageAt?: number;
@@ -52,25 +60,48 @@ export interface LocalConversation {
   updatedAt: number;
 }
 
-export interface LocalAppointment {
-  id: string;
-  familyId: string;
-  fatherUid: string;
-  fatherName?: string;
+/**
+ * Account-scoped appointment cache row.
+ *
+ * The cache only ever holds server-confirmed records. Optimistic/pending work
+ * lives in `appointmentOutbox` so the UI can never present an unconfirmed
+ * action as if the server had accepted it.
+ */
+export interface LocalAppointmentCache {
+  /** `${ownerUid}__${appointmentId}` — the primary key. */
+  cacheKey: string;
+  ownerUid: string;
+  appointmentId: string;
+
+  /** Denormalized indexes for account-scoped queries. */
   childUid: string;
-  childEotcUid?: string;
-  childName?: string;
-  type: "NISEHA" | "COUNSELING";
-  status: "REQUESTED" | "CONFIRMED" | "COMPLETED" | "CANCELLED";
+  status: AppointmentRecord["status"];
   scheduledAt: string;
-  location?: string;
-  message?: string;
-  logisticsNote?: string;
-  direction?: string;
-  createdBy?: string;
-  createdByRole?: string;
-  createdAt: string;
   updatedAt: string;
+
+  appointment: AppointmentRecord;
+  cachedAt: string;
+}
+
+/**
+ * Durable, account-scoped appointment action queue row.
+ *
+ * Extends the shared domain operation with local-only bookkeeping used for
+ * crash recovery. `leaseUntil` prevents two tabs from draining the same
+ * operation while a request is in flight.
+ */
+export interface LocalAppointmentOutboxRow extends AppointmentOutboxOperation {
+  /** Epoch milliseconds; while in the future another tab owns the claim. */
+  leaseUntil?: number;
+  updatedAt: string;
+}
+
+/** Stored snapshot of the child directory, keyed per account. */
+export interface LocalAppointmentChildDirectorySnapshot {
+  key: string; // `appointments-children-${ownerUid}`
+  ownerUid: string;
+  children: AppointmentChildDirectoryEntry[];
+  cachedAt: string;
 }
 
 export interface OutboxOperation {
@@ -78,6 +109,7 @@ export interface OutboxOperation {
   userId?: string; // Account ownership
   channelId: string;
   type: "SEND_MESSAGE" | "EDIT_MESSAGE" | "DELETE_MESSAGE" | "MARK_READ";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   payload: any;
   status: "pending" | "sending" | "failed";
   retryCount: number;
@@ -86,16 +118,19 @@ export interface OutboxOperation {
 }
 
 export interface SyncMeta {
-  key: string; // e.g. "channel_{channelId}" or "conversations" or "appointments"
+  key: string; // e.g. "channel_{channelId}", "conversations", "appointments-children-{uid}"
   lastSyncAt: number;
   afterId?: string; // Document ID tiebreaker for identical timestamps
+  /** Optional opaque snapshot for account-scoped records (e.g. child directory). */
+  data?: unknown;
 }
 
 export class SacredLedgerDB extends Dexie {
   messages!: Table<LocalLedgerMessage>;
   members!: Table<CachedMember>;
   conversations!: Table<LocalConversation>;
-  appointments!: Table<LocalAppointment>;
+  appointmentCache!: Table<LocalAppointmentCache>;
+  appointmentOutbox!: Table<LocalAppointmentOutboxRow>;
   outbox!: Table<OutboxOperation>;
   syncMeta!: Table<SyncMeta>;
 
@@ -157,6 +192,26 @@ export class SacredLedgerDB extends Dexie {
           }
         }
       });
+
+    // Version 6: Account-scoped appointments.
+    //
+    // The legacy global `appointments` store is intentionally dropped: it had
+    // no account ownership and could leak one family member's appointments to
+    // another signed-in account on a shared device. The new cache and outbox
+    // are both keyed by `ownerUid`, so account switching needs no cleanup step.
+    this.version(6).stores({
+      messages:
+        "id, clientMessageId, channelId, createdAt, updatedAt, status, [channelId+createdAt], [channelId+updatedAt]",
+      members: "id, role",
+      conversations: "id, role, updatedAt, lastMessageAt",
+      appointmentCache:
+        "cacheKey, ownerUid, appointmentId, childUid, status, scheduledAt, updatedAt, [ownerUid+appointmentId], [ownerUid+childUid]",
+      appointmentOutbox:
+        "operationId, ownerUid, appointmentId, status, createdAt, [ownerUid+status]",
+      outbox:
+        "operationId, userId, channelId, type, status, createdAt, [userId+status]",
+      syncMeta: "key",
+    });
   }
 
   // Helper to save a file locally after download
@@ -180,7 +235,7 @@ export class SacredLedgerDB extends Dexie {
 
   /**
    * Account Isolation: Purge cached messages, conversations, and appointments on logout,
-   * while PRESERVING unsent outbox operations (scoped by userId) so pending work is never destroyed.
+   * while PRESERVING unsent outbox operations (scoped by userId/ownerUid) so pending work is never destroyed.
    */
   async clearCachedAccountData() {
     return this.transaction(
@@ -189,14 +244,14 @@ export class SacredLedgerDB extends Dexie {
         this.messages,
         this.members,
         this.conversations,
-        this.appointments,
+        this.appointmentCache,
         this.syncMeta,
       ],
       async () => {
         await this.messages.clear();
         await this.members.clear();
         await this.conversations.clear();
-        await this.appointments.clear();
+        await this.appointmentCache.clear();
         await this.syncMeta.clear();
       }
     );
@@ -209,6 +264,16 @@ export class SacredLedgerDB extends Dexie {
       .where("userId")
       .equals(userId)
       .and((op) => op.status === "pending")
+      .count();
+  }
+
+  /** Pending appointment actions owned by this account, across all appointments. */
+  async getPendingAppointmentOutboxCount(ownerUid?: string): Promise<number> {
+    if (!ownerUid) return 0;
+
+    return this.appointmentOutbox
+      .where("[ownerUid+status]")
+      .equals([ownerUid, "QUEUED"])
       .count();
   }
 
@@ -251,7 +316,8 @@ export class SacredLedgerDB extends Dexie {
         this.messages,
         this.members,
         this.conversations,
-        this.appointments,
+        this.appointmentCache,
+        this.appointmentOutbox,
         this.outbox,
         this.syncMeta,
       ],
@@ -259,7 +325,8 @@ export class SacredLedgerDB extends Dexie {
         await this.messages.clear();
         await this.members.clear();
         await this.conversations.clear();
-        await this.appointments.clear();
+        await this.appointmentCache.clear();
+        await this.appointmentOutbox.clear();
         await this.outbox.clear();
         await this.syncMeta.clear();
       }

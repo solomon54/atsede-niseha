@@ -77,11 +77,16 @@ export function getEthiopianMonthDays(year: number, month: number): number {
 }
 
 /**
- * JDN-Based Elite Conversion (Gregorian -> Ethiopian)
- * This is the gold standard for calendar conversion.
+ * Gregorian calendar date -> Ethiopian calendar date.
+ *
+ * The conversion is performed on the UTC calendar day of `date`
+ * (`Math.floor(date.getTime()/86400000)` based JDN). Callers that need the
+ * East Africa Time (EAT, UTC+3) calendar day must shift the instant to EAT
+ * before calling (see `getTodayEthiopian`, `formatEthiopianDateTimeInEAT`,
+ * `toEastAfricaDateOnly`).
  */
 export function gregorianToEthiopian(date: Date): EthiopianDate {
-  const era = 1723856; // Ethiopian Era Offset
+  const era = 1723856; // Ethiopian era offset used by this JDN scheme
   const jdn = Math.floor(date.getTime() / 86400000) + 2440588;
 
   const r = (jdn - era) % 1461;
@@ -106,6 +111,27 @@ export function getTodayEthiopian(): EthiopianDate {
   const eatOffset = 3 * 60 * 60 * 1000;
   const localDate = new Date(now.getTime() + eatOffset);
   return gregorianToEthiopian(localDate);
+}
+
+/**
+ * Gregorian calendar date (YYYY-MM-DD) in East Africa Time.
+ *
+ * EAT is a fixed UTC+3 offset with no daylight saving. Use this for stored
+ * date-only fields such as `lastNisehaDate`; slicing a UTC ISO string can
+ * record the previous day for appointments late in the Ethiopian evening.
+ */
+export function toEastAfricaDateOnly(isoOrDate: string | Date): string {
+  const date =
+    typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate;
+  if (Number.isNaN(date.getTime())) return "";
+
+  const eatOffset = 3 * 60 * 60 * 1000;
+  return new Date(date.getTime() + eatOffset).toISOString().slice(0, 10);
+}
+
+/** Today's Gregorian date in East Africa Time (YYYY-MM-DD). */
+export function getTodayEastAfricaDate(): string {
+  return toEastAfricaDateOnly(new Date());
 }
 
 /**
@@ -154,19 +180,25 @@ export function formatEthiopianDate(date: EthiopianDate): string {
 }
 
 /**
- * JDN-Based Ethiopian → Gregorian (inverse of gregorianToEthiopian)
+ * Ethiopian calendar date -> Gregorian calendar date.
+ *
+ * Returns a Date at UTC midnight representing the Gregorian calendar day.
+ * This is the inverse of `gregorianToEthiopian` for UTC-midnight/day inputs,
+ * enabling deterministic date-only round trips without local timezone drift.
  */
 export function ethiopianToGregorian(date: EthiopianDate): Date {
   const era = 1723856;
+  // JDN for Ethiopian date in the same scheme used by gregorianToEthiopian.
+  // (1723856 + 365) = 1724221 is the base for EC year 1, month 1, day 1.
   const jdn =
     era +
+    365 +
     365 * (date.year - 1) +
     Math.floor(date.year / 4) +
-    30 * (date.month - 1) +
+    30 * date.month +
     date.day -
-    1;
+    31;
 
-  // JDN → Unix ms (UTC noon-safe via date parts)
   const unixDays = jdn - 2440588;
   return new Date(unixDays * 86400000);
 }
@@ -185,15 +217,18 @@ export interface EthiopianClockTime {
  * Western local time → traditional Ethiopian clock
  * (Western 06:00 ≈ 12/0 start of ጥዋት cycle; 18:00 ≈ start of ከሰዓት)
  */
-export function westernToEthiopianClock(date: Date): EthiopianClockTime {
-  const total = date.getHours() * 60 + date.getMinutes();
+export function westernClockFromParts(
+  westernHour: number,
+  minute: number
+): EthiopianClockTime {
+  const total = westernHour * 60 + minute;
   const ethTotal = (total - 6 * 60 + 24 * 60) % (24 * 60);
   const ethHour24 = Math.floor(ethTotal / 60);
-  const minute = ethTotal % 60;
-  
-  const h = date.getHours();
+  const ethMinute = ethTotal % 60;
+
+  const h = westernHour;
   let period: EthiopianDayPeriod;
-  
+
   if (h >= 6 && h < 12) period = "ጥዋት"; // 6:00 AM - 11:59 AM
   else if (h >= 12 && h < 14) period = "እኩለ ቀን"; // 12:00 PM - 1:59 PM
   else if (h >= 14 && h < 17) period = "ከሰዓት"; // 2:00 PM - 4:59 PM
@@ -204,7 +239,11 @@ export function westernToEthiopianClock(date: Date): EthiopianClockTime {
 
   let hour = ethHour24 % 12;
   if (hour === 0) hour = 12;
-  return { hour, minute, period, isNight };
+  return { hour, minute: ethMinute, period, isNight };
+}
+
+export function westernToEthiopianClock(date: Date): EthiopianClockTime {
+  return westernClockFromParts(date.getHours(), date.getMinutes());
 }
 
 /**
@@ -238,6 +277,29 @@ export function formatEthiopianDateTime(isoOrDate: string | Date): string {
 
   const eth = gregorianToEthiopian(date);
   const clock = westernToEthiopianClock(date);
+  const hh = String(clock.hour).padStart(2, "0");
+  const mm = String(clock.minute).padStart(2, "0");
+  return `${formatEthiopianDate(eth)} — ${hh}:${mm} ${clock.period}`;
+}
+
+/**
+ * Format an instant using East Africa Time regardless of the host timezone.
+ * Safe on the server, where the process usually runs in UTC.
+ */
+export function formatEthiopianDateTimeInEAT(
+  isoOrDate: string | Date
+): string {
+  const date =
+    typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate;
+  if (Number.isNaN(date.getTime())) return "---";
+
+  const eatOffset = 3 * 60 * 60 * 1000;
+  const shifted = new Date(date.getTime() + eatOffset);
+  const eth = gregorianToEthiopian(shifted);
+  const clock = westernClockFromParts(
+    shifted.getUTCHours(),
+    shifted.getUTCMinutes()
+  );
   const hh = String(clock.hour).padStart(2, "0");
   const mm = String(clock.minute).padStart(2, "0");
   return `${formatEthiopianDate(eth)} — ${hh}:${mm} ${clock.period}`;

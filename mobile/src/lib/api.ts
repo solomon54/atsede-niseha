@@ -1,7 +1,7 @@
 import { authEvents } from "./auth-events";
 import { authStorage } from "./storage";
 
-const API_BASE_URL =
+export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || "https://atsede-niseha-v1.vercel.app";
 
 interface FetchOptions extends RequestInit {

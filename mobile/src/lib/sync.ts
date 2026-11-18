@@ -1,9 +1,18 @@
-import { offlineCache, SQLiteOutboxItem } from "./cache";
-import { apiRequest, apiUpload } from "./api";
+import {
+  offlineCache,
+  SQLiteOutboxItem,
+  SQLiteAppointmentOutboxItem,
+} from "./cache";
+import { apiRequest, apiUpload, API_BASE_URL } from "./api";
+import { authStorage } from "./storage";
 import { getMobilePusher } from "./pusher";
 
 let activeSyncPromise: Promise<void> | null = null;
 let pusherConnected = false;
+let activeAppointmentDrain: Promise<void> | null = null;
+
+const APPT_LEASE_MS = 60_000;
+const APPT_MAX_BACKOFF_MS = 15 * 60_000;
 
 /**
  * Recovery listeners are registered once per Pusher connection. The signed-in
@@ -40,6 +49,7 @@ export const mobileSyncService = {
     try {
       // 1. Drain pending outbox operations first (account-isolated)
       await this.drainOutbox(currentUserId);
+      await this.drainAppointmentOutbox(currentUserId);
 
       // 2. Refresh conversation list into SQLite
       await this.syncConversations();
@@ -51,6 +61,183 @@ export const mobileSyncService = {
     } catch (e) {
       console.warn("[MobileSync] Sync cycle warning:", e);
     }
+  },
+
+  async drainAppointmentOutbox(currentUserId?: string): Promise<void> {
+    if (!currentUserId) return;
+    if (activeAppointmentDrain) return activeAppointmentDrain;
+
+    activeAppointmentDrain = (async () => {
+      await offlineCache.recoverInterruptedAppointmentOutbox(currentUserId);
+
+      const items = await offlineCache.listAppointmentOutbox(currentUserId);
+      const pending = items
+        .filter((i) => i.status === "QUEUED" || i.status === "SENDING")
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+      for (const item of pending) {
+        if (item.ownerUid !== currentUserId) continue;
+
+        const nowMs = Date.now();
+        if (item.status === "SENDING") {
+          const lease = item.leaseUntil ?? 0;
+          if (lease > nowMs) continue;
+        }
+        if (item.nextRetryAt && Date.parse(item.nextRetryAt) > nowMs) continue;
+
+        // Claim
+        await offlineCache.updateAppointmentOutbox(item.operationId, {
+          status: "SENDING",
+          leaseUntil: Date.now() + APPT_LEASE_MS,
+          updatedAt: new Date().toISOString(),
+        });
+
+        const body = {
+          operationId: item.operationId,
+          expectedVersion: item.expectedVersion,
+          action: item.action,
+          ...(item.payload || {}),
+        };
+
+        let result: any;
+        let status = 0;
+        try {
+          const token = await authStorage.getToken();
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          if (token) headers.Authorization = `Bearer ${token}`;
+
+          const resp = await fetch(
+            `${API_BASE_URL}/api/appointments/${encodeURIComponent(item.appointmentId)}`,
+            {
+              method: "PATCH",
+              headers,
+              body: JSON.stringify(body),
+            }
+          );
+          status = resp.status;
+          result = await resp.json().catch(() => ({}));
+        } catch {
+          // Network/transient: keep queued with backoff
+          const retryCount = item.retryCount + 1;
+          const backoff = Math.min(
+            APPT_MAX_BACKOFF_MS,
+            1000 * Math.pow(2, Math.min(retryCount, 8))
+          );
+          await offlineCache.updateAppointmentOutbox(item.operationId, {
+            status: "QUEUED",
+            leaseUntil: undefined,
+            retryCount,
+            nextRetryAt: new Date(Date.now() + backoff).toISOString(),
+            lastError: "የኢንተርኔት ግንኙነት አልተሳካም።",
+            updatedAt: new Date().toISOString(),
+          });
+          break;
+        }
+
+        const ok = status >= 200 && status < 300 && result?.success && result?.appointment;
+
+        if (ok) {
+          await this.applyAppointmentToSnapshot(currentUserId, result.appointment);
+          await offlineCache.removeAppointmentOutbox(item.operationId);
+          continue;
+        }
+
+        if (status === 401) {
+          const retryCount = item.retryCount + 1;
+          await offlineCache.updateAppointmentOutbox(item.operationId, {
+            status: "QUEUED",
+            leaseUntil: undefined,
+            retryCount,
+            nextRetryAt: new Date(Date.now() + 60_000).toISOString(),
+            lastError: "እባክዎ እንደገና ይግቡ።",
+            lastErrorCode: "UNAUTHORIZED",
+            updatedAt: new Date().toISOString(),
+          });
+          break;
+        }
+
+        if (status === 409 || status === 403 || status === 404 || status === 400 || status === 422) {
+          if (result?.appointment) {
+            await this.applyAppointmentToSnapshot(currentUserId, result.appointment);
+          } else if (status === 409 || status === 404) {
+            // Refresh authoritative record if possible
+            try {
+              const token = await authStorage.getToken();
+              const headers: Record<string, string> = {};
+              if (token) headers.Authorization = `Bearer ${token}`;
+              const fresh = await fetch(
+                `${API_BASE_URL}/api/appointments/${encodeURIComponent(item.appointmentId)}`,
+                { headers }
+              );
+              const freshJson = await fresh.json().catch(() => ({}));
+              if (fresh.ok && freshJson?.appointment) {
+                await this.applyAppointmentToSnapshot(currentUserId, freshJson.appointment);
+              } else if (status === 404) {
+                await this.removeAppointmentFromSnapshot(currentUserId, item.appointmentId);
+              }
+            } catch {}
+          }
+
+          await offlineCache.updateAppointmentOutbox(item.operationId, {
+            status: "FAILED",
+            leaseUntil: undefined,
+            retryCount: item.retryCount + 1,
+            needsAttention: 1,
+            lastError: result?.error || "እርምጃው አልተፈቀደም። ቀጠሮው ተለውጧል።",
+            lastErrorCode: result?.code || `HTTP_${status}`,
+            updatedAt: new Date().toISOString(),
+          });
+          continue;
+        }
+
+        // 5xx / unexpected transient
+        const retryCount = item.retryCount + 1;
+        const backoff = Math.min(
+          APPT_MAX_BACKOFF_MS,
+          1000 * Math.pow(2, Math.min(retryCount, 8))
+        );
+        await offlineCache.updateAppointmentOutbox(item.operationId, {
+          status: "QUEUED",
+          leaseUntil: undefined,
+          retryCount,
+          nextRetryAt: new Date(Date.now() + backoff).toISOString(),
+          lastError: result?.error || "ጊዜያዊ የአገልጋይ ችግር።",
+          updatedAt: new Date().toISOString(),
+        });
+        break;
+      }
+    })().finally(() => {
+      activeAppointmentDrain = null;
+    });
+
+    return activeAppointmentDrain;
+  },
+
+  async applyAppointmentToSnapshot(ownerUid: string, appointment: any): Promise<void> {
+    if (!ownerUid || !appointment?.id) return;
+    const snap = await offlineCache.getAppointmentSnapshot<any>(ownerUid);
+    if (!snap) return;
+    const list = Array.isArray(snap.appointments) ? [...snap.appointments] : [];
+    const idx = list.findIndex((a: any) => a.id === appointment.id);
+    if (idx >= 0) {
+      if ((list[idx].version || 0) > (appointment.version || 0)) return;
+      list[idx] = appointment;
+    } else {
+      list.unshift(appointment);
+    }
+    await offlineCache.setAppointmentSnapshot(ownerUid, { ...snap, appointments: list });
+  },
+
+  async removeAppointmentFromSnapshot(ownerUid: string, appointmentId: string): Promise<void> {
+    if (!ownerUid || !appointmentId) return;
+    const snap = await offlineCache.getAppointmentSnapshot<any>(ownerUid);
+    if (!snap || !Array.isArray(snap.appointments)) return;
+    await offlineCache.setAppointmentSnapshot(ownerUid, {
+      ...snap,
+      appointments: snap.appointments.filter((a: any) => a.id !== appointmentId),
+    });
   },
 
   /**

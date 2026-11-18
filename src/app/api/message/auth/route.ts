@@ -5,54 +5,46 @@ import { requireSession } from "@/core/auth/requireSession";
 import { adminDb } from "@/services/firebase/admin";
 import { pusherServer } from "@/services/pusher";
 
+import { authorizePrivateChannelRequest } from "./authorization";
+
+async function isActiveChannelMember(channelId: string, uid: string): Promise<boolean> {
+  const memberSnap = await adminDb
+    .collection("ChannelMembers")
+    .where("channelId", "==", channelId)
+    .where("userId", "==", uid)
+    .where("isActive", "==", true)
+    .limit(1)
+    .get();
+  return !memberSnap.empty;
+}
+
 export async function POST(req: Request) {
   try {
-    const session = await requireSession();
+    let session: { uid: string } | null = null;
+    try {
+      session = await requireSession();
+    } catch {
+      return new Response("Unauthorized", { status: 401 });
+    }
 
-    // 1. Parse Pusher's form-data
     const formData = await req.formData();
-    const socketId = formData.get("socket_id") as string;
-    const channelName = formData.get("channel_name") as string;
+    const socketId = formData.get("socket_id") as string | null;
+    const channelName = formData.get("channel_name") as string | null;
 
-    if (!socketId || !channelName) {
-      return new Response("Invalid request", { status: 400 });
+    const result = await authorizePrivateChannelRequest({
+      session,
+      socketId,
+      channelName,
+      deps: {
+        authorizeChannel: (sid, ch) => pusherServer.authorizeChannel(sid, ch),
+        isActiveChannelMember,
+      },
+    });
+
+    if (result.status === 200) {
+      return NextResponse.json(result.body);
     }
-
-    // 2. Authorize private user channel directly if matching session uid
-    if (channelName.startsWith("private-user-")) {
-      const targetUid = channelName.replace("private-user-", "");
-      if (targetUid !== session.uid) {
-        return new Response("Forbidden: User mismatch", { status: 403 });
-      }
-      const authResponse = pusherServer.authorizeChannel(socketId, channelName);
-      return NextResponse.json(authResponse);
-    }
-
-    // 3. Extract Channel ID from naming convention: "private-chat-CHANNEL_ID"
-    const targetChannelId = channelName.replace("private-chat-", "");
-
-    // 4. RESILIENT CHECK: Verify active membership in PascalCase collection
-    const memberSnap = await adminDb
-      .collection("ChannelMembers")
-      .where("channelId", "==", targetChannelId)
-      .where("userId", "==", session.uid)
-      .where("isActive", "==", true) // Ensure they haven't been removed
-      .limit(1)
-      .get();
-
-    if (memberSnap.empty) {
-      console.warn(
-        `[Pusher Auth] Unauthorized attempt: User ${session.uid} -> Channel ${targetChannelId}`
-      );
-      return new Response("Forbidden: No active membership found.", {
-        status: 403,
-      });
-    }
-
-    // 4. Authorize via Pusher Server SDK
-    const authResponse = pusherServer.authorizeChannel(socketId, channelName);
-
-    return NextResponse.json(authResponse);
+    return new Response(String(result.body), { status: result.status });
   } catch (error) {
     console.error("[Pusher Auth Error]:", error);
     return new Response("Internal Server Error", { status: 500 });

@@ -5,11 +5,11 @@ import { requireSession } from "@/core/auth/requireSession";
 import {
   AppointmentError,
   createAppointment,
+  getFatherProfile,
   listAppointments,
   listFamilyChildren,
 } from "@/features/appointments/services/appointment.service";
 import { CreateAppointmentSchema } from "@/features/appointments/services/validators";
-import { adminDb } from "@/services/firebase/admin";
 
 export async function GET() {
   try {
@@ -19,46 +19,28 @@ export async function GET() {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const [appointments, children] = await Promise.all([
+    const [appointments, children, father] = await Promise.all([
       listAppointments({
         actorUid: session.uid,
-        actorRole: session.role!,
+        actorRole: session.role,
         familyId: session.familyId,
       }),
       session.role === "FATHER"
         ? listFamilyChildren(session.familyId)
         : Promise.resolve([]),
+      session.role === "STUDENT" && session.familyId
+        ? getFatherProfile(session.familyId)
+        : Promise.resolve(undefined),
     ]);
-
-    // For students: resolve the Father's display name so the UI can show
-    // "ከ [Father name]" on appointment cards.
-    let fatherName: string | undefined;
-    let fatherEotcUid: string | undefined;
-    if (session.role === "STUDENT" && session.familyId) {
-      const fSnap = await adminDb
-        .collection("Fathers")
-        .where("uid", "==", session.familyId)
-        .limit(1)
-        .get();
-      if (!fSnap.empty) {
-        const fd = fSnap.docs[0].data();
-        fatherName =
-          (fd.christianName as string) ||
-          (fd.fullName as string) ||
-          (fd.secularName as string) ||
-          "አባት";
-        if (fd.title) fatherName = `${fd.title} ${fatherName}`;
-        fatherEotcUid = (fd.eotcUid as string) || fSnap.docs[0].id;
-      }
-    }
 
     return NextResponse.json({
       success: true,
       appointments,
       children,
-      // Enrichment for student view
-      fatherName,
-      fatherEotcUid,
+      fatherName: father?.displayName,
+      fatherPhotoUrl: father?.photoUrl,
+      fatherTitle: father?.spiritualTitle,
+      fatherEotcUid: father?.eotcUid,
     });
   } catch (err) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {
@@ -90,18 +72,20 @@ export async function POST(req: NextRequest) {
     const childUid =
       session.role === "STUDENT" ? session.uid : parsed.data.childUid;
 
-    const appointment = await createAppointment({
+    const result = await createAppointment({
       actorUid: session.uid,
-      actorRole: session.role!,
+      actorRole: session.role,
       familyId: session.familyId,
       input: { ...parsed.data, childUid },
     });
 
-    return NextResponse.json({ success: true, appointment }, { status: 201 });
+    return NextResponse.json(result, {
+      status: result.duplicate ? 200 : 201,
+    });
   } catch (err) {
     if (err instanceof AppointmentError) {
       return NextResponse.json(
-        { error: err.message, code: err.code },
+        { error: err.message, code: err.code, ...(err.details ?? {}) },
         { status: err.status }
       );
     }

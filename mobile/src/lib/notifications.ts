@@ -140,7 +140,9 @@ function routeFromNotification(
   }
 
   if (typeof data.appointmentId === "string") {
-    onNavigate("/(tabs)/appointments");
+    onNavigate(
+      `/(tabs)/appointments?appointment=${encodeURIComponent(data.appointmentId)}`
+    );
   }
 }
 
