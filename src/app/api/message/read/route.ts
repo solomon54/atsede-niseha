@@ -1,34 +1,56 @@
+// src/app/api/message/read/route.ts
+import { NextResponse } from "next/server";
+
 import { requireSession } from "@/core/auth/requireSession";
 import { pusherServer } from "@/services/pusher";
-import { adminDb } from "@/services/firebase/admin";
 
-// src/app/api/message/read/route.ts
+import {
+  findActiveRoomMembership,
+  findRoomChannel,
+  markRoomRead,
+} from "../room-event-deps";
+import { handleRoomEvent } from "../room-events";
+
 export async function POST(req: Request) {
   try {
-    const { channelId, lastMessageId } = await req.json();
-    const session = await requireSession();
+    const body = (await req.json().catch(() => null)) as
+      | Record<string, unknown>
+      | null;
+    const payload = body ?? {};
+    const session = await requireSession().catch(() => null);
 
-    // 🔥 Update the member's lastReadAt in Firestore so unread counts work
-    const membersRef = adminDb.collection("ChannelMembers");
-    const memberSnap = await membersRef
-      .where("channelId", "==", channelId)
-      .where("userId", "==", session.uid)
-      .limit(1)
-      .get();
-      
-    if (!memberSnap.empty) {
-      await memberSnap.docs[0].ref.update({
-        lastReadAt: Date.now()
-      });
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    await pusherServer.trigger(`private-chat-${channelId}`, "message-seen", {
-      messageId: lastMessageId,
-      userId: session.uid,
+    const result = await handleRoomEvent({
+      session,
+      roomId: payload.channelId,
+      operation: "READ_RECEIPT",
+      clientActorUid: payload.actorUid ?? payload.userId ?? payload.senderId,
+      payload,
+      deps: {
+        findActiveMembership: findActiveRoomMembership,
+        findChannel: findRoomChannel,
+        markRead: markRoomRead,
+        trigger: async (channelName, event, eventPayload) => {
+          await pusherServer.trigger(channelName, event, eventPayload);
+        },
+      },
     });
 
-    return new Response(null, { status: 204 });
-  } catch (err) {
-    return new Response("Internal Server Error", { status: 500 });
+    if (result.status === 204) {
+      return new Response(null, { status: 204 });
+    }
+    return NextResponse.json(
+      { error: result.body ?? "Request rejected" },
+      { status: result.status }
+    );
+  } catch (error) {
+    console.error("[message/read] error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 }
+    );
   }
 }

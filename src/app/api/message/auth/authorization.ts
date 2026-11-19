@@ -14,7 +14,7 @@ export type ChannelAuthResult = {
   body: unknown;
 };
 
-function isValidChannelUid(uid: string): boolean {
+export function isValidChannelUid(uid: string): boolean {
   // Firebase/Auth UIDs and app IDs are opaque strings; reject empty/unsafe shapes.
   return uid.length > 0 && uid.length <= 128 && !uid.includes("/") && !/\s/.test(uid);
 }
