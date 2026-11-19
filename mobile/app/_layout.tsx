@@ -17,14 +17,19 @@ if (typeof (global as any).FinalizationRegistry === "undefined") {
   };
 }
 
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useQueryClient,
+} from "@tanstack/react-query";
 import * as ScreenCapture from "expo-screen-capture";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { registerGlobals } from "@livekit/react-native";
+import { getActiveChatChannel, setActiveChatChannel } from "../src/lib/active-chat";
 import { AuthProvider, useAuth } from "../src/lib/auth-context";
 import { notificationService } from "../src/lib/notifications";
 import { mobileSyncService } from "../src/lib/sync";
@@ -68,6 +73,27 @@ function NotificationBridge() {
   return null;
 }
 
+/**
+ * Remove only conversation/message query state when the authenticated account
+ * changes. Appointment/profile queries and the offline outbox are untouched.
+ */
+function MessagingCacheBoundary() {
+  const { uid } = useAuth();
+  const queryClient = useQueryClient();
+  const previousUid = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (previousUid.current === uid) return;
+    previousUid.current = uid;
+
+    queryClient.removeQueries({ queryKey: ["conversations"] });
+    queryClient.removeQueries({ queryKey: ["messages"] });
+    setActiveChatChannel(null);
+  }, [uid, queryClient]);
+
+  return null;
+}
+
 function SyncBridge() {
   const { isAuthenticated, isLoading, uid } = useAuth();
 
@@ -80,7 +106,9 @@ function SyncBridge() {
     // Foreground resume listener: trigger sync when app returns from background
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState === "active") {
-        mobileSyncService.sync(undefined, uid).catch(() => {});
+        mobileSyncService
+          .sync(getActiveChatChannel() ?? undefined, uid)
+          .catch(() => {});
       }
     });
 
@@ -126,6 +154,7 @@ export default function RootLayout() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <NotificationBridge />
+          <MessagingCacheBoundary />
           <SyncBridge />
           <StatusBar style="dark" backgroundColor={THEME.colors.navigationBg} />
           <Stack

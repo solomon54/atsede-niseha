@@ -4,10 +4,19 @@ import {
   SQLiteAppointmentOutboxItem,
 } from "./cache";
 import { apiRequest, apiUpload, API_BASE_URL } from "./api";
+import { getActiveChatChannel } from "./active-chat";
+import {
+  conversationCacheKey,
+  isSameSyncContext,
+  sanitizeConversationPreviews,
+  SyncContext,
+  toSyncContext,
+} from "./messagingReliability";
 import { authStorage } from "./storage";
 import { getMobilePusher } from "./pusher";
 
-let activeSyncPromise: Promise<void> | null = null;
+let activeSync: { context: SyncContext; promise: Promise<void> } | null = null;
+let activeOutboxDrain: { uid: string; promise: Promise<void> } | null = null;
 let pusherConnected = false;
 let activeAppointmentDrain: Promise<void> | null = null;
 
@@ -31,18 +40,25 @@ let recoveryUserId: string | undefined;
 
 export const mobileSyncService = {
   /**
-   * Single-flight coordinator for mobile synchronization.
+   * Context-aware single-flight coordinator. A different account or active
+   * room must not be satisfied by an in-flight cycle started for another one;
+   * it is queued after that cycle settles instead.
    */
   async sync(activeChannelId?: string, currentUserId?: string): Promise<void> {
-    if (activeSyncPromise) {
-      return activeSyncPromise;
+    const context = toSyncContext(activeChannelId, currentUserId);
+    if (activeSync && isSameSyncContext(activeSync.context, context)) {
+      return activeSync.promise;
     }
 
-    activeSyncPromise = this.executeSync(activeChannelId, currentUserId).finally(() => {
-      activeSyncPromise = null;
+    const previous = activeSync?.promise ?? Promise.resolve();
+    const run = previous
+      .catch(() => {})
+      .then(() => this.executeSync(activeChannelId, currentUserId));
+    const tracked = run.finally(() => {
+      if (activeSync?.promise === tracked) activeSync = null;
     });
-
-    return activeSyncPromise;
+    activeSync = { context, promise: tracked };
+    return tracked;
   },
 
   async executeSync(activeChannelId?: string, currentUserId?: string): Promise<void> {
@@ -51,8 +67,8 @@ export const mobileSyncService = {
       await this.drainOutbox(currentUserId);
       await this.drainAppointmentOutbox(currentUserId);
 
-      // 2. Refresh conversation list into SQLite
-      await this.syncConversations();
+      // 2. Refresh conversation list into SQLite (account-scoped)
+      await this.syncConversations(currentUserId);
 
       // 3. If an active channel is open, sync delta messages
       if (activeChannelId) {
@@ -241,9 +257,28 @@ export const mobileSyncService = {
   },
 
   /**
-   * Drain pending outbox items in FIFO order
+   * Drain pending outbox items in FIFO order. Same-account callers join the
+   * active drain; a different account is queued after it, never merged into it.
    */
   async drainOutbox(currentUserId?: string): Promise<void> {
+    if (!currentUserId) return;
+
+    if (activeOutboxDrain?.uid === currentUserId) {
+      return activeOutboxDrain.promise;
+    }
+
+    const previous = activeOutboxDrain?.promise ?? Promise.resolve();
+    const run = previous
+      .catch(() => {})
+      .then(() => this.drainOutboxNow(currentUserId));
+    const tracked = run.finally(() => {
+      if (activeOutboxDrain?.promise === tracked) activeOutboxDrain = null;
+    });
+    activeOutboxDrain = { uid: currentUserId, promise: tracked };
+    return tracked;
+  },
+
+  async drainOutboxNow(currentUserId: string): Promise<void> {
     // Without an authenticated owner we must not touch the queue at all.
     if (!currentUserId) return;
 
@@ -251,8 +286,12 @@ export const mobileSyncService = {
     if (pending.length === 0) return;
 
     for (const op of pending) {
-      // Defence in depth: the query is already account-scoped.
+      // Defence in depth: the query is already account-scoped. If the session
+      // changed after this drain began, stop before sending A's queued payload
+      // with B's token.
       if (op.userId !== currentUserId) continue;
+      const sessionMeta = await authStorage.getUserMeta().catch(() => null);
+      if (sessionMeta?.uid && sessionMeta.uid !== currentUserId) break;
 
       try {
         if (op.type === "SEND_MESSAGE") {
@@ -358,29 +397,21 @@ export const mobileSyncService = {
   /**
    * Sync conversations into SQLite query_cache
    */
-  async syncConversations(): Promise<any[]> {
+  async syncConversations(currentUserId?: string): Promise<any[]> {
+    const cacheKey = conversationCacheKey(currentUserId);
+    if (!cacheKey) return [];
+
     try {
       const res = await apiRequest<any[]>("/api/message/conversation");
       if (Array.isArray(res)) {
         // Never cache ciphertext in visible preview fields.
-        const safe = res.map((c: any) => ({
-          ...c,
-          lastMessage: c?.lastMessage
-            ? {
-                ...c.lastMessage,
-                content:
-                  c.lastMessage.isEncrypted === true
-                    ? (typeof c.lastMessage.decryptedPreview === "string" ? c.lastMessage.decryptedPreview : "")
-                    : c.lastMessage.content,
-              }
-            : c?.lastMessage ?? null,
-        }));
-        await offlineCache.setQuery("conversations", safe);
+        const safe = sanitizeConversationPreviews(res);
+        await offlineCache.setQuery(cacheKey, safe);
         return safe;
       }
       return [];
     } catch {
-      return (await offlineCache.getQuery<any[]>("conversations")) || [];
+      return (await offlineCache.getQuery<any[]>(cacheKey)) || [];
     }
   },
 
@@ -522,7 +553,11 @@ export const mobileSyncService = {
             pusherConnected = true;
             // Read the account at event time rather than capturing a closure
             // that could outlive the session that registered it.
-            this.sync(undefined, recoveryUserId).catch(() => {});
+            // A reconnect can happen while a room is open. Refresh that room
+            // as well as the conversation list so missed events are repaired.
+            this.sync(getActiveChatChannel() ?? undefined, recoveryUserId).catch(
+              () => {}
+            );
           }
         },
         disconnected: () => {

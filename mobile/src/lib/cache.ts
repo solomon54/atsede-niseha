@@ -727,15 +727,19 @@ export const offlineCache = {
    * PRESERVES outbox operations (scoped by userId) so pending offline work is never destroyed.
    */
   async clearAll(): Promise<void> {
-    try {
-      const db = await getDb();
-      await db.execAsync(`
-        DELETE FROM query_cache;
-        DELETE FROM messages_cache;
-        DELETE FROM sync_meta;
-      `);
-    } catch (e) {
-      console.warn("Failed clearing offline cache:", e);
-    }
+    // Serialize with queued writes so a write already in flight cannot land
+    // after the account boundary has cleared cached views.
+    await enqueueWrite(async () => {
+      try {
+        const db = await getDb();
+        await db.execAsync(`
+          DELETE FROM query_cache;
+          DELETE FROM messages_cache;
+          DELETE FROM sync_meta;
+        `);
+      } catch (e) {
+        console.warn("Failed clearing offline cache:", e);
+      }
+    });
   },
 };

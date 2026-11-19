@@ -57,6 +57,11 @@ import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { getMobilePusher } from "../../src/lib/pusher";
+import {
+  conversationCacheKey,
+  conversationQueryKey,
+  messageQueryKey,
+} from "../../src/lib/messagingReliability";
 import { mobileSyncService } from "../../src/lib/sync";
 import {
   decryptMessage,
@@ -130,6 +135,23 @@ export interface MessageItem {
     durationSec?: number | null;
     isGroup: boolean;
   } | null;
+}
+
+interface MessageUpdateEvent {
+  messageId?: string;
+  id?: string;
+  callId?: string;
+  updatedAt?: number;
+  editedAt?: number;
+  content?: string;
+  encryption?: EncryptionEnvelope | null;
+  callDetails?: MessageItem["callDetails"];
+  deletedAt?: number;
+}
+
+interface RoomChannel {
+  bind(event: string, handler: (payload: any) => void): void;
+  unbind(event: string, handler: (payload: any) => void): void;
 }
 
 export const DIGNIFIED_REACTIONS = [
@@ -408,11 +430,26 @@ export default function ChannelChatScreen() {
   const router = useRouter();
   const { role, uid } = useAuth();
   const queryClient = useQueryClient();
+  const conversationsKey = useMemo(() => conversationQueryKey(uid), [uid]);
+  const conversationsCacheKey = conversationCacheKey(uid);
+  const messagesKey = useMemo(
+    () => messageQueryKey(uid, channelId),
+    [uid, channelId]
+  );
 
   const [inputText, setInputText] = useState("");
   const [stagedAttachment, setStagedAttachment] = useState<StagedAttachment | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [decryptedContent, setDecryptedContent] = useState<Record<string, string>>({});
+  const forgetDecryptedMessage = useCallback((messageId: string) => {
+    attemptedDecrypt.current.delete(messageId);
+    setDecryptedContent((prev) => {
+      if (!(messageId in prev)) return prev;
+      const next = { ...prev };
+      delete next[messageId];
+      return next;
+    });
+  }, []);
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatusText, setUploadStatusText] = useState("");
@@ -446,7 +483,7 @@ export default function ChannelChatScreen() {
     error,
     refetch,
   } = useQuery<MessageItem[]>({
-    queryKey: ["messages", channelId],
+    queryKey: messagesKey,
     queryFn: async () => {
       const cached = await offlineCache.getMessages<MessageItem>(channelId);
       try {
@@ -456,14 +493,14 @@ export default function ChannelChatScreen() {
         return cached;
       }
     },
-    enabled: Boolean(channelId),
+    enabled: Boolean(channelId && uid),
     staleTime: 1000 * 60 * 15,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
   });
 
   const cacheChecked = useCacheFirst<MessageItem[]>(
-    ["messages", channelId],
+    messagesKey,
     () => offlineCache.getMessages<MessageItem>(channelId)
   );
 
@@ -485,13 +522,14 @@ export default function ChannelChatScreen() {
           Alert.alert("መልዕክት አልተገኘም", "የተመረጠው መልዕክት ማግኘት አልተቻለም። እባክዎ እንደገና ይሞክሩ።");
           return;
         }
+        if (cancelled) return;
         if (msg.deletedAt) {
           await offlineCache.saveMessages(channelId, [{ ...msg, content: "", media: null, status: "SENT" }]);
         } else {
           await offlineCache.saveMessages(channelId, [{ ...msg, status: "SENT" }]);
         }
         if (!cancelled) {
-          queryClient.invalidateQueries({ queryKey: ["messages", channelId] });
+          queryClient.invalidateQueries({ queryKey: messagesKey });
         }
       } catch (e: any) {
         if (cancelled) return;
@@ -506,16 +544,18 @@ export default function ChannelChatScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [channelId, targetMessageId, queryClient]);
+  }, [channelId, targetMessageId, messagesKey, queryClient]);
 
 
   // 2. Fetch conversations to know channel title / recipient name
   const { data: convos } = useQuery<any[]>({
-    queryKey: ["conversations"],
+    queryKey: conversationsKey,
+    enabled: Boolean(conversationsCacheKey),
     queryFn: async () => {
-      const cached = await offlineCache.getQuery<any[]>("conversations");
+      if (!conversationsCacheKey) return [];
+      const cached = await offlineCache.getQuery<any[]>(conversationsCacheKey);
       if (cached && cached.length > 0) return cached;
-      return await mobileSyncService.syncConversations();
+      return await mobileSyncService.syncConversations(uid || undefined);
     },
     staleTime: 1000 * 60 * 15,
     refetchOnWindowFocus: false,
@@ -593,29 +633,70 @@ export default function ChannelChatScreen() {
     useCallback(() => {
       if (!channelId) return;
       setActiveChatChannel(channelId);
-      queryClient.setQueryData<any[]>(["conversations"], (old) =>
+      queryClient.setQueryData<any[]>(conversationsKey, (old) =>
         old?.map((room) =>
           room.id === channelId ? { ...room, unreadCount: 0 } : room
         )
       );
       return () => setActiveChatChannel(null);
-    }, [channelId, queryClient])
+    }, [channelId, conversationsKey, queryClient])
   );
 
   // 5. Pusher Real-Time Channel Subscription
   useEffect(() => {
-    if (!channelId) return;
+    if (!channelId || !uid) return;
 
     mobileSyncService.syncChannelMessages(channelId).catch(() => {});
 
     let pusher: any;
-    let ch: any;
-    let chName = `private-chat-${channelId}`;
+    let ch: RoomChannel | undefined;
+    const channelName = `private-chat-${channelId}`;
+    const bindings: Array<{ event: string; handler: (payload: any) => void }> = [];
+
+    const bind = (event: string, handler: (payload: any) => void) => {
+      if (!ch) return;
+      ch.bind(event, handler);
+      bindings.push({ event, handler });
+    };
+
+    const updateMessage = async (event: MessageUpdateEvent) => {
+      const messageId =
+        event.messageId || event.id || event.callId || event.callDetails?.callId;
+      if (!messageId) return;
+
+      const editedAt = event.editedAt || event.updatedAt || Date.now();
+      const patch: Partial<MessageItem> = { editedAt };
+      if (typeof event.content === "string") patch.content = event.content;
+      if (event.encryption) patch.encryption = event.encryption;
+      if (event.callDetails) patch.callDetails = event.callDetails;
+      if (event.deletedAt) {
+        patch.deletedAt = event.deletedAt;
+        patch.content = "";
+        patch.media = null;
+      }
+
+      // A fresh encrypted edit has a fresh IV. Forget the old plaintext so the
+      // decrypt effect runs again with the new envelope.
+      if (event.encryption && typeof event.content === "string") {
+        forgetDecryptedMessage(messageId);
+      }
+
+      await offlineCache.updateMessage(channelId, messageId, (m) => ({
+        ...m,
+        ...patch,
+      }));
+      queryClient.setQueryData<MessageItem[]>(
+        messagesKey,
+        (old = []) =>
+          old.map((m) => (m.id === messageId ? { ...m, ...patch } : m))
+      );
+    };
+
     try {
       pusher = getMobilePusher();
-      ch = pusher.subscribe(chName);
+      ch = pusher.subscribe(channelName);
 
-      ch.bind("new-message", async (msg: any) => {
+      bind("new-message", async (msg: any) => {
         if (!msg || !msg.id) return;
 
         let content = msg.content;
@@ -634,7 +715,7 @@ export default function ChannelChatScreen() {
         const normalized: MessageItem = { ...msg, status: "SENT" };
         await offlineCache.saveMessages(channelId, [normalized]);
         queryClient.setQueryData<MessageItem[]>(
-          ["messages", channelId],
+          messagesKey,
           (old = []) => {
             if (old.some((m) => m.id === normalized.id)) {
               return old.map((m) => (m.id === normalized.id ? normalized : m));
@@ -644,33 +725,12 @@ export default function ChannelChatScreen() {
         );
       });
 
-      ch.bind("message-updated", async (data: any) => {
-        // Supports both text edit shape {messageId, content, updatedAt}
-        // and call/artifact shape {id/callId, channelId, callDetails, editedAt, ...}
-        const messageId = data?.messageId || data?.id || data?.callId || data?.callDetails?.callId;
-        if (!messageId) return;
-        const editedAt = data?.editedAt || data?.updatedAt || Date.now();
-        const patch: Partial<MessageItem> = { editedAt };
-        if (typeof data?.content === "string") patch.content = data.content;
-        if (data?.callDetails) patch.callDetails = data.callDetails;
-        if (data?.deletedAt) {
-          patch.deletedAt = data.deletedAt;
-          patch.content = "";
-          patch.media = null;
-        }
-        // Preserve existing encrypted payload/content unless explicitly replaced.
-        await offlineCache.updateMessage(channelId, messageId, (m) => ({
-          ...m,
-          ...patch,
-        }));
-        queryClient.setQueryData<MessageItem[]>(
-          ["messages", channelId],
-          (old = []) =>
-            old.map((m) => (m.id === messageId ? { ...m, ...patch } : m))
-        );
-      });
+      bind("message-updated", updateMessage);
+      // Text edits are canonically emitted as `message-edited`; `message-updated`
+      // remains supported for call/artifact transitions and legacy payloads.
+      bind("message-edited", updateMessage);
 
-      ch.bind(
+      bind(
         "message-deleted",
         async (data: { messageId: string; deletedAt?: number }) => {
           if (!data?.messageId) return;
@@ -681,7 +741,7 @@ export default function ChannelChatScreen() {
             media: null,
           }));
           queryClient.setQueryData<MessageItem[]>(
-            ["messages", channelId],
+            messagesKey,
             (old = []) =>
               old.map((m) =>
                 m.id === data.messageId
@@ -697,7 +757,7 @@ export default function ChannelChatScreen() {
         }
       );
 
-      ch.bind(
+      bind(
         "message-reaction",
         async (data: { messageId: string; reactions: Record<string, string[]> }) => {
           if (!data?.messageId) return;
@@ -706,7 +766,7 @@ export default function ChannelChatScreen() {
             reactions: data.reactions,
           }));
           queryClient.setQueryData<MessageItem[]>(
-            ["messages", channelId],
+            messagesKey,
             (old = []) =>
               old.map((m) =>
                 m.id === data.messageId
@@ -717,7 +777,7 @@ export default function ChannelChatScreen() {
         }
       );
 
-      ch.bind("message-seen", () => {
+      bind("message-seen", () => {
         // Read state acknowledged
       });
     } catch (e) {
@@ -725,12 +785,16 @@ export default function ChannelChatScreen() {
     }
 
     return () => {
-      try {
-        if (ch) ch.unbind_all();
-        if (pusher) pusher.unsubscribe(chName);
-      } catch {}
+      // The chat tab stays mounted underneath this screen and uses the same
+      // private channel. Remove only this screen's handlers; never globally
+      // unsubscribe or unbind handlers installed by another mounted view.
+      bindings.forEach(({ event, handler }) => {
+        try {
+          ch?.unbind(event, handler);
+        } catch {}
+      });
     };
-  }, [channelId, queryClient]);
+  }, [channelId, uid, messagesKey, queryClient, forgetDecryptedMessage]);
 
   // Combine server messages with optimistic messages
   const allMessages: MessageItem[] = useMemo(() => {
@@ -885,7 +949,11 @@ export default function ChannelChatScreen() {
 
   // Edit Message Mutation
   const editMutation = useMutation({
-    mutationFn: async (payload: { messageId: string; content: string }) => {
+    mutationFn: async (payload: {
+      messageId: string;
+      content: string;
+      encryption?: EncryptionEnvelope | null;
+    }) => {
       await offlineCache.queueOutbox(
         channelId!,
         "EDIT_MESSAGE",
@@ -893,29 +961,43 @@ export default function ChannelChatScreen() {
           channelId,
           messageId: payload.messageId,
           content: payload.content,
+          isEncrypted: Boolean(payload.encryption),
+          encryption: payload.encryption || undefined,
         },
         uid || undefined
       );
       await offlineCache.updateMessage(channelId!, payload.messageId, (m) => ({
         ...m,
         content: payload.content,
+        encryption: payload.encryption || m.encryption,
         editedAt: Date.now(),
       }));
+      if (payload.encryption) {
+        forgetDecryptedMessage(payload.messageId);
+      }
       mobileSyncService.drainOutbox(uid || undefined).catch(() => {});
       return { success: true };
     },
     onSuccess: (_res, vars) => {
       queryClient.setQueryData<MessageItem[]>(
-        ["messages", channelId],
+        messagesKey,
         (old) => {
           if (!old) return old;
           return old.map((m) =>
             m.id === vars.messageId
-              ? { ...m, content: vars.content, editedAt: Date.now() }
+              ? {
+                  ...m,
+                  content: vars.content,
+                  encryption: vars.encryption || m.encryption,
+                  editedAt: Date.now(),
+                }
               : m
           );
         }
       );
+      if (vars.encryption) {
+        forgetDecryptedMessage(vars.messageId);
+      }
       setEditingMessage(null);
       setInputText("");
     },
@@ -947,7 +1029,7 @@ export default function ChannelChatScreen() {
     },
     onSuccess: (_res, messageId) => {
       queryClient.setQueryData<MessageItem[]>(
-        ["messages", channelId],
+        messagesKey,
         (old) => {
           if (!old) return old;
           return old.map((m) =>
@@ -980,7 +1062,7 @@ export default function ChannelChatScreen() {
     },
     onSuccess: (data, vars) => {
       queryClient.setQueryData<MessageItem[]>(
-        ["messages", channelId],
+        messagesKey,
         (old) => {
           if (!old) return old;
           return old.map((m) =>
@@ -1215,10 +1297,14 @@ export default function ChannelChatScreen() {
 
       const performEdit = async () => {
         let contentToSend = sanitized;
+        let freshEncryption: EncryptionEnvelope | undefined;
         if (editingMessage.isEncrypted && channelId) {
           try {
             const enc = await encryptMessage(sanitized, channelId);
             contentToSend = enc.ciphertext;
+            // Carry the fresh IV envelope with the edited ciphertext. Dropping
+            // it left the old IV paired with new ciphertext, corrupting edits.
+            freshEncryption = enc.encryption;
           } catch {
             Alert.alert("ስህተት", "መልዕክቱን ማመስጠር አልተቻለም");
             return;
@@ -1227,6 +1313,7 @@ export default function ChannelChatScreen() {
         editMutation.mutate({
           messageId: editingMessage.id,
           content: contentToSend,
+          encryption: freshEncryption,
         });
       };
       performEdit();

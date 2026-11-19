@@ -95,26 +95,35 @@ export function usePusherListener(channelId: ChannelID) {
     /**
      * 2. Handle Updates (Edits / call detail transitions)
      * Merge with existing to avoid dropping fields on partial payloads.
+     * `message-edited` carries `messageId`; `message-updated` carries `id`.
      */
-    const handleMessageUpdated = async (payload: Partial<Message> & { id?: MessageID }) => {
-      if (!payload?.id) return;
+    const handleMessageUpdated = async (
+      payload: Partial<Message> & { id?: MessageID; messageId?: MessageID }
+    ) => {
+      const messageId = payload?.id || payload?.messageId;
+      if (!messageId) return;
+      const normalized: Partial<Message> & {
+        id: MessageID;
+        messageId?: MessageID;
+      } = { ...payload, id: messageId };
+      delete normalized.messageId;
       try {
-        const existing = await db.messages.get(payload.id);
+        const existing = await db.messages.get(messageId);
         if (!existing) {
           await db.messages.put({
-            ...(payload as Message),
+            ...(normalized as Message),
             status: "sent",
             version: "v1",
-            createdAt: (payload.createdAt as number) || Date.now(),
-            updatedAt: (payload.updatedAt as number) || Date.now(),
+            createdAt: (normalized.createdAt as number) || Date.now(),
+            updatedAt: (normalized.updatedAt as number) || Date.now(),
           } as LocalLedgerMessage);
           return;
         }
-        await db.messages.update(payload.id, {
+        await db.messages.update(messageId, {
           ...existing,
-          ...payload,
+          ...normalized,
           status: "sent",
-          updatedAt: (payload.updatedAt as number) || existing.updatedAt || Date.now(),
+          updatedAt: (normalized.updatedAt as number) || existing.updatedAt || Date.now(),
         });
       } catch (err) {
         console.error("❌ [PUSHER_EDIT] Update failed:", err);
@@ -171,6 +180,7 @@ export function usePusherListener(channelId: ChannelID) {
 
     channel.bind("new-message", handleNewMessage);
     channel.bind("message-updated", handleMessageUpdated);
+    channel.bind("message-edited", handleMessageUpdated);
     channel.bind("message-deleted", handleMessageDeleted);
     channel.bind("message-reaction", handleMessageReaction);
     channel.bind("message-seen", handleMessageSeen);
@@ -180,6 +190,7 @@ export function usePusherListener(channelId: ChannelID) {
     return () => {
       channel.unbind("new-message", handleNewMessage);
       channel.unbind("message-updated", handleMessageUpdated);
+      channel.unbind("message-edited", handleMessageUpdated);
       channel.unbind("message-deleted", handleMessageDeleted);
       channel.unbind("message-reaction", handleMessageReaction);
       channel.unbind("message-seen", handleMessageSeen);

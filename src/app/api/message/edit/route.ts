@@ -3,6 +3,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { requireSession } from "@/core/auth/requireSession";
+import {
+  buildMessageEditedEvent,
+  validateClientEditEncryption,
+} from "@/features/messaging/editEncryption";
 import { messageService } from "@/features/messaging/services/message.service";
 import {
   EditMessageRequest,
@@ -31,24 +35,46 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
     }
 
-    // Call service with all required fields + branded casting
-    await messageService.editMessage({
+    // Validate a client E2EE envelope before it reaches persistence. The
+    // established context is channelId, so a mismatched keyId is rejected.
+    const validatedEncryption = body.encryption
+      ? validateClientEditEncryption(body.encryption, body.channelId)
+      : null;
+    if (validatedEncryption && !validatedEncryption.ok) {
+      return NextResponse.json(
+        { error: validatedEncryption.error },
+        { status: 400 }
+      );
+    }
+
+    const updated = await messageService.editMessage({
       familyId: session.familyId as FamilyID,
       channelId: body.channelId as ChannelID,
       messageId: body.messageId as MessageID,
       editorId: session.uid as UID,
       newContent: body.content,
+      encryption: validatedEncryption?.ok
+        ? validatedEncryption.encryption
+        : undefined,
     });
 
     try {
+      const editedEncryption =
+        updated.encryption && "iv" in updated.encryption
+          ? {
+              keyId: updated.encryption.keyId,
+              iv: updated.encryption.iv as string,
+            }
+          : null;
       await pusherServer.trigger(
         `private-chat-${body.channelId}`,
         "message-edited",
-        {
+        buildMessageEditedEvent({
           messageId: body.messageId,
-          content: body.content,
-          editedAt: Date.now(),
-        }
+          content: updated.content ?? body.content,
+          editedAt: updated.editedAt || Date.now(),
+          encryption: editedEncryption,
+        })
       );
     } catch (pushErr) {
       console.warn("[Pusher Edit Trigger Warning]:", pushErr);

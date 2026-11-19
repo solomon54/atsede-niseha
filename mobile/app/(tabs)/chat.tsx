@@ -19,6 +19,12 @@ import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { useAuth } from "../../src/lib/auth-context";
 import { mobileSyncService } from "../../src/lib/sync";
 import { getMobilePusher } from "../../src/lib/pusher";
+import {
+  conversationCacheKey,
+  conversationQueryKey,
+  sanitizeConversationPreviews,
+  sanitizeMessagePreview,
+} from "../../src/lib/messagingReliability";
 import { THEME } from "../../src/constants/theme";
 
 interface Conversation {
@@ -53,20 +59,32 @@ interface Conversation {
   unreadCount?: number;
 }
 
+type RealtimeMessage = NonNullable<Conversation["lastMessage"]>;
+
+interface RealtimeRoomChannel {
+  bind(event: string, handler: (message: RealtimeMessage) => void): void;
+  unbind(event: string, handler: (message: RealtimeMessage) => void): void;
+}
+
 export default function ChatScreen() {
   const router = useRouter();
   const { uid } = useAuth();
   const queryClient = useQueryClient();
+  const conversationsKey = useMemo(() => conversationQueryKey(uid), [uid]);
+  const conversationsCacheKey = conversationCacheKey(uid);
 
   const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
     Conversation[]
   >({
-    queryKey: ["conversations"],
+    queryKey: conversationsKey,
+    enabled: Boolean(conversationsCacheKey),
     queryFn: async () => {
+      if (!conversationsCacheKey) return [];
       const res = await apiRequest<Conversation[]>("/api/message/conversation");
-      const conversations = res || [];
-      // Cache the list so the rooms render before the network answers.
-      offlineCache.setQuery("conversations", conversations);
+      const conversations = sanitizeConversationPreviews(res || []);
+      // Cache the list under this account so the rooms render before the
+      // network answers and another account can never read this snapshot.
+      await offlineCache.setQuery(conversationsCacheKey, conversations);
       return conversations;
     },
     staleTime: 1000 * 60 * 15, // 15 minutes: render from cache without periodic background queries
@@ -74,9 +92,21 @@ export default function ChatScreen() {
     refetchOnMount: false,
   });
 
-  const cacheChecked = useCacheFirst<Conversation[]>(["conversations"], () =>
-    offlineCache.getQuery<Conversation[]>("conversations")
+  const cacheChecked = useCacheFirst<Conversation[]>(
+    conversationsKey,
+    () =>
+      conversationsCacheKey
+        ? offlineCache.getQuery<Conversation[]>(conversationsCacheKey)
+        : Promise.resolve(null)
   );
+
+  // Subscriptions are keyed by room ids, not by mutable conversation objects.
+  // A new message changes `data` but must not tear down every channel.
+  const subscriptionRoomIds = useMemo(
+    () => (data || []).map((conversation) => conversation.id),
+    [data]
+  );
+  const subscriptionKey = subscriptionRoomIds.join("|");
 
   // Initialize Pusher realtime connection & auto-recovery
   useEffect(() => {
@@ -87,39 +117,36 @@ export default function ChatScreen() {
 
   // Subscribe to realtime room updates via Pusher
   useEffect(() => {
-    const convos = data || [];
-    if (convos.length === 0) return;
+    if (!uid || !subscriptionKey) return;
 
     try {
       const pusher = getMobilePusher();
-      const subscribedChannels: string[] = [];
+      const bindings: Array<{
+        channelName: string;
+        channel: RealtimeRoomChannel;
+        handler: (message: RealtimeMessage) => void;
+      }> = [];
 
-      convos.forEach((c) => {
-        const chName = `private-chat-${c.id}`;
-        subscribedChannels.push(chName);
-        const channel = pusher.subscribe(chName);
-
-        channel.bind("new-message", (msg: any) => {
-          // Update room row locally without full Firestore refetch.
+      subscriptionKey.split("|").forEach((channelId) => {
+        const channelName = `private-chat-${channelId}`;
+        const channel = pusher.subscribe(channelName);
+        const handler = (message: RealtimeMessage) => {
+          if (!message?.id) return;
+          // Update room row locally without a full Firestore refetch.
           // Never persist ciphertext into visible preview fields.
-          const safePreviewContent = msg?.isEncrypted === true ? "" : (typeof msg?.content === "string" ? msg.content : "");
-          queryClient.setQueryData<Conversation[]>(["conversations"], (old) => {
+          const safePreviewContent =
+            sanitizeMessagePreview(message) ?? "";
+          queryClient.setQueryData<Conversation[]>(conversationsKey, (old) => {
             if (!old) return old;
             return old.map((room) => {
-              if (room.id === c.id) {
-                const isCurrentMe = msg.senderId === uid;
-                const isOpen = getActiveChatChannel() === c.id;
+              if (room.id === channelId) {
+                const isCurrentMe = message.senderId === uid;
+                const isOpen = getActiveChatChannel() === channelId;
                 return {
                   ...room,
                   lastMessage: {
-                    id: msg.id,
+                    ...message,
                     content: safePreviewContent,
-                    createdAt: msg.createdAt,
-                    senderId: msg.senderId,
-                    type: msg.type,
-                    media: msg.media || null,
-                    callDetails: msg.callDetails || null,
-                    isEncrypted: msg.isEncrypted === true,
                   },
                   unreadCount:
                     isCurrentMe || isOpen
@@ -130,20 +157,23 @@ export default function ChatScreen() {
               return room;
             });
           });
-        });
+        };
+        channel.bind("new-message", handler);
+        bindings.push({ channelName, channel, handler });
       });
 
       return () => {
-        subscribedChannels.forEach((chName) => {
+        bindings.forEach(({ channelName, channel, handler }) => {
           try {
-            pusher.unsubscribe(chName);
+            channel.unbind("new-message", handler);
+            pusher.unsubscribe(channelName);
           } catch {}
         });
       };
     } catch (e) {
       console.warn("Pusher subscription error on mobile:", e);
     }
-  }, [data, uid, queryClient]);
+  }, [conversationsKey, subscriptionKey, uid, queryClient]);
 
   // Sort conversations most recent first
   const conversations = useMemo(() => {

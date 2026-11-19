@@ -10,7 +10,9 @@ import { useRouter } from "expo-router";
 import { apiRequest } from "./api";
 import { authEvents } from "./auth-events";
 import { offlineCache } from "./cache";
+import { resetMobilePusher } from "./pusher";
 import { authStorage } from "./storage";
+import { mobileSyncService } from "./sync";
 
 interface SessionIdentity {
   uid: string;
@@ -39,6 +41,24 @@ interface AuthState {
 }
 
 const AuthContext = createContext<AuthState | null>(null);
+
+/**
+ * Every session boundary must forget realtime state before the token changes
+ * or the user leaves. Recovery handlers are removed first, then the client is
+ * disconnected and discarded so its channel table cannot be inherited.
+ */
+function resetRealtimeForSessionChange(): void {
+  try {
+    mobileSyncService.teardownRealtimeRecovery();
+  } catch (error) {
+    console.warn("Realtime recovery teardown failed:", error);
+  }
+  try {
+    resetMobilePusher();
+  } catch (error) {
+    console.warn("Pusher session reset failed:", error);
+  }
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -118,6 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   useEffect(() => {
     return authEvents.onUnauthorized(() => {
+      resetRealtimeForSessionChange();
       setIsAuthenticated(false);
       setRole(null);
       setEotcUid(null);
@@ -178,6 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // A rejected token means the session is genuinely dead.
       if (status === 401) {
+        resetRealtimeForSessionChange();
         await authStorage.clear();
         setIsAuthenticated(false);
         setRole(null);
@@ -269,6 +291,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error("የመግቢያ ቶከን አልተገኘም። እባክዎ እንደገና ይሞክሩ።");
     }
 
+    // A login can switch accounts without an explicit logout. Drop the old
+    // socket before installing the new token; private-channel authorization
+    // will create only subscriptions for the new account.
+    resetRealtimeForSessionChange();
     await authStorage.saveToken(res.token);
     await authStorage.saveUserMeta(res.role, formattedUid, res.uid);
 
@@ -321,6 +347,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error("የመግቢያ ቶከን አልተገኘም። እባክዎ እንደገና ይሞክሩ።");
     }
 
+    resetRealtimeForSessionChange();
     await authStorage.saveToken(res.token);
     await authStorage.saveUserMeta(userRole, formattedUid, res.uid);
 
@@ -351,6 +378,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         requiresAuth: true,
       }).catch(() => {});
     } finally {
+      resetRealtimeForSessionChange();
       await authStorage.clear();
       // Shared devices must not retain the previous user's cached snapshots.
       await offlineCache.clearAll().catch(() => {});

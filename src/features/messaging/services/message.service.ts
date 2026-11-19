@@ -144,6 +144,8 @@ export interface EditMessageInput {
   editorId: UID;
   newContent: string;
   messageId: MessageID;
+  /** Validated fresh envelope when the client performed E2EE on the edit. */
+  encryption?: { algorithm: "AES-GCM"; keyId: string; iv: string };
 }
 
 export interface DeleteMessageInput {
@@ -374,8 +376,13 @@ export const messageService = {
       let content = input.newContent;
       let encryption = message.encryption;
 
-      //  Edit Encryption Logic (graceful for server keys and client E2EE)
-      if (message.isEncrypted && encryption?.keyId) {
+      // A client-supplied envelope is already bound to this room's context by
+      // the API validator. Persist it verbatim with the fresh ciphertext; do
+      // not re-encrypt it with a server key or reuse the old IV.
+      if (input.encryption && message.isEncrypted) {
+        encryption = input.encryption;
+      } else if (message.isEncrypted && encryption?.keyId) {
+        // Legacy path: server-side re-encryption when the server owns the key.
         try {
           const key = await loadKey(encryption.keyId as FamilyID);
           if (key) {

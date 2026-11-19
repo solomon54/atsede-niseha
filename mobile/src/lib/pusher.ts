@@ -1,4 +1,5 @@
 import * as PusherModule from "pusher-js/react-native";
+import { authEvents } from "./auth-events";
 import { authStorage } from "./storage";
 
 const API_BASE_URL =
@@ -104,6 +105,13 @@ export function getMobilePusher(): any {
               });
 
               if (!response.ok) {
+                // A private-channel authorization 401 means the token is dead.
+                // Clear it through the same bridge used by REST calls so React
+                // auth state cannot survive on a connection the server rejects.
+                if (response.status === 401) {
+                  await authStorage.clear().catch(() => {});
+                  authEvents.emitUnauthorized();
+                }
                 callback(
                   new Error(`Pusher auth failed: ${response.status}`),
                   null as any
@@ -122,4 +130,19 @@ export function getMobilePusher(): any {
     });
   }
   return pusherInstance;
+}
+
+/**
+ * End all realtime state for the current account. Callers must first remove
+ * their own channel handlers/recovery listeners; dropping the singleton also
+ * drops Pusher's channel table so a new account cannot inherit old channels.
+ */
+export function resetMobilePusher(): void {
+  if (!pusherInstance) return;
+  try {
+    pusherInstance.disconnect();
+  } catch {
+    // A partially constructed or already destroyed client needs no teardown.
+  }
+  pusherInstance = null;
 }

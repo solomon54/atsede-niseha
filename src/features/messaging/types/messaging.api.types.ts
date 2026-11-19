@@ -66,6 +66,12 @@ export interface EditMessageRequest {
   channelId: ChannelID;
   messageId: MessageID;
   content: string;
+  isEncrypted?: boolean;
+  /** Fresh envelope for a client-side E2EE edit (same context as the room). */
+  encryption?: {
+    keyId: string;
+    iv: string;
+  };
 }
 
 export interface EditMessageResponse {

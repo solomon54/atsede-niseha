@@ -24,14 +24,24 @@ export const authStorage = {
     familyId?: string
   ): Promise<void> {
     await SecureStore.setItemAsync(USER_ROLE_KEY, role);
+
+    // Optional identity fields must be written deterministically. Leaving an
+    // old value behind when a login/claim response omits it can hydrate the
+    // next session with the previous account's uid or familyId.
     if (eotcUid) {
       await SecureStore.setItemAsync(USER_UID_KEY, eotcUid);
+    } else {
+      await SecureStore.deleteItemAsync(USER_UID_KEY);
     }
     if (firebaseUid) {
       await SecureStore.setItemAsync(FIREBASE_UID_KEY, firebaseUid);
+    } else {
+      await SecureStore.deleteItemAsync(FIREBASE_UID_KEY);
     }
     if (familyId) {
       await SecureStore.setItemAsync(FAMILY_ID_KEY, familyId);
+    } else {
+      await SecureStore.deleteItemAsync(FAMILY_ID_KEY);
     }
   },
 
