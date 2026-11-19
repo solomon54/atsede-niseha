@@ -6,8 +6,12 @@
  * lifecycle rules, terminology, and derived overviews.
  */
 
+export * from "./detailLoad";
+export * from "./eligibility";
 export * from "./legacy";
 export * from "./lifecycle";
 export * from "./overview";
+export * from "./snapshot";
+export * from "./studentCreateCompatibility";
 export * from "./terminology";
 export * from "./types";

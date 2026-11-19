@@ -29,6 +29,9 @@ import {
   getAvailableAppointmentActions,
   getOtherPartyUid,
   isAppointmentParty,
+  isClaimedWithLinkedUid,
+  isLegacyClaimedStudent,
+  legacyStudentUid,
   normalizeAppointment,
 } from "@/shared/domain/appointments";
 import {
@@ -142,7 +145,8 @@ interface ChildProfile {
 
 async function loadStudentInFamily(
   childUid: string,
-  familyId: string
+  familyId: string,
+  options: { preserveStudentCompatibility?: boolean } = {}
 ): Promise<ChildProfile> {
   const snap = await adminDb
     .collection(STUDENTS)
@@ -166,7 +170,15 @@ async function loadStudentInFamily(
     );
   }
 
-  if (!data.accountClaimed) {
+  // Father-side creation keeps the strict claim + linked-uid rule. Student
+  // creation preserves HEAD's compatibility behavior so this audit fix does
+  // not silently tighten the Student's own appointment path.
+  const preserveStudentCompatibility = options.preserveStudentCompatibility === true;
+  if (
+    preserveStudentCompatibility
+      ? !isLegacyClaimedStudent(data)
+      : !isClaimedWithLinkedUid(data)
+  ) {
     throw new AppointmentError(
       "ልጁ አካውንቱን ገና አላረጋገጠም",
       "CHILD_UNCLAIMED",
@@ -175,12 +187,40 @@ async function loadStudentInFamily(
   }
 
   return {
-    uid: (data.uid as string) || doc.id,
+    uid: preserveStudentCompatibility
+      ? legacyStudentUid(data, doc.id)
+      : (data.uid as string),
     eotcUid: (data.eotcUid as string) || doc.id,
     displayName: childDisplayName(data),
     photoUrl: (data.photoUrl as string) || undefined,
     spiritualTitle: (data.spiritualTitle as string) || undefined,
   };
+}
+
+/**
+ * Father-side guard for reading/mutating an existing appointment. The child
+ * must currently be claimed and linked; historical records are never deleted
+ * or rewritten, they are simply not exposed to the Father's experience.
+ */
+function assertFatherChildEligible(
+  data: Record<string, unknown> | undefined,
+  familyId: string
+): void {
+  if (!data || !isClaimedWithLinkedUid(data)) {
+    throw new AppointmentError(
+      "ልጁ አካውንቱን ገና አላረጋገጠም",
+      "CHILD_UNCLAIMED",
+      403
+    );
+  }
+  const childFamily = (data.familyId as string) || (data.fatherId as string);
+  if (childFamily !== familyId) {
+    throw new AppointmentError(
+      "የቤተሰብ ገደብ ተጥሷል",
+      "FAMILY_ISOLATION",
+      403
+    );
+  }
 }
 
 export async function getFatherProfile(
@@ -308,7 +348,9 @@ export async function createAppointment(params: {
   }
 
   const [child, father] = await Promise.all([
-    loadStudentInFamily(childUid, familyId),
+    loadStudentInFamily(childUid, familyId, {
+      preserveStudentCompatibility: actor.role === "STUDENT",
+    }),
     getFatherProfile(familyId),
   ]);
 
@@ -545,6 +587,21 @@ export async function applyAppointmentAction(params: {
         "ይህ ቀጠሮ የእርስዎ አይደለም",
         "FORBIDDEN",
         403
+      );
+    }
+
+    // Block bypassed client actions on an ineligible child's historical
+    // appointment. No record ownership, history or lifecycle is altered.
+    if (actor.role === "FATHER") {
+      const childSnap = await transaction.get(
+        adminDb
+          .collection(STUDENTS)
+          .where("uid", "==", record.childUid)
+          .limit(1)
+      );
+      assertFatherChildEligible(
+        childSnap.empty ? undefined : childSnap.docs[0].data(),
+        familyId
       );
     }
 
@@ -842,6 +899,21 @@ export async function getAppointmentDetail(params: {
     );
   }
 
+  // A Father must not see an appointment whose child has not claimed/linked.
+  // This also blocks direct detail deep links and history requests for such
+  // records. Student actors are intentionally unaffected.
+  if (actor.role === "FATHER") {
+    const childSnap = await adminDb
+      .collection(STUDENTS)
+      .where("uid", "==", record.childUid)
+      .limit(1)
+      .get();
+    assertFatherChildEligible(
+      childSnap.empty ? undefined : childSnap.docs[0].data(),
+      familyId
+    );
+  }
+
   const [eventSnap, father, child] = await Promise.all([
     snap.ref.collection(EVENTS).limit(200).get(),
     getFatherProfile(record.fatherUid, record.fatherName),
@@ -902,6 +974,13 @@ export async function listAppointments(params: {
 
   if (actor.role === "STUDENT") {
     items = items.filter((item) => item.childUid === actor.uid);
+  } else {
+    // The Father's list is scoped to claimed children with a linked uid.
+    // listFamilyChildren applies that same rule; use it as the authority so
+    // unmatched/synthetic entries cannot resurrect ineligible appointments.
+    const eligibleChildren = await listFamilyChildren(familyId);
+    const eligibleUids = new Set(eligibleChildren.map((child) => child.uid));
+    items = items.filter((item) => eligibleUids.has(item.childUid));
   }
 
   items.sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt));
@@ -917,24 +996,21 @@ export async function listFamilyChildren(
     .get();
 
   return snap.docs
-    .map((doc) => {
-      const data = doc.data();
-      return {
-        uid: (data.uid as string) || "",
-        eotcUid: (data.eotcUid as string) || doc.id,
-        displayName: childDisplayName(data),
-        photoUrl: (data.photoUrl as string) || undefined,
-        spiritualTitle: (data.spiritualTitle as string) || undefined,
-        lastNisehaDate: (data.lastNisehaDate as string) || undefined,
-        accountClaimed: Boolean(data.accountClaimed),
-      };
-    })
-    .filter((child) => child.uid && child.accountClaimed)
-    .map((entry) => {
-      const { accountClaimed: _dropped, ...child } = entry;
-      void _dropped;
-      return child;
-    })
+    .map((doc) => ({ doc, data: doc.data() }))
+    // F1: enforce the shared strict rule on the raw identity fields. Malformed
+    // claim values or whitespace-only/missing uids are never promoted to true.
+    .filter(({ data }) => isClaimedWithLinkedUid(data))
+    .map(({ doc, data }) => ({
+      uid: data.uid as string,
+      eotcUid: (data.eotcUid as string) || doc.id,
+      displayName: childDisplayName(data),
+      photoUrl: (data.photoUrl as string) || undefined,
+      spiritualTitle: (data.spiritualTitle as string) || undefined,
+      lastNisehaDate: (data.lastNisehaDate as string) || undefined,
+      // Only strictly eligible entries reach this map, so the marker is a
+      // deliberate response-contract value, not a coerced raw field.
+      accountClaimed: true as const,
+    }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, "am"));
 }
 

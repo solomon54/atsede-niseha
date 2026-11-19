@@ -1,17 +1,52 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import NetInfo from "@react-native-community/netinfo";
 import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  Modal,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+  applyFatherAppointmentEligibility,
+  type AppointmentAction,
+  type AppointmentActionPayload,
+  type AppointmentChildDirectoryEntry,
+  appointmentDetailRequestKey,
+  type AppointmentDetailResponse,
+  type AppointmentEvent,
+  type AppointmentParticipant,
+  type AppointmentRecord,
+  type AppointmentStatus,
+  type AppointmentType,
+  buildChildAppointmentOverviews,
+  detailErrorMessage,
+  EMPTY_APPOINTMENT_SNAPSHOT,
+  getAvailableAppointmentActions,
+  getChildDisplayName,
+  getFatherDisplayName,
+  getNowIso,
+  isAppointmentParty,
+  isConfirmedOverdue,
+  isCurrentDetailRequest,
+  isEligibleFatherChild,
+  isOwnerCurrent,
+  isUpcomingConfirmed,
+  mergeAuthoritativeAppointmentSnapshot,
+  normalizeAppointment,
+  snapshotForOwner,
+  type AppointmentSnapshot,
+  type OwnedAppointmentSnapshot,
+} from "@shared/domain/appointments";
+import {
+  formatAppointmentEvent,
+  getAppointmentStatusLabel,
+  getAppointmentTypeLabel,
+  getQueuedActionLabel,
+} from "@shared/domain/appointments/terminology";
+import {
+  ETHIOPIAN_MONTHS,
+  type EthiopianClockTime,
+  type EthiopianDate,
+  ethiopianDateTimeToDate,
+  formatEthiopianDateTimeInEAT,
+  getEthiopianMonthDays,
+  getTodayEthiopian,
+  gregorianToEthiopian,
+  westernToEthiopianClock,
+} from "@shared/utils/calendar/ethiopianCalendar";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   AlertTriangle,
@@ -29,8 +64,22 @@ import {
   WifiOff,
   X,
 } from "lucide-react-native";
-import NetInfo from "@react-native-community/netinfo";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
+import { THEME } from "../../src/constants/theme";
 import { apiRequest } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth-context";
 import {
@@ -40,45 +89,6 @@ import {
 } from "../../src/lib/cache";
 import { getMobilePusher } from "../../src/lib/pusher";
 import { mobileSyncService } from "../../src/lib/sync";
-import { THEME } from "../../src/constants/theme";
-
-import {
-  type AppointmentAction,
-  type AppointmentActionPayload,
-  type AppointmentChildDirectoryEntry,
-  type AppointmentDetailResponse,
-  type AppointmentEvent,
-  type AppointmentParticipant,
-  type AppointmentRecord,
-  type AppointmentStatus,
-  type AppointmentType,
-  buildChildAppointmentOverviews,
-  getAvailableAppointmentActions,
-  getChildDisplayName,
-  getFatherDisplayName,
-  getNowIso,
-  isAppointmentParty,
-  isConfirmedOverdue,
-  isUpcomingConfirmed,
-  normalizeAppointment,
-} from "@shared/domain/appointments";
-import {
-  formatAppointmentEvent,
-  getAppointmentStatusLabel,
-  getAppointmentTypeLabel,
-  getQueuedActionLabel,
-} from "@shared/domain/appointments/terminology";
-import {
-  type EthiopianClockTime,
-  type EthiopianDate,
-  ETHIOPIAN_MONTHS,
-  ethiopianDateTimeToDate,
-  formatEthiopianDateTimeInEAT,
-  getEthiopianMonthDays,
-  getTodayEthiopian,
-  gregorianToEthiopian,
-  westernToEthiopianClock,
-} from "@shared/utils/calendar/ethiopianCalendar";
 
 type PropsRole = "FATHER" | "STUDENT";
 
@@ -97,14 +107,7 @@ type NotificationItem = {
   createdAt?: string;
 };
 
-type Snapshot = {
-  appointments: AppointmentRecord[];
-  children?: AppointmentChildDirectoryEntry[];
-  fatherName?: string;
-  fatherPhotoUrl?: string;
-  fatherTitle?: string;
-  fatherEotcUid?: string;
-};
+type Snapshot = AppointmentSnapshot;
 
 function makeOperationId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -190,6 +193,9 @@ export default function AppointmentsScreen() {
   const params = useLocalSearchParams<{ child?: string; appointment?: string }>();
   const { role, uid } = useAuth();
   const actorRole = (role === "FATHER" ? "FATHER" : "STUDENT") as PropsRole;
+  const ownerUid = uid || "";
+  const ownerUidRef = useRef(ownerUid);
+  ownerUidRef.current = ownerUid;
 
   const childParam = parseParam(params.child);
   const appointmentParam = parseParam(params.appointment);
@@ -200,7 +206,15 @@ export default function AppointmentsScreen() {
     return { kind: "overview" };
   }, [appointmentParam, childParam, actorRole]);
 
-  const [snapshot, setSnapshot] = useState<Snapshot>({ appointments: [] });
+  // Read-only mirrors for handlers that must not become effect dependencies.
+  const currentViewRef = useRef(view);
+  currentViewRef.current = view;
+
+  const [ownedSnapshot, setOwnedSnapshot] = useState<OwnedAppointmentSnapshot | null>(null);
+  const snapshot = useMemo(
+    () => snapshotForOwner(ownedSnapshot, ownerUid),
+    [ownedSnapshot, ownerUid]
+  );
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -238,10 +252,16 @@ export default function AppointmentsScreen() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const ownerUid = uid || "";
-
   const appointments = useMemo(() => snapshot.appointments || [], [snapshot.appointments]);
   const children = useMemo(() => snapshot.children || [], [snapshot.children]);
+  const snapshotRef = useRef<Snapshot>(EMPTY_APPOINTMENT_SNAPSHOT);
+  snapshotRef.current = snapshot;
+  // The persisted mirror keeps every cached row, but is explicitly owned by
+  // one account. A previous account's ref is never readable by a new owner.
+  const fullSnapshotRef = useRef<OwnedAppointmentSnapshot | null>(null);
+  if (fullSnapshotRef.current && fullSnapshotRef.current.ownerUid !== ownerUid) {
+    fullSnapshotRef.current = null;
+  }
 
   const refreshOutbox = useCallback(async () => {
     if (!ownerUid) return;
@@ -251,54 +271,88 @@ export default function AppointmentsScreen() {
 
   const writeSnapshot = useCallback(
     async (next: Snapshot) => {
-      if (!ownerUid) return;
-      const normalized = (next.appointments || [])
-        .map((a) => (a && typeof (a as any).identityConsistent === "boolean" ? (a as AppointmentRecord) : normalizeAppointment(a)))
-        .filter((a) => isAppointmentParty(a, ownerUid));
-      const clean: Snapshot = { ...next, appointments: normalized };
-      setSnapshot(clean);
-      await offlineCache.setAppointmentSnapshot(ownerUid, clean);
+      const capturedOwnerUid = ownerUid;
+      if (!capturedOwnerUid) return;
+
+      const cached =
+        (await offlineCache.getAppointmentSnapshot<Snapshot>(capturedOwnerUid)) ||
+        snapshotForOwner(fullSnapshotRef.current, capturedOwnerUid);
+
+      // The merge returns null when a delayed response belongs to a previous
+      // account, so it cannot populate the new account's snapshot.
+      const merged = mergeAuthoritativeAppointmentSnapshot({
+        capturedOwnerUid,
+        currentOwnerUid: ownerUidRef.current,
+        role: actorRole,
+        cached,
+        cachedOwnerUid: capturedOwnerUid,
+        server: next,
+      });
+      if (!merged) return;
+
+      fullSnapshotRef.current = {
+        ownerUid: capturedOwnerUid,
+        snapshot: merged.full,
+      };
+      setOwnedSnapshot({
+        ownerUid: capturedOwnerUid,
+        snapshot: merged.presentation,
+      });
+      await offlineCache.setAppointmentSnapshot(capturedOwnerUid, merged.full);
     },
-    [ownerUid]
+    [ownerUid, actorRole]
   );
 
   const upsertAppointment = useCallback(
     async (recIn: AppointmentRecord) => {
-      if (!ownerUid) return;
-      const rec = typeof recIn.identityConsistent === "boolean" ? recIn : normalizeAppointment(recIn);
-      if (!isAppointmentParty(rec, ownerUid)) return;
-      setSnapshot((prev) => {
-        const list = prev.appointments || [];
-        const idx = list.findIndex((a) => a.id === rec.id);
-        let nextList: AppointmentRecord[];
-        if (idx >= 0) {
-          if ((list[idx].version || 0) > (rec.version || 0)) return prev;
-          nextList = [...list];
-          nextList[idx] = rec;
-        } else {
-          nextList = [rec, ...list];
-        }
-        const next = { ...prev, appointments: nextList };
-        offlineCache.setAppointmentSnapshot(ownerUid, next).catch(() => {});
-        return next;
-      });
-    },
-    [ownerUid]
-  );
+      const capturedOwnerUid = ownerUid;
+      if (
+        !capturedOwnerUid ||
+        !isOwnerCurrent(capturedOwnerUid, ownerUidRef.current)
+      ) {
+        return;
+      }
+      let rec = typeof recIn.identityConsistent === "boolean" ? recIn : normalizeAppointment(recIn);
+      if (!isAppointmentParty(rec, capturedOwnerUid)) return;
+      if (actorRole === "FATHER") {
+        const eligible = applyFatherAppointmentEligibility({
+          role: actorRole,
+          children: snapshotRef.current.children || [],
+          appointments: [rec],
+        }).appointments;
+        if (eligible.length === 0) return;
+        rec = eligible[0];
+      }
+      const full = snapshotForOwner(fullSnapshotRef.current, capturedOwnerUid);
+      const fullList = full.appointments || [];
+      const fullIdx = fullList.findIndex((a) => a.id === rec.id);
+      if (fullIdx >= 0 && (fullList[fullIdx].version || 0) > (rec.version || 0)) return;
+      const nextFullList = [...fullList];
+      if (fullIdx >= 0) nextFullList[fullIdx] = rec;
+      else nextFullList.unshift(rec);
+      const nextFull: Snapshot = { ...full, appointments: nextFullList };
+      fullSnapshotRef.current = {
+        ownerUid: capturedOwnerUid,
+        snapshot: nextFull,
+      };
+      offlineCache.setAppointmentSnapshot(capturedOwnerUid, nextFull).catch(() => {});
 
-  const removeAppointment = useCallback(
-    async (appointmentId: string) => {
-      if (!ownerUid) return;
-      setSnapshot((prev) => {
-        const next = {
-          ...prev,
-          appointments: (prev.appointments || []).filter((a) => a.id !== appointmentId),
+      setOwnedSnapshot((prev) => {
+        if (!isOwnerCurrent(capturedOwnerUid, ownerUidRef.current)) return prev;
+        const current = snapshotForOwner(prev, capturedOwnerUid);
+        const list = current.appointments || [];
+        const idx = list.findIndex((a) => a.id === rec.id);
+        if (idx >= 0 && (list[idx].version || 0) > (rec.version || 0)) return prev;
+        const nextList = [...list];
+        if (idx >= 0) nextList[idx] = rec;
+        else nextList.unshift(rec);
+        return {
+          ownerUid: capturedOwnerUid,
+          snapshot: { ...current, appointments: nextList },
         };
-        offlineCache.setAppointmentSnapshot(ownerUid, next).catch(() => {});
-        return next;
       });
     },
-    [ownerUid]
+    [ownerUid, actorRole]
   );
 
   const fetchServer = useCallback(
@@ -343,31 +397,60 @@ export default function AppointmentsScreen() {
   // Initial load (cache-first)
   useEffect(() => {
     let alive = true;
+    const capturedOwnerUid = ownerUid;
+    const capturedRole = actorRole;
+    const isCurrent = () =>
+      alive && isOwnerCurrent(capturedOwnerUid, ownerUidRef.current);
+
     (async () => {
-      if (!ownerUid) return;
-      const cached = await offlineCache.getAppointmentSnapshot<Snapshot>(ownerUid);
-      if (alive && cached) setSnapshot(cached);
+      if (!capturedOwnerUid) return;
+      const cached = await offlineCache.getAppointmentSnapshot<Snapshot>(capturedOwnerUid);
+      if (!isCurrent()) return;
+      if (cached) {
+        const merged = mergeAuthoritativeAppointmentSnapshot({
+          capturedOwnerUid,
+          currentOwnerUid: ownerUidRef.current,
+          role: capturedRole,
+          cached,
+          cachedOwnerUid: capturedOwnerUid,
+          server: cached,
+        });
+        if (!merged) return;
+        fullSnapshotRef.current = {
+          ownerUid: capturedOwnerUid,
+          snapshot: cached,
+        };
+        setOwnedSnapshot({
+          ownerUid: capturedOwnerUid,
+          snapshot: merged.presentation,
+        });
+      }
       await refreshOutbox();
-      if (!alive) return;
+      if (!isCurrent()) return;
       setLoading(false);
       await fetchServer(true);
-      await mobileSyncService.drainAppointmentOutbox(ownerUid);
+      await mobileSyncService.drainAppointmentOutbox(capturedOwnerUid);
       await refreshOutbox();
-      if (alive) await fetchServer(true);
+      if (isCurrent()) await fetchServer(true);
     })();
     return () => {
       alive = false;
     };
-  }, [ownerUid, fetchServer, refreshOutbox]);
+  }, [ownerUid, actorRole, fetchServer, refreshOutbox]);
 
   // Network state
   useEffect(() => {
+    const capturedOwnerUid = ownerUid;
     const sub = NetInfo.addEventListener((state) => {
       const online = !!state.isConnected && state.isInternetReachable !== false;
       setIsOnline(online);
-      if (online && ownerUid) {
+      if (
+        online &&
+        capturedOwnerUid &&
+        isOwnerCurrent(capturedOwnerUid, ownerUidRef.current)
+      ) {
         mobileSyncService
-          .drainAppointmentOutbox(ownerUid)
+          .drainAppointmentOutbox(capturedOwnerUid)
           .then(() => refreshOutbox())
           .then(() => fetchServer(true))
           .catch(() => {});
@@ -379,19 +462,29 @@ export default function AppointmentsScreen() {
   // Realtime per-user private channel (authorized by /api/message/auth)
   useEffect(() => {
     if (!ownerUid) return;
+    const capturedOwnerUid = ownerUid;
     const pusher = getMobilePusher();
-    const channelName = `private-appointments-${ownerUid}`;
+    const channelName = `private-appointments-${capturedOwnerUid}`;
     const ch = pusher.subscribe(channelName);
 
     const onUpdate = (event: any) => {
+      if (!isOwnerCurrent(capturedOwnerUid, ownerUidRef.current)) return;
       if (event?.type === "appointment.upsert" && event.appointment) {
         const rec = normalizeAppointment(event.appointment);
-        if (!isAppointmentParty(rec, ownerUid)) return;
+        if (!isAppointmentParty(rec, capturedOwnerUid)) return;
+        if (actorRole === "FATHER") {
+          const eligible = applyFatherAppointmentEligibility({
+            role: actorRole,
+            children: snapshotRef.current.children || [],
+            appointments: [rec],
+          }).appointments;
+          if (eligible.length === 0) return;
+        }
         upsertAppointment(rec).catch(() => {});
         setDetail((prev) => (prev && prev.appointment.id === rec.id ? { ...prev, appointment: rec } : prev));
       } else if (event?.type === "notification.new" && event.notification) {
         const n = event.notification as NotificationItem;
-        if (n.userId !== ownerUid) return;
+        if (n.userId !== capturedOwnerUid) return;
         setNotifications((prev) => (prev.some((x) => x.id === n.id) ? prev : [n, ...prev]));
         if (!n.read) setUnreadCount((c) => c + 1);
       }
@@ -404,7 +497,7 @@ export default function AppointmentsScreen() {
         pusher.unsubscribe(channelName);
       } catch {}
     };
-  }, [ownerUid, upsertAppointment]);
+  }, [ownerUid, actorRole, upsertAppointment]);
 
   const navigate = useCallback(
     (next: { child?: string | null; appointment?: string | null }) => {
@@ -429,29 +522,54 @@ export default function AppointmentsScreen() {
     }
   }, [view, appointments, actorRole, childParam, navigate]);
 
-  // Load detail
+  // Detail lifecycle is keyed only by account + requested appointment id.
+  // Snapshot updates (list refresh, realtime, offline drain) never re-trigger it.
+  const detailViewKind = view.kind;
+  const detailAppointmentId = view.kind === "detail" ? view.appointmentId : null;
+  const detailRequestKey = appointmentDetailRequestKey(view, ownerUid);
   useEffect(() => {
-    if (view.kind !== "detail") {
+    if (!detailRequestKey || detailViewKind !== "detail" || !detailAppointmentId) {
       setDetail(null);
       setDetailError(null);
+      setDetailLoading(false);
       setRescheduleOpen(false);
       setActionMessage(null);
       return;
     }
+    const appointmentId = detailAppointmentId;
     let alive = true;
+    setDetail(null);
     setDetailLoading(true);
     setDetailError(null);
     setActionMessage(null);
     setRescheduleOpen(false);
 
-    const cached = appointments.find((a) => a.id === view.appointmentId);
+    const isCurrent = () =>
+      isCurrentDetailRequest(
+        detailRequestKey,
+        appointmentDetailRequestKey(currentViewRef.current, ownerUid)
+      );
 
     (async () => {
       try {
-        const json = await apiRequest<any>(`/api/appointments/${view.appointmentId}`);
-        if (!alive) return;
+        const json = await apiRequest<any>(`/api/appointments/${appointmentId}`);
+        if (!alive || !isCurrent()) return;
         if (json?.success) {
           const rec = normalizeAppointment(json.appointment);
+          const eligible =
+            actorRole === "FATHER"
+              ? applyFatherAppointmentEligibility({
+                  role: actorRole,
+                  children: snapshotRef.current.children || [],
+                  appointments: [rec],
+                }).appointments
+              : [rec];
+          if (eligible.length === 0) {
+            setDetailError(
+              detailErrorMessage(403, "ይህን ቀጠሮ ለማየት ፈቃድ የለዎትም።")
+            );
+            return;
+          }
           setDetail({
             success: true,
             appointment: rec,
@@ -464,34 +582,42 @@ export default function AppointmentsScreen() {
           setDetailError(json?.error || "ቀጠሮውን ማምጣት አልተሳካም");
         }
       } catch (e: any) {
-        if (!alive) return;
+        if (!alive || !isCurrent()) return;
         const status = e?.status;
         if (status === 404) {
-          setDetailError("ቀጠሮው አልተገኘም ወይም ተደምስሷል።");
-          await removeAppointment(view.appointmentId);
-        } else if (status === 403) {
-          setDetailError("ይህን ቀጠሮ ለማየት ፈቃድ የለዎትም።");
-        } else if (status === 401) {
-          setDetailError("እባክዎ እንደገና ይግቡ።");
-        } else if (cached) {
-          setDetail({
-            success: true,
-            appointment: cached,
-            events: [],
-            participants: {
-              father: { uid: cached.fatherUid, role: "FATHER", displayName: getFatherDisplayName(cached) },
-              child: {
-                uid: cached.childUid,
-                role: "CHILD",
-                displayName: getChildDisplayName(cached),
-                eotcUid: cached.childEotcUid,
-              },
-            },
-            availableActions: getAvailableAppointmentActions(cached, { uid: ownerUid, role: actorRole }),
-          });
-          setDetailError(null);
+          setDetailError(detailErrorMessage(status, e?.message || "ቀጠሮውን ማምጣት አልተሳካም"));
+          // Terminal load state only: keep the cached/historical record intact.
+        } else if (status === 403 || status === 401) {
+          setDetailError(detailErrorMessage(status, e?.message || "ቀጠሮውን ማምጣት አልተሳካም"));
         } else {
-          setDetailError(e?.message || "ቀጠሮውን ማምጣት አልተሳካም");
+          const cached = snapshotRef.current.appointments.find((a) => a.id === appointmentId);
+          const eligible = cached
+            ? applyFatherAppointmentEligibility({
+                role: actorRole,
+                children: snapshotRef.current.children || [],
+                appointments: [cached],
+              }).appointments
+            : [];
+          if (cached && eligible.length > 0) {
+            setDetail({
+              success: true,
+              appointment: cached,
+              events: [],
+              participants: {
+                father: { uid: cached.fatherUid, role: "FATHER", displayName: getFatherDisplayName(cached) },
+                child: {
+                  uid: cached.childUid,
+                  role: "CHILD",
+                  displayName: getChildDisplayName(cached),
+                  eotcUid: cached.childEotcUid,
+                },
+              },
+              availableActions: getAvailableAppointmentActions(cached, { uid: ownerUid, role: actorRole }),
+            });
+            setDetailError(null);
+          } else {
+            setDetailError(e?.message || "ቀጠሮውን ማምጣት አልተሳካም");
+          }
         }
       } finally {
         if (alive) setDetailLoading(false);
@@ -501,7 +627,14 @@ export default function AppointmentsScreen() {
     return () => {
       alive = false;
     };
-  }, [view, ownerUid, actorRole, appointments, upsertAppointment, removeAppointment]);
+  }, [
+    detailRequestKey,
+    detailViewKind,
+    detailAppointmentId,
+    ownerUid,
+    actorRole,
+    upsertAppointment,
+  ]);
 
   const outboxByAppointment = useMemo(() => {
     const map = new Map<string, SQLiteAppointmentOutboxItem>();
@@ -701,6 +834,13 @@ export default function AppointmentsScreen() {
     if (!targetChildUid) {
       setCreateError("እባክዎ ልጅ ይምረጡ።");
       return;
+    }
+    if (actorRole === "FATHER") {
+      const child = children.find((c) => c.uid === targetChildUid);
+      if (!child || !isEligibleFatherChild(child)) {
+        setCreateError("ይህ ልጅ ለቀጠሮ አይገኝም።");
+        return;
+      }
     }
     setCreateBusy(true);
     try {

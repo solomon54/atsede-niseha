@@ -33,21 +33,26 @@ import EthiopianDateInput from "@/shared/components/ui/EthiopianDateInput";
 import EthiopianTimeInput from "@/shared/components/ui/EthiopianTimeInput";
 import { SanctuarySurface } from "@/shared/components/ui/sanctuary-surface";
 import {
+  applyFatherAppointmentEligibility,
   type AppointmentAction,
   type AppointmentActionPayload,
   type AppointmentChildDirectoryEntry,
+  appointmentDetailRequestKey,
   type AppointmentDetailResponse,
   type AppointmentParticipant,
   type AppointmentRecord,
   type AppointmentStatus,
   type AppointmentType,
   buildChildAppointmentOverviews,
+  detailErrorMessage,
   getAvailableAppointmentActions,
   getChildDisplayName,
   getFatherDisplayName,
   getNowIso,
   isAppointmentParty,
   isConfirmedOverdue,
+  isCurrentDetailRequest,
+  isEligibleFatherChild,
   isUpcomingConfirmed,
   normalizeAppointment,
 } from "@/shared/domain/appointments";
@@ -191,8 +196,15 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     return { kind: "overview" };
   }, [appointmentParam, childParam, role]);
 
+  // Used only to reject stale responses. It must not be an effect dependency:
+  // the detail request is keyed by account + appointment id alone.
+  const currentViewRef = useRef(view);
+  currentViewRef.current = view;
+
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [children, setChildren] = useState<AppointmentChildDirectoryEntry[]>([]);
+  const childrenRef = useRef(children);
+  childrenRef.current = children;
   const [fatherInfo, setFatherInfo] = useState<{
     name: string;
     photoUrl?: string;
@@ -248,8 +260,13 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
       const normalized = (data.appointments || [])
         .map((a) => normalizeAppointment(a))
         .filter((a) => isAppointmentParty(a, uid));
-      setAppointments(normalized);
-      if (data.children) setChildren(data.children);
+      const eligible = applyFatherAppointmentEligibility({
+        role,
+        children: data.children || [],
+        appointments: normalized,
+      });
+      setAppointments(eligible.appointments);
+      if (data.children) setChildren(eligible.children);
       if (data.fatherName || data.fatherPhotoUrl || data.fatherTitle) {
         setFatherInfo({
           name: data.fatherName || "አባት",
@@ -258,7 +275,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
         });
       }
     },
-    [uid]
+    [uid, role]
   );
 
   const loadFromCache = useCallback(async () => {
@@ -267,11 +284,14 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
       appointmentOfflineService.readCachedAppointments(uid),
       appointmentOfflineService.readCachedChildren(uid),
     ]);
-    if (cachedApts.length > 0) {
-      setAppointments(cachedApts.filter((a) => isAppointmentParty(a, uid)));
-    }
-    if (cachedChildren.length > 0) setChildren(cachedChildren);
-  }, [uid]);
+    const eligible = applyFatherAppointmentEligibility({
+      role,
+      children: cachedChildren,
+      appointments: cachedApts.filter((a) => isAppointmentParty(a, uid)),
+    });
+    if (cachedApts.length > 0) setAppointments(eligible.appointments);
+    if (cachedChildren.length > 0) setChildren(eligible.children);
+  }, [uid, role]);
 
   const fetchServer = useCallback(
     async (silent = false) => {
@@ -287,10 +307,17 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
           const json = await aptRes.json();
           if (json?.success) {
             applyListData(json);
+            // Only eligible, normalized data is allowed into the local cache;
+            // stale ineligible rows are filtered again on every cache read.
+            const forCache = applyFatherAppointmentEligibility({
+              role,
+              children: json.children || [],
+              appointments: (json.appointments || []).map(normalizeAppointment),
+            });
             await appointmentOfflineService.writeListSnapshot({
               ownerUid: uid,
-              appointments: json.appointments || [],
-              children: json.children || [],
+              appointments: forCache.appointments,
+              children: forCache.children,
             });
             setError(null);
           } else if (json?.error) {
@@ -317,7 +344,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
         setLoading(false);
       }
     },
-    [uid, applyListData]
+    [uid, role, applyListData]
   );
 
   // Initial load
@@ -371,6 +398,14 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
       if (event?.type === "appointment.upsert" && event.appointment) {
         const rec = normalizeAppointment(event.appointment as AppointmentRecord);
         if (!isAppointmentParty(rec, uid)) return;
+        if (role === "FATHER") {
+          const eligible = applyFatherAppointmentEligibility({
+            role,
+            children: childrenRef.current,
+            appointments: [rec],
+          });
+          if (eligible.appointments.length === 0) return;
+        }
         setAppointments((prev) => {
           const idx = prev.findIndex((a) => a.id === rec.id);
           if (idx >= 0) {
@@ -403,7 +438,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
       ch.unbind("sanctuary-update", onUpdate);
       pusherClient.unsubscribe(channelName);
     };
-  }, [uid]);
+  }, [uid, role]);
 
   const navigate = useCallback(
     (next: { child?: string | null; appointment?: string | null }) => {
@@ -435,36 +470,58 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     }
   };
 
-  // Load detail when needed
+  // Detail lifecycle is keyed only by account + requested appointment id.
+  // Overview collection updates (including the write-back below) must not
+  // re-trigger this effect.
+  const detailViewKind = view.kind;
+  const detailAppointmentId = view.kind === "detail" ? view.appointmentId : null;
+  const detailRequestKey = appointmentDetailRequestKey(view, uid);
   useEffect(() => {
-    if (view.kind !== "detail") {
+    if (!detailRequestKey || detailViewKind !== "detail" || !detailAppointmentId) {
       setDetail(null);
       setDetailError(null);
+      setDetailLoading(false);
       setRescheduleOpen(false);
       setActionMessage(null);
       return;
     }
+    const appointmentId = detailAppointmentId;
     let alive = true;
+    setDetail(null);
     setDetailLoading(true);
     setDetailError(null);
     setActionMessage(null);
     setRescheduleOpen(false);
 
-    const cached = appointments.find((a) => a.id === view.appointmentId);
-    // Optimistic show from cache while fetching authoritative detail
-    if (cached) {
-      // minimal placeholder; will be replaced
-    }
+    const isCurrent = () =>
+      isCurrentDetailRequest(
+        detailRequestKey,
+        appointmentDetailRequestKey(currentViewRef.current, uid)
+      );
 
     (async () => {
       try {
-        const res = await fetch(`/api/appointments/${view.appointmentId}`, {
+        const res = await fetch(`/api/appointments/${appointmentId}`, {
           cache: "no-store",
         });
         const json = await res.json().catch(() => ({}));
-        if (!alive) return;
+        if (!alive || !isCurrent()) return;
         if (res.ok && json?.success) {
           const rec = normalizeAppointment(json.appointment);
+          const eligible =
+            role === "FATHER"
+              ? applyFatherAppointmentEligibility({
+                  role,
+                  children: childrenRef.current,
+                  appointments: [rec],
+                }).appointments
+              : [rec];
+          if (eligible.length === 0) {
+            setDetailError(
+              detailErrorMessage(403, "ይህን ቀጠሮ ለማየት ፈቃድ የለዎትም።")
+            );
+            return;
+          }
           setDetail({
             success: true,
             appointment: rec,
@@ -482,20 +539,27 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
             }
             return [rec, ...prev];
           });
-        } else if (res.status === 404) {
-          setDetailError("ቀጠሮው አልተገኘም ወይም ተደምስሷል።");
-          appointmentOfflineService.removeCachedAppointment(uid, view.appointmentId).catch(() => {});
-          setAppointments((prev) => prev.filter((a) => a.id !== view.appointmentId));
-        } else if (res.status === 403) {
-          setDetailError("ይህን ቀጠሮ ለማየት ፈቃድ የለዎትም።");
-        } else if (res.status === 401) {
-          setDetailError("እባክዎ እንደገና ይግቡ።");
         } else {
-          setDetailError(json?.error || "ቀጠሮውን ማምጣት አልተሳካም");
+          setDetailError(
+            detailErrorMessage(res.status, json?.error || "ቀጠሮውን ማምጣት አልተሳካም")
+          );
+          // A 404 is a terminal load state only. Never erase the cached record
+          // or the historical appointment while filtering visibility.
         }
       } catch {
-        if (!alive) return;
-        if (cached) {
+        if (!alive || !isCurrent()) return;
+        // Fall back only to a server-confirmed cached record, never to a
+        // realtime partial update. The same eligibility rule still applies.
+        const cached = await appointmentOfflineService.readCachedAppointment(uid, appointmentId);
+        if (!alive || !isCurrent()) return;
+        const eligible = cached
+          ? applyFatherAppointmentEligibility({
+              role,
+              children: childrenRef.current,
+              appointments: [cached],
+            }).appointments
+          : [];
+        if (cached && eligible.length > 0) {
           setDetail({
             success: true,
             appointment: cached,
@@ -518,7 +582,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     return () => {
       alive = false;
     };
-  }, [view, uid, actor, appointments, childParam]);
+  }, [detailRequestKey, detailViewKind, detailAppointmentId, uid, role, actor]);
 
   const outboxByAppointment = useMemo(() => {
     const map = new Map<string, (typeof outboxRows)[number]>();
@@ -759,6 +823,13 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     if (!targetChildUid) {
       setCreateError("እባክዎ ልጅ ይምረጡ።");
       return;
+    }
+    if (role === "FATHER") {
+      const child = children.find((c) => c.uid === targetChildUid);
+      if (!child || !isEligibleFatherChild(child)) {
+        setCreateError("ይህ ልጅ ለቀጠሮ አይገኝም።");
+        return;
+      }
     }
     setCreateBusy(true);
     try {

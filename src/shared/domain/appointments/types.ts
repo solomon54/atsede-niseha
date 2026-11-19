@@ -132,6 +132,12 @@ export interface AppointmentChildDirectoryEntry {
   photoUrl?: string;
   spiritualTitle?: string;
   lastNisehaDate?: string;
+  /**
+   * Present on the Father's directory response. When true, the child has
+   * claimed their account and has a valid linked `uid`; it is the explicit
+   * eligibility marker used by Father appointment views and caches.
+   */
+  accountClaimed?: boolean;
 }
 
 export interface AppointmentParticipant {
