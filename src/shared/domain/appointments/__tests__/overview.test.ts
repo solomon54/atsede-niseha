@@ -6,6 +6,8 @@ import {
   buildChildAppointmentOverviews,
   isConfirmedOverdue,
   isUpcomingConfirmed,
+  selectAppointmentsForChild,
+  selectFatherAppointmentOverviewPresentation,
   selectOverdueConfirmed,
   selectUpcomingConfirmed,
 } from "../overview";
@@ -85,4 +87,61 @@ test("overview: appointments for unknown directory child remain visible", () => 
   ];
   const out = buildChildAppointmentOverviews({ appointments, children, viewerUid: "father-1", now });
   assert.ok(out.some((x) => x.child.uid === "child-x" && x.total === 1));
+});
+
+test("overview: presentation drops synthetic child cards without hiding their records", () => {
+  const children: AppointmentChildDirectoryEntry[] = [
+    { uid: "child-1", displayName: "Alpha" },
+    { uid: "child-2", displayName: "Beta" },
+  ];
+  const appointments = [
+    rec({ id: "a1", childUid: "child-1" }),
+    rec({ id: "x1", childUid: "child-x", childName: "Unknown Child" }),
+  ];
+  const overviews = buildChildAppointmentOverviews({ appointments, children, viewerUid: "father-1", now });
+
+  const presented = selectFatherAppointmentOverviewPresentation({
+    overviews,
+    appointments,
+    children,
+    viewerUid: "father-1",
+  });
+
+  assert.deepEqual(
+    presented.directoryOverviews.map((item) => item.child.uid),
+    ["child-1", "child-2"]
+  );
+  assert.deepEqual(
+    presented.unmatchedAppointments.map((item) => item.id),
+    ["x1"]
+  );
+
+  const presentedChildUids = new Set(
+    presented.directoryOverviews.map((item) => item.child.uid)
+  );
+  const unmatchedIds = new Set(
+    presented.unmatchedAppointments.map((item) => item.id)
+  );
+  for (const appointment of appointments) {
+    const appearsAsChildCard = presentedChildUids.has(appointment.childUid);
+    const appearsAsUnmatched = unmatchedIds.has(appointment.id);
+    assert.ok(
+      (appointment.childUid === "child-x" && appearsAsUnmatched && !appearsAsChildCard) ||
+        (appointment.childUid !== "child-x" && appearsAsChildCard && !appearsAsUnmatched)
+    );
+  }
+});
+
+test("overview: child room shows only the selected child's records", () => {
+  const appointments = [
+    rec({ id: "a1", childUid: "child-1" }),
+    rec({ id: "a2", childUid: "child-1", status: "CONFIRMED", version: 2, pendingResponseFrom: undefined }),
+    rec({ id: "b1", childUid: "child-2" }),
+  ];
+  assert.deepEqual(
+    selectAppointmentsForChild(appointments, "child-1").map((item) => item.id),
+    ["a1", "a2"]
+  );
+  assert.deepEqual(selectAppointmentsForChild(appointments, "child-2"), [appointments[2]]);
+  assert.deepEqual(selectAppointmentsForChild(appointments, "child-3"), []);
 });

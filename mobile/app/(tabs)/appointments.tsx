@@ -4,16 +4,20 @@ import {
   type AppointmentAction,
   type AppointmentActionPayload,
   type AppointmentChildDirectoryEntry,
+  appointmentBackView,
   appointmentDetailRequestKey,
   type AppointmentDetailResponse,
   type AppointmentEvent,
   type AppointmentParticipant,
   type AppointmentRecord,
+  type AppointmentRouteParams,
   type AppointmentStatus,
   type AppointmentType,
+  type AppointmentViewState,
   buildChildAppointmentOverviews,
   detailErrorMessage,
   EMPTY_APPOINTMENT_SNAPSHOT,
+  getAppointmentIdentityDisplay,
   getAvailableAppointmentActions,
   getChildDisplayName,
   getFatherDisplayName,
@@ -26,11 +30,17 @@ import {
   isUpcomingConfirmed,
   mergeAuthoritativeAppointmentSnapshot,
   normalizeAppointment,
+  appointmentRouteParams,
+  appointmentViewFromParams,
+  resolveAppointmentDetailChildUid,
+  selectAppointmentsForChild,
+  selectFatherAppointmentOverviewPresentation,
   snapshotForOwner,
   type AppointmentSnapshot,
   type OwnedAppointmentSnapshot,
 } from "@shared/domain/appointments";
 import {
+  APPOINTMENT_IDENTITY_ROLE_TERMS,
   formatAppointmentEvent,
   getAppointmentStatusLabel,
   getAppointmentTypeLabel,
@@ -60,7 +70,6 @@ import {
   MessageSquare,
   Plus,
   RefreshCw,
-  User,
   WifiOff,
   X,
 } from "lucide-react-native";
@@ -68,6 +77,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   Image,
   Modal,
   Pressable,
@@ -92,10 +102,7 @@ import { mobileSyncService } from "../../src/lib/sync";
 
 type PropsRole = "FATHER" | "STUDENT";
 
-type ViewState =
-  | { kind: "overview" }
-  | { kind: "child"; childUid: string }
-  | { kind: "detail"; appointmentId: string };
+type ViewState = AppointmentViewState;
 
 type NotificationItem = {
   id: string;
@@ -179,10 +186,6 @@ function Avatar({ name, photoUrl, size = 40 }: { name: string; photoUrl?: string
   );
 }
 
-function roleLabel(role: "FATHER" | "CHILD" | "STUDENT"): string {
-  return role === "FATHER" ? "አባት" : "ልጅ";
-}
-
 function parseParam(v: string | string[] | undefined): string | undefined {
   if (Array.isArray(v)) return v[0];
   return v || undefined;
@@ -200,11 +203,14 @@ export default function AppointmentsScreen() {
   const childParam = parseParam(params.child);
   const appointmentParam = parseParam(params.appointment);
 
-  const view: ViewState = useMemo(() => {
-    if (appointmentParam) return { kind: "detail", appointmentId: appointmentParam };
-    if (childParam && actorRole === "FATHER") return { kind: "child", childUid: childParam };
-    return { kind: "overview" };
-  }, [appointmentParam, childParam, actorRole]);
+  const view: ViewState = useMemo(
+    () =>
+      appointmentViewFromParams(
+        { appointment: appointmentParam, child: childParam },
+        actorRole
+      ),
+    [appointmentParam, childParam, actorRole]
+  );
 
   // Read-only mirrors for handlers that must not become effect dependencies.
   const currentViewRef = useRef(view);
@@ -232,6 +238,8 @@ export default function AppointmentsScreen() {
   const [detail, setDetail] = useState<AppointmentDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Explicit refresh only; list/snapshot updates keep the detail key unchanged.
+  const [detailRefreshNonce, setDetailRefreshNonce] = useState(0);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
@@ -394,6 +402,13 @@ export default function AppointmentsScreen() {
     [ownerUid, writeSnapshot, isOnline]
   );
 
+  const refreshCurrentView = useCallback(async () => {
+    await fetchServer(true);
+    if (currentViewRef.current.kind === "detail") {
+      setDetailRefreshNonce((value) => value + 1);
+    }
+  }, [fetchServer]);
+
   // Initial load (cache-first)
   useEffect(() => {
     let alive = true;
@@ -500,27 +515,70 @@ export default function AppointmentsScreen() {
   }, [ownerUid, actorRole, upsertAppointment]);
 
   const navigate = useCallback(
-    (next: { child?: string | null; appointment?: string | null }) => {
-      const q: any = {};
-      if (next.child) q.child = next.child;
-      if (next.appointment) q.appointment = next.appointment;
+    (next: AppointmentViewState | AppointmentRouteParams) => {
+      const q: any = appointmentRouteParams(next);
       router.replace({ pathname: "/(tabs)/appointments", params: q } as any);
     },
     [router]
   );
 
+  const openAppointment = useCallback(
+    (appointmentId: string, contextChildUid?: string) => {
+      const childUid =
+        actorRole === "FATHER" &&
+        contextChildUid &&
+        children.some((child) => child.uid === contextChildUid)
+          ? contextChildUid
+          : undefined;
+      navigate({ appointment: appointmentId, child: childUid });
+    },
+    [navigate, actorRole, children]
+  );
+
   const goBack = useCallback(() => {
-    if (view.kind === "detail") {
-      const appt = appointments.find((a) => a.id === view.appointmentId);
-      if (actorRole === "FATHER" && appt?.childUid && childParam) {
-        navigate({ child: childParam });
-      } else {
-        navigate({});
-      }
-    } else {
+    const next = appointmentBackView(view, {
+      role: actorRole,
+      knownChildUids: children.map((child) => child.uid),
+      appointment:
+        view.kind === "detail"
+          ? detail?.appointment ??
+            appointments.find((item) => item.id === view.appointmentId) ??
+            null
+          : null,
+    });
+    navigate(next);
+  }, [view, actorRole, children, detail, appointments, navigate]);
+
+  // Android hardware back follows the same in-app hierarchy. Native modals
+  // keep their own back handling while open.
+  useEffect(() => {
+    if (
+      view.kind === "overview" ||
+      showCreate ||
+      showBell ||
+      rescheduleOpen ||
+      confirmAction
+    ) {
+      return;
+    }
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      goBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [view.kind, showCreate, showBell, rescheduleOpen, confirmAction, goBack]);
+
+  // A stale or unsupported child param must not create a synthetic room.
+  useEffect(() => {
+    if (
+      !loading &&
+      actorRole === "FATHER" &&
+      view.kind === "child" &&
+      !children.some((child) => child.uid === view.childUid)
+    ) {
       navigate({});
     }
-  }, [view, appointments, actorRole, childParam, navigate]);
+  }, [loading, actorRole, view, children, navigate]);
 
   // Detail lifecycle is keyed only by account + requested appointment id.
   // Snapshot updates (list refresh, realtime, offline drain) never re-trigger it.
@@ -537,6 +595,7 @@ export default function AppointmentsScreen() {
       return;
     }
     const appointmentId = detailAppointmentId;
+    const requestNonce = detailRefreshNonce;
     let alive = true;
     setDetail(null);
     setDetailLoading(true);
@@ -545,6 +604,7 @@ export default function AppointmentsScreen() {
     setRescheduleOpen(false);
 
     const isCurrent = () =>
+      requestNonce === detailRefreshNonce &&
       isCurrentDetailRequest(
         detailRequestKey,
         appointmentDetailRequestKey(currentViewRef.current, ownerUid)
@@ -631,6 +691,7 @@ export default function AppointmentsScreen() {
     detailRequestKey,
     detailViewKind,
     detailAppointmentId,
+    detailRefreshNonce,
     ownerUid,
     actorRole,
     upsertAppointment,
@@ -747,27 +808,33 @@ export default function AppointmentsScreen() {
     async (n: NotificationItem) => {
       if (!n.read) await markOneRead(n.id);
       setShowBell(false);
-      if (n.appointmentId) navigate({ appointment: n.appointmentId });
+      if (n.appointmentId) {
+        const related = appointments.find((item) => item.id === n.appointmentId);
+        openAppointment(n.appointmentId, related?.childUid);
+      }
     },
-    [markOneRead, navigate]
+    [markOneRead, openAppointment, appointments]
   );
 
   // Derived
   const nowIso = getNowIso();
   const nowDate = useMemo(() => new Date(nowIso), [nowIso]);
 
-  const overviews = useMemo(() => {
+  const allOverviews = useMemo(() => {
     if (actorRole !== "FATHER") return [];
     return buildChildAppointmentOverviews({ appointments, children, viewerUid: ownerUid, now: nowDate });
   }, [actorRole, appointments, children, ownerUid, nowDate]);
 
-  const knownChildUids = useMemo(() => new Set(children.map((c) => c.uid)), [children]);
-  const unmatched = useMemo(() => {
-    if (actorRole !== "FATHER") return [];
-    return appointments
-      .filter((a) => a.fatherUid === ownerUid && !knownChildUids.has(a.childUid))
-      .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt));
-  }, [actorRole, appointments, ownerUid, knownChildUids]);
+  const { directoryOverviews, unmatchedAppointments } = useMemo(
+    () =>
+      selectFatherAppointmentOverviewPresentation({
+        overviews: allOverviews,
+        appointments,
+        children,
+        viewerUid: ownerUid,
+      }),
+    [allOverviews, appointments, children, ownerUid]
+  );
 
   const studentBuckets = useMemo(() => {
     if (actorRole !== "STUDENT") return null;
@@ -790,25 +857,38 @@ export default function AppointmentsScreen() {
 
   const childRoomAppointments = useMemo(() => {
     if (view.kind !== "child") return [];
-    return appointments
-      .filter((a) => a.childUid === view.childUid)
-      .sort((a, b) => {
-        const aNeeds = a.status === "REQUESTED" && a.pendingResponseFrom === ownerUid ? 0 : 1;
-        const bNeeds = b.status === "REQUESTED" && b.pendingResponseFrom === ownerUid ? 0 : 1;
-        if (aNeeds !== bNeeds) return aNeeds - bNeeds;
-        return a.scheduledAt.localeCompare(b.scheduledAt);
-      });
+    return selectAppointmentsForChild(appointments, view.childUid).sort((a, b) => {
+      const aNeeds = a.status === "REQUESTED" && a.pendingResponseFrom === ownerUid ? 0 : 1;
+      const bNeeds = b.status === "REQUESTED" && b.pendingResponseFrom === ownerUid ? 0 : 1;
+      if (aNeeds !== bNeeds) return aNeeds - bNeeds;
+      return a.scheduledAt.localeCompare(b.scheduledAt);
+    });
   }, [appointments, view, ownerUid]);
 
-  const roomChild = useMemo(() => {
-    if (view.kind !== "child") return null;
-    return (
-      children.find((c) => c.uid === view.childUid) || {
-        uid: view.childUid,
-        displayName: appointments.find((a) => a.childUid === view.childUid)?.childName || "ልጅ",
-      }
-    );
-  }, [view, children, appointments]);
+  const roomChild = useMemo(
+    () =>
+      view.kind === "child"
+        ? children.find((child) => child.uid === view.childUid) ?? null
+        : null,
+    [view, children]
+  );
+
+  const activeDetailChildUid =
+    view.kind === "detail"
+      ? resolveAppointmentDetailChildUid(view, {
+          role: actorRole,
+          knownChildUids: children.map((child) => child.uid),
+          appointment:
+            detail?.appointment ??
+            appointments.find((item) => item.id === view.appointmentId) ??
+            null,
+        })
+      : undefined;
+  const detailChildName =
+    actorRole === "FATHER"
+      ? children.find((child) => child.uid === activeDetailChildUid)?.displayName ||
+        detail?.participants.child.displayName
+      : undefined;
 
   const openCreate = (prefillChildUid?: string) => {
     setCreateError(null);
@@ -864,7 +944,7 @@ export default function AppointmentsScreen() {
       await upsertAppointment(rec);
       setShowCreate(false);
       await fetchServer(true);
-      navigate({ appointment: rec.id });
+      openAppointment(rec.id, targetChildUid);
     } catch (e: any) {
       setCreateError(e?.message || "ቀጠሮ መፍጠር አልተሳካም");
     } finally {
@@ -903,11 +983,13 @@ export default function AppointmentsScreen() {
     <View style={styles.container}>
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => fetchServer()} tintColor={THEME.colors.sacredAmber} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshCurrentView} tintColor={THEME.colors.sacredAmber} />}
       >
         <Header
           title={
-            view.kind === "detail"
+            view.kind === "detail" && detailChildName
+              ? `${detailChildName} • የቀጠሮ ዝርዝር`
+              : view.kind === "detail"
               ? "የቀጠሮ ዝርዝር"
               : view.kind === "child"
               ? roomChild?.displayName || "ልጅ"
@@ -920,7 +1002,8 @@ export default function AppointmentsScreen() {
           unreadCount={unreadCount}
           onBell={() => setShowBell((v) => !v)}
           onCreate={() => openCreate(view.kind === "child" ? view.childUid : undefined)}
-          onRefresh={() => fetchServer()}
+          showCreate={actorRole === "STUDENT" || view.kind === "child"}
+          onRefresh={refreshCurrentView}
           refreshing={refreshing}
         />
 
@@ -940,10 +1023,10 @@ export default function AppointmentsScreen() {
 
         {view.kind === "overview" && actorRole === "FATHER" && (
           <FatherOverview
-            overviews={overviews}
-            unmatched={unmatched}
+            overviews={directoryOverviews}
+            unmatched={unmatchedAppointments}
             onOpenChild={(id) => navigate({ child: id })}
-            onOpenAppointment={(id) => navigate({ appointment: id })}
+            onOpenAppointment={openAppointment}
             onCreate={(id) => openCreate(id)}
           />
         )}
@@ -964,7 +1047,7 @@ export default function AppointmentsScreen() {
                 nowIso={nowIso}
                 outbox={outboxByAppointment.get(a.id)}
                 child={children.find((c) => c.uid === a.childUid)}
-                onPress={() => navigate({ appointment: a.id })}
+                onPress={() => openAppointment(a.id, a.childUid)}
               />
             )}
           />
@@ -984,7 +1067,7 @@ export default function AppointmentsScreen() {
                 nowIso={nowIso}
                 outbox={outboxByAppointment.get(a.id)}
                 child={children.find((c) => c.uid === a.childUid)}
-                onPress={() => navigate({ appointment: a.id })}
+                onPress={() => openAppointment(a.id, a.childUid)}
               />
             )}
           />
@@ -1036,7 +1119,7 @@ export default function AppointmentsScreen() {
             }}
             onCancelConfirmAction={() => setConfirmAction(null)}
             onDismissFailed={dismissFailed}
-            onRetry={() => fetchServer()}
+            onRetry={refreshCurrentView}
           />
         )}
       </ScrollView>
@@ -1078,8 +1161,9 @@ function Header(props: {
   onCreate: () => void;
   onRefresh: () => void;
   refreshing: boolean;
+  showCreate?: boolean;
 }) {
-  const { title, back, onBack, unreadCount, onBell, onCreate, onRefresh, refreshing } = props;
+  const { title, back, onBack, unreadCount, onBell, onCreate, onRefresh, refreshing, showCreate = true } = props;
   return (
     <View style={styles.headerRow}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
@@ -1100,10 +1184,12 @@ function Header(props: {
             <View style={styles.badgeDot}><Text style={styles.badgeDotText}>{unreadCount}</Text></View>
           )}
         </Pressable>
-        <Pressable onPress={onCreate} accessibilityRole="button" accessibilityLabel="አዲስ ቀጠሮ" style={styles.primaryBtnSmall}>
-          <Plus color="#fff" size={16} />
-          <Text style={styles.primaryBtnSmallText}>አዲስ</Text>
-        </Pressable>
+        {showCreate && (
+          <Pressable onPress={onCreate} accessibilityRole="button" accessibilityLabel="አዲስ ቀጠሮ" style={styles.primaryBtnSmall}>
+            <Plus color="#fff" size={16} />
+            <Text style={styles.primaryBtnSmallText}>አዲስ</Text>
+          </Pressable>
+        )}
         <Pressable onPress={onRefresh} accessibilityRole="button" accessibilityLabel="አድስ" style={styles.iconBtn}>
           <RefreshCw color={THEME.colors.inkSecondary} size={18} />
         </Pressable>
@@ -1290,9 +1376,6 @@ function FatherOverview(props: {
                 <Plus color="#fff" size={16} />
                 <Text style={styles.primaryBtnSmallText}>ቀጠሮ ፍጠር</Text>
               </Pressable>
-              <Pressable onPress={() => onOpenChild(item.child.uid)} accessibilityRole="button" style={[styles.secondaryBtnSmall, { minHeight: 44 }]}>
-                <Text style={styles.secondaryBtnSmallText}>ክፈት</Text>
-              </Pressable>
             </View>
           </View>
         );
@@ -1448,13 +1531,19 @@ function DetailView(props: {
   if (!detail) return null;
 
   const a = detail.appointment;
-  const { father, child } = detail.participants;
+  const { father } = detail.participants;
+  const identity = getAppointmentIdentityDisplay(a, detail.participants);
+  const child = identity.subject;
+  const identityRolesByUid = new Map(
+    identity.groups.map((group) => [
+      group.participant.uid,
+      group.roles.map((role) => APPOINTMENT_IDENTITY_ROLE_TERMS[role]).join(" · "),
+    ])
+  );
   const actor = { uid: viewerUid, role: actorRole };
   const actions = outbox ? [] : (detail.availableActions || getAvailableAppointmentActions(a, actor));
   const sc = statusColors(a.status);
   const overdue = isConfirmedOverdue(a, getNowIso());
-  const responder = a.status === "REQUESTED" ? (a.pendingResponseFrom === a.fatherUid ? father : child) : null;
-  const proposer = a.currentProposerUid === a.fatherUid ? father : child;
 
   return (
     <View style={{ gap: 10 }}>
@@ -1485,12 +1574,20 @@ function DetailView(props: {
         </View>
 
         <View style={{ flexDirection: "row", gap: 10, marginBottom: 10 }}>
-          <PartyBlock label="አባት" party={father} highlight={actorRole === "FATHER"} />
-          <PartyBlock label="ልጅ (ባለቤት)" party={child} highlight={actorRole === "STUDENT"} />
+          <PartyBlock
+            label="አባት"
+            party={father}
+            rolesLabel={identityRolesByUid.get(father.uid)}
+            highlight={actorRole === "FATHER"}
+          />
+          <PartyBlock
+            label="ልጅ (ርዕሰ ጉዳይ)"
+            party={child}
+            rolesLabel={identityRolesByUid.get(child.uid)}
+            highlight={actorRole === "STUDENT"}
+          />
         </View>
 
-        <Info label="የአሁኑ አቅራቢ" value={`${proposer.displayName} (${roleLabel(proposer.role)})`} icon={<User color={THEME.colors.inkSubtle} size={14} />} />
-        {responder ? <Info label="ምላስ የሚሰጥ" value={`${responder.displayName} (${roleLabel(responder.role)})`} icon={<Clock color={THEME.colors.inkSubtle} size={14} />} /> : null}
         <Info label="ቀን / ሰዓት" value={formatEthiopianDateTimeInEAT(a.scheduledAt)} icon={<CalendarClock color={THEME.colors.inkSubtle} size={14} />} />
         {a.location ? <Info label="ቦታ" value={a.location} icon={<MapPin color={THEME.colors.inkSubtle} size={14} />} /> : null}
         {(a.message || a.logisticsNote) ? <Info label="ማስታወሻ" value={a.message || a.logisticsNote || ""} icon={<MessageSquare color={THEME.colors.inkSubtle} size={14} />} /> : null}
@@ -1568,7 +1665,7 @@ function DetailView(props: {
   );
 }
 
-function PartyBlock({ label, party, highlight }: { label: string; party: AppointmentParticipant; highlight?: boolean }) {
+function PartyBlock({ label, party, rolesLabel, highlight }: { label: string; party: AppointmentParticipant; rolesLabel?: string; highlight?: boolean }) {
   return (
     <View style={{ flex: 1, flexDirection: "row", gap: 8, alignItems: "center", padding: 10, borderRadius: 12, borderWidth: 1, borderColor: highlight ? THEME.colors.amberBorder : THEME.colors.border, backgroundColor: highlight ? THEME.colors.amberLight : THEME.colors.surfaceAlt }}>
       <Avatar name={party.displayName} photoUrl={party.photoUrl} size={36} />
@@ -1576,6 +1673,7 @@ function PartyBlock({ label, party, highlight }: { label: string; party: Appoint
         <Text style={styles.eyebrow}>{label}</Text>
         <Text style={{ fontWeight: "800", color: THEME.colors.inkPrimary }} numberOfLines={1}>{party.displayName}</Text>
         {party.spiritualTitle ? <Text style={styles.muted} numberOfLines={1}>{party.spiritualTitle}</Text> : null}
+        {rolesLabel ? <Text style={{ marginTop: 3, fontSize: 10, fontWeight: "700", color: THEME.colors.inkSecondary }} numberOfLines={2}>{rolesLabel}</Text> : null}
       </View>
     </View>
   );

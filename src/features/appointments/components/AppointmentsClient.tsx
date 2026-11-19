@@ -36,15 +36,21 @@ import {
   applyFatherAppointmentEligibility,
   type AppointmentAction,
   type AppointmentActionPayload,
+  appointmentBackView,
   type AppointmentChildDirectoryEntry,
   appointmentDetailRequestKey,
   type AppointmentDetailResponse,
   type AppointmentParticipant,
   type AppointmentRecord,
+  type AppointmentRouteParams,
+  appointmentRouteParams,
   type AppointmentStatus,
   type AppointmentType,
+  appointmentViewFromParams,
+  type AppointmentViewState,
   buildChildAppointmentOverviews,
   detailErrorMessage,
+  getAppointmentIdentityDisplay,
   getAvailableAppointmentActions,
   getChildDisplayName,
   getFatherDisplayName,
@@ -55,8 +61,12 @@ import {
   isEligibleFatherChild,
   isUpcomingConfirmed,
   normalizeAppointment,
+  resolveAppointmentDetailChildUid,
+  selectAppointmentsForChild,
+  selectFatherAppointmentOverviewPresentation,
 } from "@/shared/domain/appointments";
 import {
+  APPOINTMENT_IDENTITY_ROLE_TERMS,
   formatAppointmentEvent,
   getAppointmentStatusLabel,
   getAppointmentTypeLabel,
@@ -102,10 +112,7 @@ type OutboxUiRow = {
   lastError?: string;
 };
 
-type ViewState =
-  | { kind: "overview" }
-  | { kind: "child"; childUid: string }
-  | { kind: "detail"; appointmentId: string };
+type ViewState = AppointmentViewState;
 
 function makeOperationId(prefix: string): string {
   const c = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
@@ -176,11 +183,6 @@ function Avatar({
   );
 }
 
-function roleLabel(role: "FATHER" | "CHILD" | "STUDENT"): string {
-  if (role === "FATHER") return "አባት";
-  return "ልጅ";
-}
-
 export default function AppointmentsClient({ role, uid, familyId }: Props) {
   void familyId;
   const router = useRouter();
@@ -190,11 +192,14 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
   const childParam = searchParams.get("child");
   const appointmentParam = searchParams.get("appointment");
 
-  const view: ViewState = useMemo(() => {
-    if (appointmentParam) return { kind: "detail", appointmentId: appointmentParam };
-    if (childParam && role === "FATHER") return { kind: "child", childUid: childParam };
-    return { kind: "overview" };
-  }, [appointmentParam, childParam, role]);
+  const view: ViewState = useMemo(
+    () =>
+      appointmentViewFromParams(
+        { appointment: appointmentParam, child: childParam },
+        role
+      ),
+    [appointmentParam, childParam, role]
+  );
 
   // Used only to reject stale responses. It must not be an effect dependency:
   // the detail request is keyed by account + appointment id alone.
@@ -233,6 +238,9 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
   const [detail, setDetail] = useState<AppointmentDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Explicit refresh only. Collection changes and child-context changes must
+  // never alter the detail request key.
+  const [detailRefreshNonce, setDetailRefreshNonce] = useState(0);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
@@ -347,6 +355,13 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     [uid, role, applyListData]
   );
 
+  const refreshCurrentView = useCallback(async () => {
+    await fetchServer(true);
+    if (currentViewRef.current.kind === "detail") {
+      setDetailRefreshNonce((value) => value + 1);
+    }
+  }, [fetchServer]);
+
   // Initial load
   useEffect(() => {
     let alive = true;
@@ -441,10 +456,11 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
   }, [uid, role]);
 
   const navigate = useCallback(
-    (next: { child?: string | null; appointment?: string | null }) => {
+    (next: AppointmentViewState | AppointmentRouteParams) => {
       const params = new URLSearchParams();
-      if (next.child) params.set("child", next.child);
-      if (next.appointment) params.set("appointment", next.appointment);
+      const route = appointmentRouteParams(next);
+      if (route.child) params.set("child", route.child);
+      if (route.appointment) params.set("appointment", route.appointment);
       const qs = params.toString();
       router.push(qs ? `/appointments?${qs}` : "/appointments");
     },
@@ -453,22 +469,42 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
 
   const openChild = (childUid: string) => navigate({ child: childUid });
   const openAppointment = useCallback(
-    (appointmentId: string) => navigate({ appointment: appointmentId }),
-    [navigate]
+    (appointmentId: string, contextChildUid?: string) => {
+      const childUid =
+        role === "FATHER" &&
+        contextChildUid &&
+        childrenRef.current.some((child) => child.uid === contextChildUid)
+          ? contextChildUid
+          : undefined;
+      navigate({ appointment: appointmentId, child: childUid });
+    },
+    [navigate, role]
   );
-  const goBack = () => {
-    if (view.kind === "detail") {
-      // If father came from child room, try to go back there
-      const appt = appointments.find((a) => a.id === view.appointmentId);
-      if (role === "FATHER" && appt?.childUid && childParam) {
-        navigate({ child: childParam });
-      } else {
-        navigate({});
-      }
-    } else {
+  const goBack = useCallback(() => {
+    const next = appointmentBackView(view, {
+      role,
+      knownChildUids: childrenRef.current.map((child) => child.uid),
+      appointment:
+        view.kind === "detail"
+          ? detail?.appointment ??
+            appointments.find((item) => item.id === view.appointmentId) ??
+            null
+          : null,
+    });
+    navigate(next);
+  }, [view, role, detail, appointments, navigate]);
+
+  // A stale or unsupported child param must not create a synthetic room.
+  useEffect(() => {
+    if (
+      !loading &&
+      role === "FATHER" &&
+      view.kind === "child" &&
+      !children.some((child) => child.uid === view.childUid)
+    ) {
       navigate({});
     }
-  };
+  }, [loading, role, view, children, navigate]);
 
   // Detail lifecycle is keyed only by account + requested appointment id.
   // Overview collection updates (including the write-back below) must not
@@ -486,6 +522,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
       return;
     }
     const appointmentId = detailAppointmentId;
+    const requestNonce = detailRefreshNonce;
     let alive = true;
     setDetail(null);
     setDetailLoading(true);
@@ -494,6 +531,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     setRescheduleOpen(false);
 
     const isCurrent = () =>
+      requestNonce === detailRefreshNonce &&
       isCurrentDetailRequest(
         detailRequestKey,
         appointmentDetailRequestKey(currentViewRef.current, uid)
@@ -582,7 +620,15 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     return () => {
       alive = false;
     };
-  }, [detailRequestKey, detailViewKind, detailAppointmentId, uid, role, actor]);
+  }, [
+    detailRequestKey,
+    detailViewKind,
+    detailAppointmentId,
+    detailRefreshNonce,
+    uid,
+    role,
+    actor,
+  ]);
 
   const outboxByAppointment = useMemo(() => {
     const map = new Map<string, (typeof outboxRows)[number]>();
@@ -700,9 +746,12 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     async (n: InAppNotification) => {
       if (!n.read) await markOneRead(n.id);
       setShowBell(false);
-      if (n.appointmentId) openAppointment(n.appointmentId);
+      if (n.appointmentId) {
+        const related = appointments.find((item) => item.id === n.appointmentId);
+        openAppointment(n.appointmentId, related?.childUid);
+      }
     },
-    [markOneRead, openAppointment]
+    [markOneRead, openAppointment, appointments]
   );
 
   // Derived overview
@@ -721,17 +770,33 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     [appointments, children, role, uid, nowDate]
   );
 
-  const knownChildUidSet = useMemo(
-    () => new Set(children.map((c) => c.uid)),
-    [children]
+  const { directoryOverviews, unmatchedAppointments } = useMemo(
+    () =>
+      selectFatherAppointmentOverviewPresentation({
+        overviews: overview ?? [],
+        appointments,
+        children,
+        viewerUid: uid,
+      }),
+    [overview, appointments, children, uid]
   );
 
-  const unmatchedAppointments = useMemo(() => {
-    if (role !== "FATHER") return [] as AppointmentRecord[];
-    return appointments
-      .filter((a) => a.fatherUid === uid && !knownChildUidSet.has(a.childUid))
-      .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt));
-  }, [appointments, role, uid, knownChildUidSet]);
+  const activeDetailChildUid =
+    view.kind === "detail"
+      ? resolveAppointmentDetailChildUid(view, {
+          role,
+          knownChildUids: children.map((child) => child.uid),
+          appointment:
+            detail?.appointment ??
+            appointments.find((item) => item.id === view.appointmentId) ??
+            null,
+        })
+      : undefined;
+  const detailChildName =
+    role === "FATHER"
+      ? children.find((child) => child.uid === activeDetailChildUid)?.displayName ||
+        detail?.participants.child.displayName
+      : undefined;
 
   const studentBuckets = useMemo(() => {
     if (role !== "STUDENT") return null;
@@ -761,27 +826,22 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
 
   const childRoomAppointments = useMemo(() => {
     if (view.kind !== "child") return [];
-    return appointments
-      .filter((a) => a.childUid === view.childUid)
-      .sort((a, b) => {
-        // action-needed first, then upcoming asc, then others desc
-        const aNeeds = a.status === "REQUESTED" && a.pendingResponseFrom === uid ? 0 : 1;
-        const bNeeds = b.status === "REQUESTED" && b.pendingResponseFrom === uid ? 0 : 1;
-        if (aNeeds !== bNeeds) return aNeeds - bNeeds;
-        return a.scheduledAt.localeCompare(b.scheduledAt);
-      });
+    return selectAppointmentsForChild(appointments, view.childUid).sort((a, b) => {
+      // action-needed first, then upcoming asc, then others desc
+      const aNeeds = a.status === "REQUESTED" && a.pendingResponseFrom === uid ? 0 : 1;
+      const bNeeds = b.status === "REQUESTED" && b.pendingResponseFrom === uid ? 0 : 1;
+      if (aNeeds !== bNeeds) return aNeeds - bNeeds;
+      return a.scheduledAt.localeCompare(b.scheduledAt);
+    });
   }, [appointments, view, uid]);
 
-  const roomChild = useMemo(() => {
-    if (view.kind !== "child") return null;
-    return (
-      children.find((c) => c.uid === view.childUid) || {
-        uid: view.childUid,
-        displayName:
-          appointments.find((a) => a.childUid === view.childUid)?.childName || "ልጅ",
-      }
-    );
-  }, [view, children, appointments]);
+  const roomChild = useMemo(
+    () =>
+      view.kind === "child"
+        ? children.find((child) => child.uid === view.childUid) ?? null
+        : null,
+    [view, children]
+  );
 
   // Create form state
   const today = getTodayEthiopian();
@@ -867,8 +927,8 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
       setShowCreate(false);
       recent.current = loadRecentTemplates();
       await fetchServer(true);
-      // navigate to detail for clarity
-      openAppointment(rec.id);
+      // Navigate to detail with the child context intact for Father.
+      openAppointment(rec.id, targetChildUid);
     } catch {
       setCreateError("ቀጠሮ መፍጠር አልተሳካም");
     } finally {
@@ -901,7 +961,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     return (
       <button
         type="button"
-        onClick={() => openAppointment(a.id)}
+        onClick={() => openAppointment(a.id, a.childUid)}
         className={cn(
           "w-full text-left rounded-2xl border bg-white p-4 sm:p-5 shadow-sm hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-amber-400/40",
           ob?.status === "FAILED" && ob.needsAttention
@@ -972,7 +1032,15 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
 
   // ---------- Views ----------
 
-  const Header = ({ title, back }: { title: string; back?: boolean }) => (
+  const Header = ({
+    title,
+    back,
+    showCreate = false,
+  }: {
+    title: string;
+    back?: boolean;
+    showCreate?: boolean;
+  }) => (
     <header className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -1010,16 +1078,18 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
             </span>
           )}
         </button>
+        {showCreate && (
+          <button
+            type="button"
+            onClick={() => openCreate()}
+            className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2.5 rounded-2xl bg-slate-900 text-white text-[11px] font-black"
+          >
+            <Plus className="w-3.5 h-3.5" /> አዲስ
+          </button>
+        )}
         <button
           type="button"
-          onClick={() => openCreate()}
-          className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2.5 rounded-2xl bg-slate-900 text-white text-[11px] font-black"
-        >
-          <Plus className="w-3.5 h-3.5" /> አዲስ
-        </button>
-        <button
-          type="button"
-          onClick={() => fetchServer()}
+          onClick={() => refreshCurrentView()}
           aria-label="አድስ"
           className="p-2.5 rounded-2xl border border-slate-200 bg-white text-slate-500 hover:text-slate-800"
         >
@@ -1099,12 +1169,15 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     <div className="mx-auto max-w-3xl px-3 sm:px-6 py-6 sm:py-10 space-y-5">
       {view.kind === "overview" && (
         <>
-          <Header title={role === "FATHER" ? "የልጆች ቀጠሮዎች" : "ቀጠሮዎቼ"} />
+          <Header
+            title={role === "FATHER" ? "የልጆች ቀጠሮዎች" : "ቀጠሮዎቼ"}
+            showCreate={role === "STUDENT"}
+          />
           <NotificationsPanel />
           <Banner />
           {role === "FATHER" && overview ? (
             <FatherOverview
-              overview={overview}
+              overview={directoryOverviews}
               unmatchedAppointments={unmatchedAppointments}
               onOpenChild={openChild}
               onCreate={(childUid) => openCreate(childUid)}
@@ -1123,7 +1196,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
 
       {view.kind === "child" && role === "FATHER" && roomChild && (
         <>
-          <Header title={roomChild.displayName} back />
+          <Header title={roomChild.displayName} back showCreate={false} />
           <NotificationsPanel />
           <Banner />
           <ChildRoom
@@ -1137,7 +1210,15 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
 
       {view.kind === "detail" && (
         <>
-          <Header title="የቀጠሮ ዝርዝር" back />
+          <Header
+            title={
+              detailChildName
+                ? `${detailChildName} • የቀጠሮ ዝርዝር`
+                : "የቀጠሮ ዝርዝር"
+            }
+            back
+            showCreate={false}
+          />
           <NotificationsPanel />
           <Banner />
           <DetailView
@@ -1179,9 +1260,9 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
             onDismissFailed={async (opId) => {
               await appointmentOfflineService.removeOutboxOperation(uid, opId);
               await refreshOutbox();
-              await fetchServer(true);
+              await refreshCurrentView();
             }}
-            onRetry={() => fetchServer()}
+            onRetry={() => refreshCurrentView()}
           />
         </>
       )}
@@ -1233,14 +1314,11 @@ function FatherOverview({
   onCreate: (childUid: string) => void;
   onOpenAppointment: (id: string) => void;
 }) {
-  // buildChildAppointmentOverviews already includes synthetic entries for
-  // unmatched children; keep a separate "ሌሎች ቀጠሮዎች" section only for records
-  // that truly cannot be grouped (defensive).
-  const directoryChildren = overview.filter((item) => item.child.displayName !== "ልጅ" || true);
-
+  // `overview` contains only known directory children. Unmatched records are
+  // rendered once in their own section by the caller.
   return (
     <div className="space-y-4">
-      {directoryChildren.length === 0 && unmatchedAppointments.length === 0 ? (
+      {overview.length === 0 && unmatchedAppointments.length === 0 ? (
         <SanctuarySurface className="p-8 text-center space-y-3">
           <CalendarClock className="w-10 h-10 mx-auto text-slate-300" />
           <p className="text-sm font-bold text-slate-700">የተመዘገቡ ልጆች አልተገኙም</p>
@@ -1248,7 +1326,7 @@ function FatherOverview({
         </SanctuarySurface>
       ) : (
         <div className="grid gap-3">
-          {directoryChildren.map((item) => {
+          {overview.map((item) => {
             const needs = item.attentionNeeded > 0;
             const waitingChild = item.awaitingOtherParty > 0;
             const upcomingCount = Math.max(0, item.confirmed - item.overdueConfirmed);
@@ -1313,20 +1391,13 @@ function FatherOverview({
                     <ChevronRight className="w-4 h-4 text-slate-300 mt-1" />
                   </div>
                 </button>
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-3 flex items-center">
                   <button
                     type="button"
                     onClick={() => onCreate(item.child.uid)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 text-white text-[11px] font-bold"
                   >
                     <Plus className="w-3.5 h-3.5" /> ቀጠሮ ፍጠር
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenChild(item.child.uid)}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 text-slate-700 text-[11px] font-bold"
-                  >
-                    ክፈት
                   </button>
                 </div>
               </div>
@@ -1558,20 +1629,19 @@ function DetailView(props: {
 
   const a = detail.appointment;
   const participants = detail.participants;
-  const subject = participants.child;
+  const identity = getAppointmentIdentityDisplay(a, participants);
+  const subject = identity.subject;
   const father = participants.father;
+  const identityRolesByUid = new Map(
+    identity.groups.map((group) => [
+      group.participant.uid,
+      group.roles
+        .map((role) => APPOINTMENT_IDENTITY_ROLE_TERMS[role])
+        .join(" · "),
+    ])
+  );
   const actions = outboxRow ? [] : detail.availableActions || getAvailableAppointmentActions(a, actor);
   const isOverdue = isConfirmedOverdue(a, getNowIso());
-
-  const responder =
-    a.status === "REQUESTED"
-      ? a.pendingResponseFrom === a.fatherUid
-        ? father
-        : subject
-      : null;
-
-  const currentProposer =
-    a.currentProposerUid === a.fatherUid ? father : subject;
 
   return (
     <div className="space-y-4">
@@ -1636,19 +1706,21 @@ function DetailView(props: {
         </div>
 
         <div className="grid sm:grid-cols-2 gap-3">
-          <PartyBlock label="አባት" party={father} highlight={actor.role === "FATHER"} />
-          <PartyBlock label="ልጅ (ባለቤት)" party={subject} highlight={actor.role === "STUDENT"} />
+          <PartyBlock
+            label="አባት"
+            party={father}
+            rolesLabel={identityRolesByUid.get(father.uid)}
+            highlight={actor.role === "FATHER"}
+          />
+          <PartyBlock
+            label="ልጅ (ርዕሰ ጉዳይ)"
+            party={subject}
+            rolesLabel={identityRolesByUid.get(subject.uid)}
+            highlight={actor.role === "STUDENT"}
+          />
         </div>
 
         <div className="space-y-2 text-sm">
-          <InfoRow icon={<User className="w-4 h-4" />} label="የአሁኑ አቅራቢ">
-            {currentProposer.displayName} ({roleLabel(currentProposer.role)})
-          </InfoRow>
-          {responder && (
-            <InfoRow icon={<Clock className="w-4 h-4" />} label="ምላስ የሚሰጥ">
-              {responder.displayName} ({roleLabel(responder.role)})
-            </InfoRow>
-          )}
           <InfoRow icon={<CalendarClock className="w-4 h-4" />} label="ቀን / ሰዓት">
             {formatEthiopianDateTimeInEAT(a.scheduledAt)}
           </InfoRow>
@@ -1828,10 +1900,12 @@ function DetailView(props: {
 function PartyBlock({
   label,
   party,
+  rolesLabel,
   highlight,
 }: {
   label: string;
   party: AppointmentParticipant;
+  rolesLabel?: string;
   highlight?: boolean;
 }) {
   return (
@@ -1847,6 +1921,9 @@ function PartyBlock({
         <p className="text-sm font-bold text-slate-900 truncate">{party.displayName}</p>
         {party.spiritualTitle && (
           <p className="text-[11px] text-slate-500 truncate">{party.spiritualTitle}</p>
+        )}
+        {rolesLabel && (
+          <p className="mt-1.5 text-[10px] font-bold text-slate-600">{rolesLabel}</p>
         )}
       </div>
     </div>

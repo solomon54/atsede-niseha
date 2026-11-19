@@ -7,6 +7,7 @@
  * server, Web, and React Native can all use it.
  */
 
+import type { AppointmentIdentityRole } from "./identity";
 import type {
   AppointmentAction,
   AppointmentActorRole,
@@ -93,6 +94,17 @@ export const APPOINTMENT_ACTOR_ROLE_TERMS: Record<
 > = {
   FATHER: "አባት",
   STUDENT: "ልጅ",
+};
+
+export const APPOINTMENT_IDENTITY_ROLE_TERMS: Record<
+  AppointmentIdentityRole,
+  string
+> = {
+  ORIGINAL_REQUESTER: "የመጀመሪያ ጠያቂ",
+  RECIPIENT: "ተቀባይ",
+  CURRENT_PROPOSER: "የአሁኑ አቅራቢ",
+  PENDING_RESPONDER: "ምላሽ የሚሰጥ",
+  LAST_ACTOR: "የመጨረሻ አርታኢ",
 };
 
 export const APPOINTMENT_DIRECTION_TERMS: Record<

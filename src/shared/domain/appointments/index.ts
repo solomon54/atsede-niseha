@@ -8,8 +8,10 @@
 
 export * from "./detailLoad";
 export * from "./eligibility";
+export * from "./identity";
 export * from "./legacy";
 export * from "./lifecycle";
+export * from "./navigation";
 export * from "./overview";
 export * from "./snapshot";
 export * from "./studentCreateCompatibility";

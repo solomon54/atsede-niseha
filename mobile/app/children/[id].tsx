@@ -305,9 +305,7 @@ export default function ChildProfileDetailScreen() {
     router.push({
       pathname: "/(tabs)/appointments" as any,
       params: {
-        childUid: student.uid,
-        childEotcUid: student.eotcUid,
-        openModal: "true",
+        child: student.uid,
       },
     });
   };

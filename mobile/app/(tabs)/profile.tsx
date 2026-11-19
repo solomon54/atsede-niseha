@@ -38,7 +38,7 @@ export default function ProfileScreen() {
     success: boolean;
     appointments: Appointment[];
   }>({
-    queryKey: ["appointments"],
+    queryKey: ["appointments", eotcUid],
     queryFn: async () => {
       return await apiRequest<{
         success: boolean;

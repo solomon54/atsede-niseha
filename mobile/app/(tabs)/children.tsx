@@ -211,9 +211,7 @@ export default function ChildrenDirectoryScreen() {
     router.push({
       pathname: "/(tabs)/appointments" as any,
       params: {
-        childUid: child.uid,
-        childEotcUid: child.eotcUid,
-        openModal: "true",
+        child: child.uid,
       },
     });
   };

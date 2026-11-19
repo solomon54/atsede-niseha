@@ -355,4 +355,41 @@ export function buildChildAppointmentOverviews(
   });
 }
 
+export interface FatherAppointmentOverviewPresentation {
+  /** Only known, eligible directory children. Never synthetic child entries. */
+  directoryOverviews: AppointmentChildOverview[];
+  /** Records without a known directory child, shown once in their own section. */
+  unmatchedAppointments: AppointmentRecord[];
+}
+
+/**
+ * Split the defensive overview output into a non-duplicating Father view.
+ *
+ * `buildChildAppointmentOverviews` keeps unknown-child records visible for
+ * data-integrity reasons. Rendering those synthetic entries alongside the
+ * separate "other appointments" section would show the same appointment twice,
+ * so the overview keeps known children and the unmatched section owns those
+ * records instead.
+ */
+export function selectFatherAppointmentOverviewPresentation(params: {
+  overviews: AppointmentChildOverview[];
+  appointments: AppointmentRecord[];
+  children: AppointmentChildDirectoryEntry[];
+  viewerUid: string;
+}): FatherAppointmentOverviewPresentation {
+  const knownChildUids = new Set(params.children.map((child) => child.uid));
+  return {
+    directoryOverviews: params.overviews.filter((item) =>
+      knownChildUids.has(item.child.uid)
+    ),
+    unmatchedAppointments: params.appointments
+      .filter(
+        (record) =>
+          record.fatherUid === params.viewerUid &&
+          !knownChildUids.has(record.childUid)
+      )
+      .sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt)),
+  };
+}
+
 export { emptySummary as emptyAppointmentOverviewSummary };
