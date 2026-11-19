@@ -40,11 +40,16 @@ import {
   type OwnedAppointmentSnapshot,
 } from "@shared/domain/appointments";
 import {
+  getAppointmentSyncFeedback,
+  type AppointmentSyncFeedbackTone,
+} from "@shared/domain/appointments/syncFeedback";
+import {
   APPOINTMENT_IDENTITY_ROLE_TERMS,
+  APPOINTMENT_OFFLINE_CREATE_MESSAGE,
+  APPOINTMENT_SYNC_FEEDBACK,
   formatAppointmentEvent,
   getAppointmentStatusLabel,
   getAppointmentTypeLabel,
-  getQueuedActionLabel,
 } from "@shared/domain/appointments/terminology";
 import {
   ETHIOPIAN_MONTHS,
@@ -77,6 +82,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   BackHandler,
   Image,
   Modal,
@@ -118,6 +124,62 @@ type Snapshot = AppointmentSnapshot;
 
 function makeOperationId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const SYNC_TONE_COLORS: Record<
+  AppointmentSyncFeedbackTone,
+  { bg: string; border: string; text: string }
+> = {
+  none: {
+    bg: THEME.colors.successBg,
+    border: "#A7F3D0",
+    text: THEME.colors.success,
+  },
+  confirmed: {
+    bg: THEME.colors.successBg,
+    border: "#A7F3D0",
+    text: THEME.colors.success,
+  },
+  queued: {
+    bg: THEME.colors.amberLight,
+    border: THEME.colors.amberBorder,
+    text: THEME.colors.sacredAmber,
+  },
+  sending: {
+    bg: THEME.colors.amberLight,
+    border: THEME.colors.amberBorder,
+    text: THEME.colors.sacredAmber,
+  },
+  retry: {
+    bg: THEME.colors.amberLight,
+    border: THEME.colors.amberBorder,
+    text: THEME.colors.sacredAmber,
+  },
+  attention: {
+    bg: THEME.colors.errorBg,
+    border: THEME.colors.errorBorder,
+    text: THEME.colors.error,
+  },
+};
+
+function SyncFeedbackIconNative({
+  tone,
+  size = 14,
+}: {
+  tone: AppointmentSyncFeedbackTone;
+  size?: number;
+}) {
+  if (tone === "attention") return <AlertTriangle color={THEME.colors.error} size={size} />;
+  if (tone === "sending") {
+    return <ActivityIndicator size={size} color={THEME.colors.sacredAmber} />;
+  }
+  if (tone === "confirmed" || tone === "none") {
+    return <Check color={THEME.colors.success} size={size} />;
+  }
+  if (tone === "queued" || tone === "retry") {
+    return <Clock color={THEME.colors.sacredAmber} size={size} />;
+  }
+  return null;
 }
 
 function ethiopianFromIso(iso: string): { date: EthiopianDate; time: EthiopianClockTime } {
@@ -272,9 +334,10 @@ export default function AppointmentsScreen() {
   }
 
   const refreshOutbox = useCallback(async () => {
-    if (!ownerUid) return;
+    if (!ownerUid) return [];
     const rows = await offlineCache.listAppointmentOutbox(ownerUid);
     setOutboxRows(rows);
+    return rows;
   }, [ownerUid]);
 
   const writeSnapshot = useCallback(
@@ -472,6 +535,26 @@ export default function AppointmentsScreen() {
       }
     });
     return () => sub();
+  }, [ownerUid, fetchServer, refreshOutbox]);
+
+  // App resume triggers the shared drain in _layout. Refresh the visible state
+  // after that drain so feedback reflects what the sync logic actually did.
+  useEffect(() => {
+    const capturedOwnerUid = ownerUid;
+    const subscription = AppState.addEventListener("change", (nextAppState) => {
+      if (
+        nextAppState !== "active" ||
+        !capturedOwnerUid ||
+        !isOwnerCurrent(capturedOwnerUid, ownerUidRef.current)
+      ) {
+        return;
+      }
+      mobileSyncService
+        .drainAppointmentOutbox(capturedOwnerUid)
+        .then(() => Promise.all([refreshOutbox(), fetchServer(true)]))
+        .catch(() => {});
+    });
+    return () => subscription.remove();
   }, [ownerUid, fetchServer, refreshOutbox]);
 
   // Realtime per-user private channel (authorized by /api/message/auth)
@@ -702,6 +785,9 @@ export default function AppointmentsScreen() {
     for (const row of outboxRows) map.set(row.appointmentId, row);
     return map;
   }, [outboxRows]);
+  const detailOutboxRow = appointmentParam
+    ? outboxByAppointment.get(appointmentParam)
+    : undefined;
 
   const refreshDetail = useCallback(
     async (appointmentId: string) => {
@@ -738,10 +824,16 @@ export default function AppointmentsScreen() {
         });
         await refreshOutbox();
         await mobileSyncService.drainAppointmentOutbox(ownerUid);
-        await refreshOutbox();
+        const rows = await refreshOutbox();
+        const ownRow = rows.find((item) => item.operationId === operationId);
         await fetchServer(true);
         await refreshDetail(appointment.id);
-        setActionMessage("እርምጃው ተልኳል።");
+        const feedback = getAppointmentSyncFeedback({
+          row: ownRow,
+          queuedLocally: true,
+          isOnline,
+        });
+        setActionMessage(feedback.detail);
       } catch (e: any) {
         const msg = String(e?.message || "");
         if (msg === "ACTION_ALREADY_QUEUED") {
@@ -752,7 +844,7 @@ export default function AppointmentsScreen() {
         await refreshOutbox();
       }
     },
-    [ownerUid, refreshOutbox, fetchServer, refreshDetail]
+    [ownerUid, refreshOutbox, fetchServer, refreshDetail, isOnline]
   );
 
   const performAction = useCallback(
@@ -1017,9 +1109,24 @@ export default function AppointmentsScreen() {
         )}
 
         {!isOnline && (
-          <Banner tone="warn" icon={<WifiOff color={THEME.colors.sacredAmber} size={16} />} text="ከመስመር ውጭ ነዎት። የተቀመጡ ቀጠሮዎች ይታያሉ፤ የተሰለፉ እርምጃዎች ሲገናኙ ይላካሉ።" />
+          <Banner
+            tone="warn"
+            icon={<WifiOff color={THEME.colors.sacredAmber} size={16} />}
+            text={`ከመስመር ውጭ ነዎት። የተቀመጡ ቀጠሮዎች ይታያሉ፤ የተሰለፉ እርምጃዎች ሲገናኙ ይላካሉ። ${APPOINTMENT_OFFLINE_CREATE_MESSAGE}`}
+          />
         )}
         {error ? <Banner tone="error" icon={<AlertTriangle color={THEME.colors.error} size={16} />} text={error} onClose={() => setError(null)} /> : null}
+        {isOnline && outboxRows.length === 0 && !actionBusy && !actionMessage ? (
+          <View
+            accessible
+            accessibilityLiveRegion="polite"
+            accessibilityLabel={APPOINTMENT_SYNC_FEEDBACK.noPending}
+            style={styles.syncIdleBadge}
+          >
+            <SyncFeedbackIconNative tone="none" size={12} />
+            <Text style={styles.syncIdleText}>{APPOINTMENT_SYNC_FEEDBACK.noPending}</Text>
+          </View>
+        ) : null}
 
         {view.kind === "overview" && actorRole === "FATHER" && (
           <FatherOverview
@@ -1046,6 +1153,7 @@ export default function AppointmentsScreen() {
                 viewerUid={ownerUid}
                 nowIso={nowIso}
                 outbox={outboxByAppointment.get(a.id)}
+                isOnline={isOnline}
                 child={children.find((c) => c.uid === a.childUid)}
                 onPress={() => openAppointment(a.id, a.childUid)}
               />
@@ -1066,6 +1174,7 @@ export default function AppointmentsScreen() {
                 viewerUid={ownerUid}
                 nowIso={nowIso}
                 outbox={outboxByAppointment.get(a.id)}
+                isOnline={isOnline}
                 child={children.find((c) => c.uid === a.childUid)}
                 onPress={() => openAppointment(a.id, a.childUid)}
               />
@@ -1080,9 +1189,10 @@ export default function AppointmentsScreen() {
             error={detailError}
             actorRole={actorRole}
             viewerUid={ownerUid}
-            outbox={appointmentParam ? outboxByAppointment.get(appointmentParam) : undefined}
+            outbox={detailOutboxRow}
+            isOnline={isOnline}
             actionBusy={actionBusy}
-            actionMessage={actionMessage}
+            actionMessage={detailOutboxRow ? null : actionMessage}
             rescheduleOpen={rescheduleOpen}
             rescheduleDate={rescheduleDate}
             rescheduleTime={rescheduleTime}
@@ -1271,10 +1381,17 @@ function AppointmentRow(props: {
   viewerUid: string;
   nowIso: string;
   outbox?: SQLiteAppointmentOutboxItem;
+  isOnline: boolean;
   child?: AppointmentChildDirectoryEntry;
   onPress: () => void;
 }) {
-  const { appointment: a, role, viewerUid, nowIso, outbox, child, onPress } = props;
+  const { appointment: a, role, viewerUid, nowIso, outbox, isOnline, child, onPress } = props;
+  const syncFeedback = outbox
+    ? getAppointmentSyncFeedback({ row: outbox, isOnline })
+    : null;
+  const syncColors = syncFeedback
+    ? SYNC_TONE_COLORS[syncFeedback.tone]
+    : null;
   const sc = statusColors(a.status);
   const needsMyResponse = a.status === "REQUESTED" && a.pendingResponseFrom === viewerUid;
   const overdue = isConfirmedOverdue(a, nowIso);
@@ -1288,12 +1405,13 @@ function AppointmentRow(props: {
             <Chip label={getAppointmentStatusLabel(a.status)} bg={sc.bg} text={sc.text} border={sc.border} />
             {needsMyResponse ? <Chip label="ምላሽ ይጠበቃል" bg="#EFF6FF" text="#1D4ED8" border="#BFDBFE" /> : null}
             {overdue ? <Chip label="ጊዜው አልፏል" bg="#FFF7ED" text="#C2410C" border="#FED7AA" /> : null}
-            {outbox ? (
-              outbox.status === "FAILED" && outbox.needsAttention ? (
-                <Chip label="ቀጠሮው ተለውጧል" bg={THEME.colors.errorBg} text={THEME.colors.error} border={THEME.colors.errorBorder} />
-              ) : (
-                <Chip label="በመላክ ላይ" bg={THEME.colors.amberLight} text={THEME.colors.sacredAmber} border={THEME.colors.amberBorder} />
-              )
+            {syncFeedback && syncColors ? (
+              <Chip
+                label={syncFeedback.label}
+                bg={syncColors.bg}
+                text={syncColors.text}
+                border={syncColors.border}
+              />
             ) : null}
           </View>
           <Text style={{ fontWeight: "800", color: THEME.colors.inkPrimary }}>
@@ -1301,7 +1419,7 @@ function AppointmentRow(props: {
           </Text>
           <RowIcon icon={<Clock color={THEME.colors.inkSubtle} size={14} />} text={formatEthiopianDateTimeInEAT(a.scheduledAt)} />
           {a.location ? <RowIcon icon={<MapPin color={THEME.colors.inkSubtle} size={14} />} text={a.location} /> : null}
-          {outbox?.status === "FAILED" && outbox.needsAttention && outbox.lastError ? (
+          {syncFeedback?.tone === "attention" && outbox?.lastError ? (
             <Text style={{ fontSize: 11, color: THEME.colors.error }}>{outbox.lastError}</Text>
           ) : null}
         </View>
@@ -1492,6 +1610,7 @@ function DetailView(props: {
   actorRole: PropsRole;
   viewerUid: string;
   outbox?: SQLiteAppointmentOutboxItem;
+  isOnline: boolean;
   actionBusy: string | null;
   actionMessage: string | null;
   rescheduleOpen: boolean;
@@ -1510,7 +1629,7 @@ function DetailView(props: {
   onRetry: () => void;
 }) {
   const {
-    detail, loading, error, actorRole, viewerUid, outbox, actionBusy, actionMessage,
+    detail, loading, error, actorRole, viewerUid, outbox, isOnline, actionBusy, actionMessage,
     rescheduleOpen, rescheduleDate, rescheduleTime, confirmAction,
     onOpenReschedule, onCloseReschedule, onRescheduleDate, onRescheduleTime, onSubmitReschedule,
     onAction, onConfirmAction, onCancelConfirmAction, onDismissFailed, onRetry,
@@ -1542,20 +1661,28 @@ function DetailView(props: {
   );
   const actor = { uid: viewerUid, role: actorRole };
   const actions = outbox ? [] : (detail.availableActions || getAvailableAppointmentActions(a, actor));
+  const syncFeedback = outbox
+    ? getAppointmentSyncFeedback({ row: outbox, isOnline })
+    : null;
+  const syncColors = syncFeedback ? SYNC_TONE_COLORS[syncFeedback.tone] : null;
   const sc = statusColors(a.status);
   const overdue = isConfirmedOverdue(a, getNowIso());
 
   return (
     <View style={{ gap: 10 }}>
-      {outbox ? (
-        <View style={[styles.banner, outbox.status === "FAILED" && outbox.needsAttention ? { backgroundColor: THEME.colors.errorBg, borderColor: THEME.colors.errorBorder } : { backgroundColor: THEME.colors.amberLight, borderColor: THEME.colors.amberBorder }]}>
-          {outbox.status === "FAILED" && outbox.needsAttention ? <AlertTriangle color={THEME.colors.error} size={16} /> : <ActivityIndicator size="small" color={THEME.colors.sacredAmber} />}
+      {outbox && syncFeedback && syncColors ? (
+        <View
+          accessible
+          accessibilityLiveRegion="polite"
+          accessibilityLabel={syncFeedback.detail}
+          style={[styles.banner, { backgroundColor: syncColors.bg, borderColor: syncColors.border }]}
+        >
+          <SyncFeedbackIconNative tone={syncFeedback.tone} size={16} />
           <View style={{ flex: 1 }}>
-            <Text style={{ fontWeight: "800", color: THEME.colors.inkPrimary }}>
-              {outbox.status === "FAILED" && outbox.needsAttention ? "ቀጠሮው ተለውጧል" : `በመላክ ላይ: ${getQueuedActionLabel(outbox.action)}`}
+            <Text style={{ fontWeight: "800", color: syncColors.text }}>
+              {syncFeedback.detail}
             </Text>
-            {outbox.lastError ? <Text style={{ fontSize: 12, color: THEME.colors.inkSecondary }}>{outbox.lastError}</Text> : null}
-            {outbox.status === "FAILED" && outbox.needsAttention ? (
+            {syncFeedback.tone === "attention" ? (
               <Pressable onPress={() => onDismissFailed(outbox.operationId)} accessibilityRole="button" style={[styles.touch44, { alignSelf: "flex-start" }]}>
                 <Text style={{ color: THEME.colors.error, fontWeight: "700", textDecorationLine: "underline" }}>እርምጃውን አጽዳ</Text>
               </Pressable>
@@ -1906,6 +2033,8 @@ const styles = StyleSheet.create({
   badgeDotText: { color: "#fff", fontSize: 9, fontWeight: "800" },
   banner: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: 12, borderWidth: 1 },
   bannerText: { flex: 1, fontSize: 12, fontWeight: "600" },
+  syncIdleBadge: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: "#A7F3D0", backgroundColor: THEME.colors.successBg },
+  syncIdleText: { fontSize: 10, fontWeight: "800", color: THEME.colors.success },
   sectionTitle: { fontSize: 12, fontWeight: "900", color: THEME.colors.inkSecondary, letterSpacing: 0.5 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
   linkText: { color: THEME.colors.sacredCrimson, fontWeight: "700", fontSize: 12 },

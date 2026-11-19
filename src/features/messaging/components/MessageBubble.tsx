@@ -6,6 +6,7 @@ import {
   AlertCircle,
   Check,
   CheckCheck,
+  Clock,
   Copy,
   Download,
   ExternalLink,
@@ -30,6 +31,10 @@ import {
 } from "lucide-react";
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  type MessageDeliveryFeedback,
+  type MessageDeliveryState,
+} from "@/shared/domain/messaging/syncFeedback";
 import { formatEthiopianTimeShort } from "@/shared/utils/calendar/ethiopianCalendar";
 
 import { ChannelRole, Message } from "../types/messaging.types";
@@ -99,6 +104,7 @@ interface MessageBubbleProps {
   isDiacon?: boolean;
   currentUserRole?: ChannelRole;
   currentUserName?: string;
+  delivery?: MessageDeliveryFeedback;
   onDelete?: (messageId: string) => void;
   onCancel?: (messageId: string) => void;
   onResend?: (message: Message) => void;
@@ -124,6 +130,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   isDiacon = false,
   currentUserRole,
   currentUserName,
+  delivery,
   onDelete,
   onCancel,
   onResend,
@@ -150,8 +157,15 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  const isSending = message.status === "sending";
-  const isError = message.status === "error";
+  const localIsSending = message.status === "sending";
+  const localIsError = message.status === "error";
+  const deliveryState: MessageDeliveryState =
+    delivery?.state ??
+    (localIsSending ? "sending" : localIsError ? "error" : "confirmed");
+  const isOutboxManaged = delivery?.outboxManaged ?? false;
+  const isSending = deliveryState === "sending";
+  const isQueued = deliveryState === "queued";
+  const isError = deliveryState === "error" || deliveryState === "rejected";
   const isDeleted = Boolean(message.deletedAt);
 
   // Extract public HTTPS link from message content
@@ -315,7 +329,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
             </button>
           )}
 
-          {isSending && onCancel && (
+          {isSending && !isOutboxManaged && onCancel && (
             <button
               type="button"
               onClick={(e) => {
@@ -330,7 +344,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
             </button>
           )}
 
-          {isError && onResend && (
+          {deliveryState === "error" && onResend && (
             <button
               type="button"
               onClick={(e) => {
@@ -345,7 +359,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
             </button>
           )}
 
-          {onDelete && !isSending && !isDeleted && (
+          {onDelete && !isSending && !isQueued && !isOutboxManaged && !isDeleted && (
             confirmDelete ? (
               <div className="px-4 py-4 bg-red-50">
                 <p className="text-[13px] text-red-700 font-bold mb-3 text-center">
@@ -473,13 +487,17 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     const isPdf = mimeType === "application/pdf" || url.toLowerCase().endsWith(".pdf");
     const filename = resolveFilename(url, mimeType, message.media.originalName);
 
-    if (isSending) {
+    if (isSending || isQueued) {
       return (
         <div className="relative w-full min-h-[72px] flex items-center justify-center bg-slate-800/50 overflow-hidden">
           <div className="relative z-10 flex flex-col items-center gap-1 py-3">
-            <Loader2 size={18} className="animate-spin text-amber-400" />
+            {isQueued ? (
+              <Clock size={18} className="text-amber-400" />
+            ) : (
+              <Loader2 size={18} className="animate-spin text-amber-400" />
+            )}
             <span className="text-[9px] font-bold text-white/60 uppercase tracking-widest">
-              በመጫን ላይ…
+              {isQueued ? delivery?.label ?? "ለማመሳሰል በመጠበቅ ላይ" : "በመጫን ላይ…"}
             </span>
           </div>
         </div>
@@ -658,7 +676,12 @@ const MessageBubble: FC<MessageBubbleProps> = ({
     );
   };
 
-  const showActions = isOwn && (isError || isSending || (!isSending && (onDelete || onResend)));
+  const showActions =
+    isOwn &&
+    (isSending ||
+      isQueued ||
+      deliveryState === "error" ||
+      (!isSending && !isOutboxManaged && (onDelete || onResend)));
 
   return (
     <>
@@ -765,8 +788,30 @@ const MessageBubble: FC<MessageBubbleProps> = ({
                   </span>
 
                   {isOwn && (
-                    <span className="inline-flex items-center">
-                      {isSending ? (
+                    <span
+                      className="inline-flex items-center"
+                      title={
+                        delivery
+                          ? [delivery.label, delivery.detail].filter(Boolean).join(" ")
+                          : undefined
+                      }
+                      aria-label={
+                        delivery
+                          ? [delivery.label, delivery.detail].filter(Boolean).join(" ")
+                          : "መልዕክት ሁኔታ"
+                      }
+                    >
+                      {delivery ? (
+                        isQueued ? (
+                          <Clock size={10} className="text-amber-300" />
+                        ) : isSending ? (
+                          <Loader2 size={10} className="animate-spin text-white/40" />
+                        ) : isError ? (
+                          <AlertCircle size={10} className="text-red-400" />
+                        ) : (
+                          <CheckCheck size={11} className="text-amber-400" />
+                        )
+                      ) : isSending ? (
                         <Loader2 size={10} className="animate-spin text-white/40" />
                       ) : isError ? (
                         <AlertCircle size={10} className="text-red-400" />

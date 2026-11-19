@@ -1,6 +1,7 @@
 // src/features/messaging/components/MessageStream.tsx
 "use client";
 
+import { useLiveQuery } from "dexie-react-hooks";
 import { ArrowDown, MessageSquare } from "lucide-react";
 import {
   forwardRef,
@@ -12,10 +13,11 @@ import {
   useState,
 } from "react";
 
+import { getMessageDeliveryFeedback } from "@/shared/domain/messaging/syncFeedback";
 import { useIsMounted } from "@/shared/hooks/useIsMounted";
 import { formatEthiopianDateLabel } from "@/shared/utils/calendar/ethiopianCalendar";
 
-import { db } from "../db/ladger-db";
+import { db, type OutboxOperation } from "../db/ladger-db";
 import { EnrichedMessage, useMessages } from "../hooks/useMessages";
 import { usePusherListener } from "../hooks/usePusherListener";
 import { useSendMessage } from "../hooks/useSendMessage";
@@ -87,6 +89,34 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
     usePusherListener(channelId);
     const { messages, isLoading } = useMessages(channelId);
     const { sendMessage } = useSendMessage(currentUserId);
+
+    const outboxRows = useLiveQuery(
+      () =>
+        currentUserId
+          ? db.outbox.where("userId").equals(currentUserId).toArray()
+          : Promise.resolve([] as OutboxOperation[]),
+      [currentUserId]
+    );
+    const outboxByClientId = useMemo(() => {
+      const map = new Map<string, OutboxOperation>();
+      for (const row of outboxRows ?? []) {
+        const clientMessageId = row.payload?.clientMessageId;
+        if (typeof clientMessageId === "string") map.set(clientMessageId, row);
+      }
+      return map;
+    }, [outboxRows]);
+    const [isOnline, setIsOnline] = useState(
+      () => typeof navigator === "undefined" || navigator.onLine
+    );
+    useEffect(() => {
+      const update = () => setIsOnline(navigator.onLine);
+      window.addEventListener("online", update);
+      window.addEventListener("offline", update);
+      return () => {
+        window.removeEventListener("online", update);
+        window.removeEventListener("offline", update);
+      };
+    }, []);
 
     useImperativeHandle(ref, () => ({
       addOptimistic: (_msg: OptimisticMessage) => {},
@@ -320,6 +350,23 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
               // Small unread divider line above the first unread message
               const showUnreadDivider = index === firstUnreadIndex;
 
+              const clientMessageId =
+                msg.clientMessageId ||
+                (msg.id.startsWith("temp_") ? msg.id.slice("temp_".length) : undefined);
+              const outboxRow = clientMessageId
+                ? outboxByClientId.get(clientMessageId)
+                : undefined;
+              const delivery =
+                msg.id.startsWith("temp_") || outboxRow || msg.status !== "sent"
+                  ? getMessageDeliveryFeedback({
+                      localStatus: msg.status,
+                      outboxStatus: outboxRow?.status,
+                      outboxError: outboxRow?.errorMessage,
+                      localError: (msg as Message & { errorMessage?: string }).errorMessage,
+                      isOnline,
+                    })
+                  : undefined;
+
               return (
                 <div key={msg.id} id={`msg-${msg.id}`} data-message-id={msg.id}>
                   {showDate && (
@@ -349,6 +396,7 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
                     isDiacon={msg.isDiacon}
                     currentUserRole={currentUserRole}
                     currentUserName={grouped ? undefined : currentUserName}
+                    delivery={delivery}
                     onDelete={handleDelete}
                     onCancel={handleCancel}
                     onResend={handleResend}

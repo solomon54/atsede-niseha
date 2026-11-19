@@ -1,3 +1,8 @@
+import NetInfo from "@react-native-community/netinfo";
+import {
+  getMessageDeliveryFeedback,
+  MESSAGE_SYNC_TERMS,
+} from "@shared/domain/messaging/syncFeedback";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -105,6 +110,7 @@ export interface ReplyToDescriptor {
 
 export interface MessageItem {
   id: string;
+  clientMessageId?: string;
   channelId: string;
   senderId: string;
   senderName?: string;
@@ -440,6 +446,7 @@ export default function ChannelChatScreen() {
   const [inputText, setInputText] = useState("");
   const [stagedAttachment, setStagedAttachment] = useState<StagedAttachment | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
+  const [isOnline, setIsOnline] = useState(true);
   const [decryptedContent, setDecryptedContent] = useState<Record<string, string>>({});
   const forgetDecryptedMessage = useCallback((messageId: string) => {
     attemptedDecrypt.current.delete(messageId);
@@ -475,6 +482,13 @@ export default function ChannelChatScreen() {
   const attemptedDecrypt = useRef<Set<string>>(new Set());
   const initialScrollDone = useRef(false);
 
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsOnline(!!state.isConnected && state.isInternetReachable !== false);
+    });
+    return () => unsubscribe();
+  }, []);
+
   // 1. Fetch channel messages (SQLite-first + background delta sync)
   const {
     data: serverMessages,
@@ -486,9 +500,19 @@ export default function ChannelChatScreen() {
     queryKey: messagesKey,
     queryFn: async () => {
       const cached = await offlineCache.getMessages<MessageItem>(channelId);
+      // Preserve client ids from the pre-sync cache so an optimistic row with
+      // the same id can be recognised as confirmed, not drawn twice.
+      const clientIdsById = new Map(
+        cached
+          .filter((m) => Boolean(m.clientMessageId))
+          .map((m) => [m.id, m.clientMessageId as string])
+      );
       try {
         const synced = await mobileSyncService.syncChannelMessages(channelId);
-        return synced && synced.length > 0 ? synced : cached;
+        const rows = synced && synced.length > 0 ? synced : cached;
+        return rows.map((m) =>
+          m.clientMessageId ? m : { ...m, clientMessageId: clientIdsById.get(m.id) }
+        );
       } catch {
         return cached;
       }
@@ -800,7 +824,13 @@ export default function ChannelChatScreen() {
   const allMessages: MessageItem[] = useMemo(() => {
     const server = serverMessages || [];
     const optimisticUnconfirmed = optimisticMessages.filter(
-      (om) => !server.some((sm) => sm.id === om.id)
+      (om) =>
+        !server.some(
+          (sm) =>
+            sm.id === om.id ||
+            (Boolean(om.clientMessageId) &&
+              sm.clientMessageId === om.clientMessageId)
+        )
     );
     return [...server, ...optimisticUnconfirmed].sort(
       (a, b) => a.createdAt - b.createdAt
@@ -870,6 +900,7 @@ export default function ChannelChatScreen() {
       media?: MediaDescriptor | null;
       clientMessageId: string;
       replyTo?: ReplyToDescriptor | null;
+      createdAt?: number;
     }) => {
       let ciphertext = payload.content || "";
       let encryptionEnvelope: EncryptionEnvelope | null = null;
@@ -910,42 +941,94 @@ export default function ChannelChatScreen() {
         uid || undefined
       );
 
-      // Save to SQLite message cache as PENDING
+      // Save to SQLite message cache as PENDING. Keep the client id so the
+      // optimistic bubble can be cleared only when sync confirms that message.
       await offlineCache.saveMessages(channelId!, [
         {
           id: payload.clientMessageId,
+          clientMessageId: payload.clientMessageId,
           channelId: channelId!,
           senderId: uid || "me",
           senderRole: role as MessageItem["senderRole"],
           content: payload.content || "",
           media: payload.media,
           type: messageType,
-          createdAt: Date.now(),
+          createdAt: payload.createdAt ?? Date.now(),
           status: "PENDING",
           replyTo: payload.replyTo,
         },
       ]);
 
-      // Drain outbox in single flight
-      mobileSyncService.drainOutbox(uid || undefined).catch(() => {});
+      // Drain outbox in single flight, then refresh from SQLite. The pending
+      // bubble is cleared by allMessages only after sync has persisted the
+      // server-confirmed row with the same clientMessageId.
+      mobileSyncService
+        .drainOutbox(uid || undefined)
+        .then(() => queryClient.invalidateQueries({ queryKey: messagesKey }))
+        .catch(() => {});
 
       return { success: true, messageId: payload.clientMessageId };
-    },
-    onSuccess: (res, vars) => {
-      setOptimisticMessages((prev) =>
-        prev.map((m) =>
-          m.id === vars.clientMessageId ? { ...m, status: "SENT" } : m
-        )
-      );
     },
     onError: (_err: any, vars) => {
       setOptimisticMessages((prev) =>
         prev.map((m) =>
-          m.id === vars.clientMessageId ? { ...m, status: "PENDING" } : m
+          m.id === vars.clientMessageId ? { ...m, status: "FAILED" } : m
         )
       );
+      if (channelId) {
+        offlineCache
+          .updateMessage(channelId, vars.clientMessageId, (m) => ({
+            ...m,
+            status: "FAILED",
+          }))
+          .catch(() => {});
+      }
     },
   });
+
+  // Retry an existing failed bubble. Reuse its client id and never create a
+  // second optimistic row or a second outbox operation for the same message.
+  const handleRetryMessage = useCallback(
+    async (item: MessageItem) => {
+      if (!channelId) return;
+      const clientMessageId = item.clientMessageId || item.id;
+
+      setOptimisticMessages((prev) =>
+        prev.map((m) =>
+          m.id === item.id ? { ...m, clientMessageId, status: "PENDING" } : m
+        )
+      );
+      queryClient.setQueryData<MessageItem[]>(messagesKey, (old) =>
+        old?.map((m) =>
+          m.id === item.id ? { ...m, clientMessageId, status: "PENDING" } : m
+        )
+      );
+      await offlineCache.updateMessage(channelId, item.id, (m) => ({
+        ...m,
+        clientMessageId,
+        status: "PENDING",
+      }));
+
+      const pending = await offlineCache.getPendingOutbox(uid || undefined);
+      if (!pending.some((op) => op.payload?.clientMessageId === clientMessageId)) {
+        sendMutation.mutate({
+          content: item.content,
+          type: item.type as any,
+          media: item.media,
+          clientMessageId,
+          replyTo: item.replyTo,
+          createdAt: item.createdAt,
+        });
+        return;
+      }
+
+      mobileSyncService
+        .drainOutbox(uid || undefined)
+        .then(() => queryClient.invalidateQueries({ queryKey: messagesKey }))
+        .catch(() => {});
+    },
+    [channelId, messagesKey, queryClient, sendMutation, uid]
+  );
 
   // Edit Message Mutation
   const editMutation = useMutation({
@@ -1081,7 +1164,9 @@ export default function ChannelChatScreen() {
     if (!item.isEncrypted) return item.content;
     const plain = decryptedContent[item.id];
     if (plain !== undefined) return plain;
-    return item.status === "PENDING" ? item.content : "…";
+    return item.status === "PENDING" || item.status === "FAILED"
+      ? item.content
+      : "…";
   };
 
   const getReplySnippet = (target: MessageItem | null): ReplyToDescriptor | null => {
@@ -1119,6 +1204,7 @@ export default function ChannelChatScreen() {
 
     const newMsg: MessageItem = {
       id: clientId,
+      clientMessageId: clientId,
       channelId: channelId!,
       senderId: uid || "me",
       senderRole: role as MessageItem["senderRole"],
@@ -1189,6 +1275,7 @@ export default function ChannelChatScreen() {
 
         const newMsg: MessageItem = {
           id: clientId,
+          clientMessageId: clientId,
           channelId: channelId,
           senderId: uid || "me",
           senderRole: role as MessageItem["senderRole"],
@@ -1241,6 +1328,7 @@ export default function ChannelChatScreen() {
 
       const newMsg: MessageItem = {
         id: clientId,
+        clientMessageId: clientId,
         channelId: channelId,
         senderId: uid || "me",
         senderRole: role as MessageItem["senderRole"],
@@ -1679,7 +1767,11 @@ export default function ChannelChatScreen() {
             const isMe = item.senderId === uid || item.senderId === "me";
             const isFather = item.senderRole === "FATHER";
             const isDeleted = Boolean(item.deletedAt);
-            const isFailed = item.status === "FAILED";
+            const delivery = isMe
+              ? getMessageDeliveryFeedback({ localStatus: item.status, isOnline })
+              : undefined;
+            const hasDeliveryFailure =
+              delivery?.state === "error" || delivery?.state === "rejected";
             const hasMedia = Boolean(item.media?.url);
             const isImg =
               item.media?.mimeType?.startsWith("image/") || item.type === "IMAGE";
@@ -1996,30 +2088,49 @@ export default function ChannelChatScreen() {
                         >
                           {formatTime(item.createdAt)}
                         </Text>
-                        {isMe && (
-                          <View style={styles.statusIcon}>
-                            {isFailed ? (
+                        {isMe && delivery ? (
+                          <View
+                            style={styles.statusIcon}
+                            accessible
+                            accessibilityLabel={
+                              delivery.detail
+                                ? `${delivery.label}. ${delivery.detail}`
+                                : delivery.label
+                            }
+                          >
+                            {delivery.state === "queued" ? (
+                              <View style={styles.deliveryPendingRow}>
+                                <Clock color="rgba(255, 255, 255, 0.65)" size={11} />
+                                <Text style={styles.deliveryPendingText}>
+                                  {delivery.label}
+                                </Text>
+                              </View>
+                            ) : hasDeliveryFailure ? (
                               <TouchableOpacity
                                 hitSlop={6}
-                                onPress={() =>
-                                  sendMutation.mutate({
-                                    content: item.content,
-                                    type: item.type as any,
-                                    media: item.media,
-                                    clientMessageId: item.id,
-                                    replyTo: item.replyTo,
-                                  })
-                                }
+                                accessibilityRole="button"
+                                accessibilityLabel={`${delivery.label}. ${MESSAGE_SYNC_TERMS.retry}`}
+                                onPress={() => handleRetryMessage(item)}
+                                style={styles.deliveryRetryRow}
                               >
-                                <RotateCcw size={12} color="#EF4444" />
+                                <RotateCcw size={12} color="#FCA5A5" />
+                                <Text style={styles.deliveryRetryText}>
+                                  {MESSAGE_SYNC_TERMS.retry}
+                                </Text>
                               </TouchableOpacity>
-                            ) : item.status === "PENDING" ? (
-                              <Clock color="rgba(255, 255, 255, 0.5)" size={11} />
+                            ) : delivery.state === "sending" ? (
+                              <ActivityIndicator
+                                size="small"
+                                color="rgba(255, 255, 255, 0.65)"
+                              />
                             ) : (
-                              <CheckCheck color={THEME.colors.sacredAmber} size={13} />
+                              <CheckCheck
+                                color={THEME.colors.sacredAmber}
+                                size={13}
+                              />
                             )}
                           </View>
-                        )}
+                        ) : null}
                       </View>
                     </TouchableOpacity>
 
@@ -2754,6 +2865,28 @@ const styles = StyleSheet.create({
   },
   statusIcon: {
     marginLeft: 2,
+    maxWidth: 150,
+  },
+  deliveryPendingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
+  deliveryPendingText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "rgba(255, 255, 255, 0.75)",
+  },
+  deliveryRetryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    minHeight: 24,
+  },
+  deliveryRetryText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#FCA5A5",
   },
   editedTag: {
     fontSize: 9.5,

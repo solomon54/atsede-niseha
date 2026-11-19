@@ -66,11 +66,16 @@ import {
   selectFatherAppointmentOverviewPresentation,
 } from "@/shared/domain/appointments";
 import {
+  type AppointmentSyncFeedbackTone,
+  getAppointmentSyncFeedback,
+} from "@/shared/domain/appointments/syncFeedback";
+import {
   APPOINTMENT_IDENTITY_ROLE_TERMS,
+  APPOINTMENT_OFFLINE_CREATE_MESSAGE,
+  APPOINTMENT_SYNC_FEEDBACK,
   formatAppointmentEvent,
   getAppointmentStatusLabel,
   getAppointmentTypeLabel,
-  getQueuedActionLabel,
 } from "@/shared/domain/appointments/terminology";
 import {
   type EthiopianClockTime,
@@ -109,8 +114,51 @@ type OutboxUiRow = {
   action: AppointmentAction;
   status: string;
   needsAttention?: boolean;
+  nextRetryAt?: string;
   lastError?: string;
+  lastErrorCode?: string;
 };
+
+const SYNC_TONE_CLASSES: Record<
+  AppointmentSyncFeedbackTone,
+  { banner: string; badge: string }
+> = {
+  none: { banner: "", badge: "" },
+  confirmed: {
+    banner: "bg-emerald-50 border-emerald-200 text-emerald-800",
+    badge: "text-emerald-700 bg-emerald-50 border-emerald-200",
+  },
+  queued: {
+    banner: "bg-amber-50 border-amber-200 text-amber-900",
+    badge: "text-amber-800 bg-amber-50 border-amber-200",
+  },
+  sending: {
+    banner: "bg-amber-50 border-amber-200 text-amber-900",
+    badge: "text-amber-800 bg-amber-50 border-amber-200",
+  },
+  retry: {
+    banner: "bg-amber-50 border-amber-200 text-amber-900",
+    badge: "text-amber-800 bg-amber-50 border-amber-200",
+  },
+  attention: {
+    banner: "bg-red-50 border-red-200 text-red-800",
+    badge: "text-red-700 bg-red-50 border-red-200",
+  },
+};
+
+function SyncFeedbackIcon({
+  tone,
+  sizeClass = "w-3 h-3",
+}: {
+  tone: AppointmentSyncFeedbackTone;
+  sizeClass?: string;
+}) {
+  if (tone === "attention") return <AlertTriangle className={sizeClass} />;
+  if (tone === "sending") return <Loader2 className={`${sizeClass} animate-spin`} />;
+  if (tone === "confirmed") return <Check className={sizeClass} />;
+  if (tone === "queued" || tone === "retry") return <Clock className={sizeClass} />;
+  return null;
+}
 
 type ViewState = AppointmentViewState;
 
@@ -252,9 +300,10 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
   const [confirmAction, setConfirmAction] = useState<AppointmentAction | null>(null);
 
   const refreshOutbox = useCallback(async () => {
-    if (!uid) return;
+    if (!uid) return [];
     const rows = await appointmentOfflineService.listOutbox(uid);
     setOutboxRows(rows);
+    return rows;
   }, [uid]);
 
   const applyListData = useCallback(
@@ -635,6 +684,8 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
     for (const row of outboxRows) map.set(row.appointmentId, row);
     return map;
   }, [outboxRows]);
+  const detailOutboxRow =
+    view.kind === "detail" ? outboxByAppointment.get(view.appointmentId) : undefined;
 
   const queueAction = useCallback(
     async (
@@ -653,8 +704,9 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
           operationId,
         });
         await refreshOutbox();
-        await appointmentOfflineService.drain(uid);
-        await refreshOutbox();
+        const drainSummary = await appointmentOfflineService.drain(uid);
+        const rows = await refreshOutbox();
+        const ownRow = rows.find((item) => item.operationId === operationId);
         await fetchServer(true);
         // refresh detail if open
         if (view.kind === "detail" && view.appointmentId === appointment.id) {
@@ -671,7 +723,13 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
             });
           }
         }
-        setActionMessage("እርምጃው ተልኳል።");
+        const feedback = getAppointmentSyncFeedback({
+          row: ownRow,
+          queuedLocally: true,
+          drain: drainSummary,
+          isOnline,
+        });
+        setActionMessage(feedback.detail);
       } catch (e) {
         if (e instanceof AppointmentOfflineError) {
           setActionMessage(e.message);
@@ -681,7 +739,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
         await refreshOutbox();
       }
     },
-    [uid, fetchServer, refreshOutbox, view]
+    [uid, fetchServer, refreshOutbox, view, isOnline]
   );
 
   const performAction = useCallback(
@@ -939,22 +997,24 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
   const renderOutboxBadge = (appointmentId: string) => {
     const row = outboxByAppointment.get(appointmentId);
     if (!row) return null;
-    if (row.status === "FAILED" && row.needsAttention) {
-      return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
-          <AlertTriangle className="w-3 h-3" /> ቀጠሮው ተለውጧል
-        </span>
-      );
-    }
+    const feedback = getAppointmentSyncFeedback({ row, isOnline });
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
-        <Loader2 className="w-3 h-3 animate-spin" /> በመላክ ላይ
+      <span
+        role="status"
+        aria-label={feedback.label}
+        className={cn(
+          "inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border",
+          SYNC_TONE_CLASSES[feedback.tone].badge
+        )}
+      >
+        <SyncFeedbackIcon tone={feedback.tone} /> {feedback.label}
       </span>
     );
   };
 
   const AppointmentRow = ({ a }: { a: AppointmentRecord }) => {
     const ob = outboxByAppointment.get(a.id);
+    const obFeedback = ob ? getAppointmentSyncFeedback({ row: ob, isOnline }) : null;
     const isOverdue = isConfirmedOverdue(a, nowIso);
     const needsMyResponse = a.status === "REQUESTED" && a.pendingResponseFrom === uid;
     const child = children.find((c) => c.uid === a.childUid);
@@ -964,7 +1024,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
         onClick={() => openAppointment(a.id, a.childUid)}
         className={cn(
           "w-full text-left rounded-2xl border bg-white p-4 sm:p-5 shadow-sm hover:shadow-md transition-shadow focus:outline-none focus:ring-2 focus:ring-amber-400/40",
-          ob?.status === "FAILED" && ob.needsAttention
+          obFeedback?.tone === "attention"
             ? "border-red-200"
             : "border-slate-200"
         )}
@@ -1020,7 +1080,7 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
                 <span className="truncate">{a.location}</span>
               </div>
             )}
-            {ob?.status === "FAILED" && ob.needsAttention && ob.lastError && (
+            {obFeedback?.tone === "attention" && ob?.lastError && (
               <p className="text-[11px] text-red-700 mt-1">{ob.lastError}</p>
             )}
           </div>
@@ -1065,6 +1125,14 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
+        {isOnline && outboxRows.length === 0 && !actionBusy && !actionMessage ? (
+          <span
+            role="status"
+            className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1.5 rounded-xl"
+          >
+            <Check className="w-3 h-3" /> {APPOINTMENT_SYNC_FEEDBACK.noPending}
+          </span>
+        ) : null}
         <button
           type="button"
           onClick={() => setShowBell((v) => !v)}
@@ -1141,7 +1209,10 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
       {!isOnline && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 flex items-center gap-2">
           <WifiOff className="w-4 h-4" />
-          <span>ከመስመር ውጭ ነዎት። የተቀመጡ ቀጠሮዎች ይታያሉ፤ የተሰለፉ እርምጃዎች ሲገናኙ ይላካሉ።</span>
+          <span>
+            ከመስመር ውጭ ነዎት። የተቀመጡ ቀጠሮዎች ይታያሉ፤ የተሰለፉ እርምጃዎች ሲገናኙ ይላካሉ።{" "}
+            {APPOINTMENT_OFFLINE_CREATE_MESSAGE}
+          </span>
         </div>
       )}
       {error && (
@@ -1226,9 +1297,10 @@ export default function AppointmentsClient({ role, uid, familyId }: Props) {
             loading={detailLoading}
             error={detailError}
             actor={actor}
-            outboxRow={outboxByAppointment.get(view.appointmentId)}
+            outboxRow={detailOutboxRow}
+            isOnline={isOnline}
             actionBusy={actionBusy}
-            actionMessage={actionMessage}
+            actionMessage={detailOutboxRow ? null : actionMessage}
             rescheduleOpen={rescheduleOpen}
             rescheduleDate={rescheduleDate}
             rescheduleTime={rescheduleTime}
@@ -1567,6 +1639,7 @@ function DetailView(props: {
   error: string | null;
   actor: Actor;
   outboxRow?: OutboxUiRow;
+  isOnline: boolean;
   actionBusy: string | null;
   actionMessage: string | null;
   rescheduleOpen: boolean;
@@ -1589,6 +1662,7 @@ function DetailView(props: {
     error,
     actor,
     outboxRow,
+    isOnline,
     actionBusy,
     actionMessage,
     rescheduleOpen,
@@ -1641,32 +1715,27 @@ function DetailView(props: {
     ])
   );
   const actions = outboxRow ? [] : detail.availableActions || getAvailableAppointmentActions(a, actor);
+  const outboxFeedback = outboxRow
+    ? getAppointmentSyncFeedback({ row: outboxRow, isOnline })
+    : null;
   const isOverdue = isConfirmedOverdue(a, getNowIso());
 
   return (
     <div className="space-y-4">
-      {outboxRow && (
+      {outboxRow && outboxFeedback ? (
         <div
+          role="status"
           className={cn(
             "rounded-2xl border px-4 py-3 text-sm flex items-start gap-2",
-            outboxRow.status === "FAILED" && outboxRow.needsAttention
-              ? "bg-red-50 border-red-200 text-red-800"
-              : "bg-amber-50 border-amber-200 text-amber-900"
+            SYNC_TONE_CLASSES[outboxFeedback.tone].banner
           )}
         >
-          {outboxRow.status === "FAILED" && outboxRow.needsAttention ? (
-            <AlertTriangle className="w-4 h-4 mt-0.5" />
-          ) : (
-            <Loader2 className="w-4 h-4 mt-0.5 animate-spin" />
-          )}
+          <span className="mt-0.5" aria-hidden="true">
+            <SyncFeedbackIcon tone={outboxFeedback.tone} sizeClass="w-4 h-4" />
+          </span>
           <div className="flex-1">
-            <p className="font-bold">
-              {outboxRow.status === "FAILED" && outboxRow.needsAttention
-                ? "ቀጠሮው ተለውጧል"
-                : `በመላክ ላይ: ${getQueuedActionLabel(outboxRow.action)}`}
-            </p>
-            {outboxRow.lastError && <p className="text-xs mt-0.5">{outboxRow.lastError}</p>}
-            {outboxRow.status === "FAILED" && outboxRow.needsAttention && (
+            <p className="font-bold">{outboxFeedback.detail}</p>
+            {outboxFeedback.tone === "attention" && (
               <button
                 type="button"
                 onClick={() => onDismissFailed(outboxRow.operationId)}
@@ -1677,7 +1746,7 @@ function DetailView(props: {
             )}
           </div>
         </div>
-      )}
+      ) : null}
 
       {actionMessage && (
         <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">

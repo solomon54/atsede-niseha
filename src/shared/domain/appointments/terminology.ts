@@ -122,6 +122,30 @@ export const APPOINTMENT_SACRAMENT_NOTE =
 export const APPOINTMENT_OFFLINE_CREATE_MESSAGE =
   "አዲስ ቀጠሮ መመዝገብ በመስመር ላይ ብቻ ይቻላል። እባክዎ ግንኙነትዎን ያረጋግጡ።";
 
+/**
+ * Synchronization feedback vocabulary. These describe delivery state only —
+ * never appointment lifecycle status. Both clients must use the same wording.
+ */
+export const APPOINTMENT_SYNC_FEEDBACK = {
+  confirmed: "እርምጃው በአገልጋይ ተመዝግቧል።",
+  confirmedDetail: "እርምጃው በአገልጋይ ላይ ተቀብሏል።",
+  queuedOffline: "በመስመር ውጭ ተቀምጧል",
+  queuedOfflineDetail: "እርምጃው ሲገናኙ ይላካል፤ በአገልጋይ ላይ ገና አልተመዘገበም።",
+  queuedWaiting: "ለማመሳሰል በመጠበቅ ላይ",
+  queuedWaitingDetail: "እርምጃው በአገልጋይ ላይ ገና አልተመዘገበም።",
+  sending: "በመላክ ላይ",
+  sendingDetail: "እርምጃው ወደ አገልጋይ በመላክ ላይ ነው።",
+  retryWaiting: "ለድጋሚ ሙከራ በመጠበቅ ላይ",
+  retryWaitingDetail: "ጊዜያዊ ችግር፤ እርምጃው ተቀምጧል።",
+  conflict: "ቀጠሮው ተለውጧል",
+  conflictDetail: "ቀጠሮው ተቀይሯል። እባክዎ ያረጋግጡ።",
+  rejected: "እርምጃው ውድቅ ሆነ",
+  rejectedDetail: "አገልጋይ እርምጃውን አልተቀበለም።",
+  authNeeded: "እንደገና ይግቡ",
+  authNeededDetail: "እርምጃው ለመላክ መለያዎን እንደገና ማረጋገጥ ያስፈልጋል።",
+  noPending: "ምንም የሚጠብቅ ለውጥ የለም",
+} as const;
+
 export const APPOINTMENT_TERMINAL_MESSAGE =
   "ይህ ቀጠሮ በመጨረሻ ሁኔታ ላይ ስለሆነ ሊቀየር አይችልም።";
 
