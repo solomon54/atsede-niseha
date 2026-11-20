@@ -31,6 +31,20 @@ function parsePayload(raw: unknown): IncomingCallPayload | null {
   return raw as IncomingCallPayload;
 }
 
+function parseIntent(raw: unknown): NativeCallIntent | null {
+  if (!raw) return null;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!parsed?.action) return null;
+    return {
+      action: parsed.action,
+      payload: parsePayload(parsed.payload),
+    } as NativeCallIntent;
+  } catch {
+    return null;
+  }
+}
+
 export function isNativeCallAvailable(): boolean {
   return Platform.OS === "android" && !!Native;
 }
@@ -44,6 +58,32 @@ export async function showNativeIncomingCall(
   } catch {
     // Native presentation is best-effort; JS call UI remains authoritative.
   }
+}
+
+/**
+ * Full, call-ID-aware native cleanup. `terminal` writes a tombstone so a
+ * pending full-screen intent or persisted replay cannot re-open the call.
+ */
+export async function cleanupNativeCall(
+  payload: IncomingCallPayload,
+  terminal: boolean
+): Promise<void> {
+  if (!payload?.callId) return;
+  if (!Native?.cleanupCall) {
+    // Older native builds only have the global stop path.
+    await stopNativeRinging();
+    return;
+  }
+  try {
+    await Native.cleanupCall(JSON.stringify(payload), terminal);
+  } catch {}
+}
+
+/** Stops ringing/presentation but leaves the call recoverable (e.g. answered). */
+export async function clearNativeIncomingPresentation(
+  payload: IncomingCallPayload
+): Promise<void> {
+  await cleanupNativeCall(payload, false);
 }
 
 export async function stopNativeRinging(): Promise<void> {
@@ -60,17 +100,35 @@ export async function setNativeSpeaker(enabled: boolean): Promise<void> {
   } catch {}
 }
 
+/**
+ * Reads persisted native state without consuming it. The payload is only
+ * cleared after authoritative validation has decided what to do with it.
+ */
+export async function peekInitialCallIntent(): Promise<NativeCallIntent | null> {
+  if (Native?.peekInitialCallIntent) {
+    try {
+      return parseIntent(await Native.peekInitialCallIntent());
+    } catch {
+      return null;
+    }
+  }
+  // Backward compatibility with a native module that only exposes consume().
+  return consumeInitialCallIntent();
+}
+
+export async function clearPendingCallIntent(
+  payload: IncomingCallPayload
+): Promise<void> {
+  if (!payload?.callId || !Native?.clearPendingCallIntent) return;
+  try {
+    await Native.clearPendingCallIntent(JSON.stringify(payload));
+  } catch {}
+}
+
 export async function consumeInitialCallIntent(): Promise<NativeCallIntent | null> {
   if (!Native?.consumeInitialCallIntent) return null;
   try {
-    const raw = await Native.consumeInitialCallIntent();
-    if (!raw) return null;
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (!parsed?.action) return null;
-    return {
-      action: parsed.action,
-      payload: parsePayload(parsed.payload),
-    } as NativeCallIntent;
+    return parseIntent(await Native.consumeInitialCallIntent());
   } catch {
     return null;
   }

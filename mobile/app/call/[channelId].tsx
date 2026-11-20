@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -50,6 +50,7 @@ export default function ChannelCallScreen() {
     end,
   } = useCallController();
   const startedRef = useRef(false);
+  const [validationFailed, setValidationFailed] = useState(false);
 
   const channelId = value(params.channelId);
   const routeCallId = value(params.callId);
@@ -79,7 +80,11 @@ export default function ChannelCallScreen() {
         callerRole: value(params.role),
         isGroup: params.isGroup === "1" ? "true" : "false",
       });
-      if (payload) showIncoming(payload);
+      if (payload) {
+        void showIncoming(payload).then((accepted) => {
+          if (!accepted) setValidationFailed(true);
+        });
+      }
       return;
     }
 
@@ -108,6 +113,39 @@ export default function ChannelCallScreen() {
   );
 
   const active = call?.channelId === channelId ? call : null;
+  const awaitingValidation = isIncoming && !!routeCallId && !active;
+
+  if (validationFailed && isIncoming && routeCallId && !active) {
+    return (
+      <View style={styles.center}>
+        <StatusBar barStyle="light-content" />
+        <PhoneOff color="#D97706" size={44} />
+        <Text style={styles.title}>ጥሪው አይገኝም</Text>
+        <Text style={styles.subtitle}>የጥሪው ሁኔታ ማረጋገጥ አልተቻለም</Text>
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={() => {
+            if (router.canGoBack()) router.back();
+            else router.replace("/(tabs)/chat");
+          }}
+        >
+          <Text style={styles.secondaryText}>ወደ ውይይት ተመለስ</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // Do not show an incoming call screen from route parameters until the
+  // authenticated backend status check has admitted it.
+  if (awaitingValidation) {
+    return (
+      <View style={styles.center}>
+        <StatusBar barStyle="light-content" />
+        <ActivityIndicator color="#D97706" />
+        <Text style={styles.subtitle}>የጥሪው ሁኔታ እየተረጋገጠ ነው…</Text>
+      </View>
+    );
+  }
 
   if (active?.terminal) {
     return (

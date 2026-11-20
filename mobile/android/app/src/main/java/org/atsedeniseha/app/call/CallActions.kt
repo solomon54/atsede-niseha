@@ -9,7 +9,11 @@ object CallActions {
     fun perform(context: Context, action: String, payload: String) {
         if (payload.isBlank()) return
 
-        CallNotification.stopRinging(context)
+        // Stop only this call's presentation and remove its persisted hints
+        // before writing the action. JS still performs the authoritative API
+        // transition, so no terminal tombstone is written here.
+        CallNotification.stopRinging(context, payload)
+        CallIntentsStore.clearMatching(context, payload)
         CallIntentsStore.saveAction(context, action, payload)
         CallBridge.emit(context, CallBridge.eventFor(action), payload)
 

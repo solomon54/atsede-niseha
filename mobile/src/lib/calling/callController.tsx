@@ -8,6 +8,7 @@ import React, {
   useState,
 } from "react";
 import { AppState, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import NetInfo from "@react-native-community/netinfo";
 import { usePathname, useRouter } from "expo-router";
 import { AudioSession, LiveKitRoom } from "@livekit/react-native";
 
@@ -18,9 +19,22 @@ import { notificationService } from "../notifications";
 import { getMobilePusher } from "../pusher";
 import { startRingback, stopRingback } from "./callAudio";
 import {
-  consumeInitialCallIntent,
+  buildStatusQuery,
+  canPresentIncoming,
+  classifyCallStatus,
+  classifyStatusError,
+  incomingPayloadFromStatus,
+  shouldApplyEvent,
+  statusTimestamp,
+  CallStatusDecision,
+  CallStatusResponse,
+} from "./callStatus";
+import { createInFlight } from "./inFlight";
+import {
+  cleanupNativeCall,
+  clearPendingCallIntent,
+  peekInitialCallIntent,
   showNativeIncomingCall,
-  stopNativeRinging,
   subscribeNativeCallEvents,
 } from "./nativeCall";
 import {
@@ -37,7 +51,7 @@ import {
 
 interface CallControllerValue {
   call: ActiveCallState | null;
-  showIncoming: (payload: IncomingCallPayload) => void;
+  showIncoming: (payload: IncomingCallPayload) => Promise<boolean>;
   startOutgoing: (channelId: string, participants?: CallPeer[]) => Promise<boolean>;
   answer: () => Promise<void>;
   decline: () => Promise<void>;
@@ -54,6 +68,16 @@ const DEFAULT_PEER: CallPeer = {
   photoUrl: null,
 };
 
+type ProcessResult = {
+  accepted: boolean;
+  kind: CallStatusDecision["kind"];
+};
+
+interface ValidationResult {
+  decision: CallStatusDecision;
+  response: CallStatusResponse | null;
+}
+
 function buildCallRoute(call: ActiveCallState): string {
   const query = [
     `channelId=${encodeURIComponent(call.channelId)}`,
@@ -66,6 +90,24 @@ function buildCallRoute(call: ActiveCallState): string {
     `resume=${call.status === "answered" ? "1" : "0"}`,
   ].join("&");
   return `/call/${call.channelId}?${query}`;
+}
+
+function incomingPayloadFromCall(call: ActiveCallState): IncomingCallPayload {
+  return {
+    callId: call.callId,
+    channelId: call.channelId,
+    callerId: call.peer.uid,
+    callerName: call.peer.name,
+    callerPhotoUrl: call.peer.photoUrl || null,
+    callerRole: call.peer.role,
+    isGroup: call.isGroup,
+    startedAt: call.startedAt,
+  };
+}
+
+function eventCallId(data: any): string {
+  const value = data?.callId || data?.id || data?.callDetails?.callId;
+  return typeof value === "string" ? value : "";
 }
 
 function MiniCallIndicator({
@@ -116,11 +158,16 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const pathnameRef = useRef(pathname);
   const authRef = useRef({ isAuthenticated, isLoading, uid });
   const tokenCache = useRef(new Map<string, CallTokenResponse>());
+  const tokenRequests = useRef(createInFlight<CallTokenResponse | null>());
+  const statusRequests = useRef(createInFlight<ValidationResult>());
   const outgoingRef = useRef(false);
-  const terminalTimer = useRef<NodeJS.Timeout | null>(null);
+  const terminalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastNav = useRef({ key: "", at: 0 });
-  // A persisted native intent must not re-ring a call that already ended.
+  // In-memory guards for this process; native tombstones and backend status
+  // cover process restarts and replayed intents.
   const terminalCallIds = useRef(new Set<string>());
+  const handledIncomingIds = useRef(new Set<string>());
+  const initialIntentHandled = useRef(false);
 
   const applyCall = useCallback((next: ActiveCallState | null) => {
     callRef.current = next;
@@ -144,12 +191,51 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     authRef.current = { isAuthenticated, isLoading, uid };
   }, [isAuthenticated, isLoading, uid]);
 
-  const stopAllAudio = useCallback(async () => {
-    await stopRingback().catch(() => {});
-    await stopNativeRinging().catch(() => {});
-    await AudioSession.stopAudioSession().catch(() => {});
-    await notificationService.dismissCallNotifications().catch(() => {});
+  useEffect(() => {
+    tokenCache.current.clear();
+    tokenRequests.current.clear();
+    statusRequests.current.clear();
+  }, [uid]);
+
+  const rememberTerminal = useCallback((callId?: string | null) => {
+    if (callId) terminalCallIds.current.add(callId);
   }, []);
+
+  const checkStatus = useCallback(
+    (callId: string, channelId: string): Promise<ValidationResult> =>
+      statusRequests.current.run(`${uid || "anon"}:${callId}:${channelId}`, async () => {
+        try {
+          const response = await apiRequest<CallStatusResponse>(
+            `/api/livekit/status?${buildStatusQuery({ callId, channelId })}`
+          );
+          return {
+            response,
+            decision: classifyCallStatus(response, { callId, channelId }),
+          };
+        } catch (error) {
+          return { response: null, decision: classifyStatusError(error) };
+        }
+      }),
+    [uid]
+  );
+
+  const cleanupPresentation = useCallback(
+    async (payload: IncomingCallPayload | null, terminal: boolean) => {
+      if (!payload?.callId) return;
+      await cleanupNativeCall(payload, terminal);
+    },
+    []
+  );
+
+  const stopPresentationForCall = useCallback(
+    async (state: ActiveCallState, terminal: boolean) => {
+      await stopRingback().catch(() => {});
+      await cleanupPresentation(incomingPayloadFromCall(state), terminal);
+      await AudioSession.stopAudioSession().catch(() => {});
+      await notificationService.dismissCallNotifications().catch(() => {});
+    },
+    [cleanupPresentation]
+  );
 
   const leaveCallRoute = useCallback(() => {
     if (!pathnameRef.current.startsWith("/call/")) return;
@@ -173,9 +259,10 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       const current = callRef.current;
       if (!current || current.status === "ended") return;
       outgoingRef.current = false;
-      void stopAllAudio();
+      rememberTerminal(current.callId);
+      handledIncomingIds.current.add(current.callId);
+      void stopPresentationForCall(current, true);
       if (terminalTimer.current) clearTimeout(terminalTimer.current);
-      if (current.callId) terminalCallIds.current.add(current.callId);
       applyCall({
         ...current,
         status: "ended",
@@ -184,7 +271,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       });
       terminalTimer.current = setTimeout(() => leaveCallRoute(), 2200);
     },
-    [applyCall, leaveCallRoute, stopAllAudio]
+    [applyCall, leaveCallRoute, rememberTerminal, stopPresentationForCall]
   );
 
   const ensureToken = useCallback(
@@ -193,66 +280,217 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       const key = `${uid || "anon"}:${target.callId}`;
       const cached = tokenCache.current.get(key);
       if (cached) return cached;
-      try {
-        const res = await apiRequest<CallTokenResponse>("/api/livekit/token", {
-          method: "POST",
-          body: JSON.stringify({ channelId: target.channelId, callId: target.callId }),
-        });
-        if (!res?.token || !res?.url) throw new Error("Missing LiveKit credentials");
-        tokenCache.current.set(key, res);
-        if (callRef.current?.callId === target.callId) {
-          const participants: Record<string, CallPeer> = {
-            ...(callRef.current.participants || {}),
-          };
-          (res.participants || []).forEach((peer) => {
-            if (peer.uid) participants[peer.uid] = peer;
+
+      return tokenRequests.current.run(key, async () => {
+        try {
+          const res = await apiRequest<CallTokenResponse>("/api/livekit/token", {
+            method: "POST",
+            body: JSON.stringify({ channelId: target.channelId, callId: target.callId }),
           });
-          patchCall({ token: res, participants });
+          if (!res?.token || !res?.url) throw new Error("Missing LiveKit credentials");
+          tokenCache.current.set(key, res);
+          if (callRef.current?.callId === target.callId) {
+            const participants: Record<string, CallPeer> = {
+              ...(callRef.current.participants || {}),
+            };
+            (res.participants || []).forEach((peer) => {
+              if (peer.uid) participants[peer.uid] = peer;
+            });
+            patchCall({ token: res, participants });
+          }
+          return res;
+        } catch (error: any) {
+          console.warn("[Call] token request failed:", error);
+          return null;
         }
-        return res;
-      } catch (error: any) {
-        console.warn("[Call] token request failed:", error);
-        return null;
-      }
+      });
     },
     [patchCall, uid]
   );
 
-  const showIncoming = useCallback(
-    (payload: IncomingCallPayload, presentNatively = true) => {
-      const auth = authRef.current;
-      if (auth.isLoading || !auth.isAuthenticated) return;
-      if (terminalCallIds.current.has(payload.callId)) return;
+  const admitIncoming = useCallback(
+    (payload: IncomingCallPayload, response: CallStatusResponse, ring: boolean): boolean => {
+      if (!canPresentIncoming(payload, callRef.current, terminalCallIds.current)) return false;
+
       const current = callRef.current;
-      if (
-        current &&
-        current.callId &&
-        current.callId !== payload.callId &&
-        current.status !== "ended"
-      ) {
-        return;
-      }
-      const peer = toPeerFromIncoming(payload);
+      const enriched = incomingPayloadFromStatus(response, payload) || payload;
+      const peer = toPeerFromIncoming(enriched);
       const next: ActiveCallState = {
-        callId: payload.callId,
-        channelId: payload.channelId,
+        callId: enriched.callId,
+        channelId: enriched.channelId,
         direction: "incoming",
         status: "incoming",
         peer,
-        isGroup: payload.isGroup,
-        startedAt: payload.startedAt || Date.now(),
+        isGroup: enriched.isGroup,
+        startedAt:
+          statusTimestamp(response, "startedAt") ||
+          enriched.startedAt ||
+          Date.now(),
         answeredAt: null,
-        participants: payload.callerId ? { [payload.callerId]: peer } : {},
+        participants: enriched.callerId ? { [enriched.callerId]: peer } : {},
         token: current?.callId === payload.callId ? current.token : null,
         terminal: null,
       };
       applyCall(next);
-      // A native action intent already stopped ringing; don't re-ring while
-      // the authoritative answer/decline transition is in flight.
-      if (presentNatively) void showNativeIncomingCall(payload);
+      // Duplicate FCM/Pusher/persisted hints must not start a second ringing UI.
+      if (ring && current?.callId !== payload.callId) {
+        void showNativeIncomingCall(enriched);
+      }
       openCall();
+      return true;
     },
     [applyCall, openCall]
+  );
+
+  const resumeAnswered = useCallback(
+    async (payload: IncomingCallPayload, response: CallStatusResponse) => {
+      const current = callRef.current;
+      await cleanupPresentation(payload, false);
+      await stopRingback().catch(() => {});
+
+      const enriched = incomingPayloadFromStatus(response, payload) || payload;
+      const peer = toPeerFromIncoming(enriched);
+      const base: ActiveCallState =
+        current && current.callId === payload.callId
+          ? current
+          : {
+              callId: payload.callId,
+              channelId: payload.channelId,
+              direction: "incoming",
+              status: "answered",
+              peer,
+              isGroup: enriched.isGroup,
+              startedAt:
+                statusTimestamp(response, "startedAt") ||
+                enriched.startedAt ||
+                Date.now(),
+              answeredAt: null,
+              participants: enriched.callerId ? { [enriched.callerId]: peer } : {},
+              token: null,
+              terminal: null,
+            };
+
+      applyCall({
+        ...base,
+        status: "answered",
+        answeredAt:
+          statusTimestamp(response, "answeredAt") || base.answeredAt || Date.now(),
+        transitioning: false,
+        terminal: null,
+      });
+      await AudioSession.startAudioSession().catch(() => {});
+      await notificationService.dismissCallNotifications().catch(() => {});
+      if (callRef.current) await ensureToken(callRef.current);
+    },
+    [applyCall, cleanupPresentation, ensureToken]
+  );
+
+  const applyDecision = useCallback(
+    async (
+      payload: IncomingCallPayload,
+      result: ValidationResult,
+      options: { ring: boolean; currentOnly?: boolean }
+    ): Promise<ProcessResult> => {
+      const { decision, response } = result;
+      const current = callRef.current;
+
+      if (options.currentOnly) {
+        if (!current || current.callId !== payload.callId || current.status === "ended") {
+          return { accepted: false, kind: decision.kind };
+        }
+      }
+
+      switch (decision.kind) {
+        case "ring": {
+          if (options.currentOnly) {
+            // A genuinely ringing/answered local call is preserved; do not
+            // restart its ringtone during reconciliation.
+            return { accepted: true, kind: decision.kind };
+          }
+          return {
+            accepted:
+              !!response && admitIncoming(payload, response, options.ring),
+            kind: decision.kind,
+          };
+        }
+        case "resume": {
+          if (response) await resumeAnswered(payload, response);
+          return { accepted: !!response, kind: decision.kind };
+        }
+        case "terminal": {
+          if (current && current.callId === payload.callId && current.status !== "ended") {
+            finishTerminal(decision.status);
+          } else {
+            rememberTerminal(payload.callId);
+            await cleanupPresentation(payload, true);
+          }
+          return { accepted: false, kind: decision.kind };
+        }
+        case "invalid": {
+          rememberTerminal(payload.callId);
+          await cleanupPresentation(payload, true);
+          if (current && current.callId === payload.callId && current.status !== "ended") {
+            finishTerminal("ended");
+          }
+          return { accepted: false, kind: decision.kind };
+        }
+        case "unavailable":
+        default:
+          return { accepted: false, kind: "unavailable" };
+      }
+    },
+    [
+      admitIncoming,
+      cleanupPresentation,
+      finishTerminal,
+      rememberTerminal,
+      resumeAnswered,
+    ]
+  );
+
+  const processIncoming = useCallback(
+    async (
+      payload: IncomingCallPayload | null,
+      options: { ring?: boolean; ignoreHandled?: boolean } = {}
+    ): Promise<ProcessResult> => {
+      const unavailable: ProcessResult = { accepted: false, kind: "unavailable" };
+      if (!payload?.callId || !payload.channelId) return unavailable;
+
+      const auth = authRef.current;
+      if (auth.isLoading || !auth.isAuthenticated || !auth.uid) return unavailable;
+
+      if (!canPresentIncoming(payload, callRef.current, terminalCallIds.current)) {
+        await cleanupPresentation(payload, true);
+        return { accepted: false, kind: "terminal" };
+      }
+      if (
+        !options.ignoreHandled &&
+        handledIncomingIds.current.has(payload.callId)
+      ) {
+        return { accepted: false, kind: "terminal" };
+      }
+
+      const result = await checkStatus(payload.callId, payload.channelId);
+      if (result.decision.kind === "unavailable") return unavailable;
+
+      if (!options.ignoreHandled) {
+        if (handledIncomingIds.current.has(payload.callId)) {
+          return { accepted: false, kind: result.decision.kind };
+        }
+        handledIncomingIds.current.add(payload.callId);
+      }
+
+      return applyDecision(payload, result, { ring: options.ring !== false });
+    },
+    [applyDecision, checkStatus, cleanupPresentation]
+  );
+
+  const showIncoming = useCallback(
+    async (payload: IncomingCallPayload): Promise<boolean> => {
+      const result = await processIncoming(payload, { ring: true });
+      return result.accepted;
+    },
+    [processIncoming]
   );
 
   const startOutgoing = useCallback(
@@ -350,7 +588,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       await stopRingback();
-      await stopNativeRinging();
+      // Answering stops incoming presentation only; the LiveKit session starts
+      // from the single global room after the token is available.
+      await cleanupPresentation(incomingPayloadFromCall(current), false);
       await AudioSession.startAudioSession().catch(() => {});
       await notificationService.dismissCallNotifications().catch(() => {});
       const answeredAt = res?.answeredAt || Date.now();
@@ -369,7 +609,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       patchCall({ transitioning: false });
       finishTerminal(error?.status === 403 ? "ended" : "unreachable");
     }
-  }, [applyCall, ensureToken, finishTerminal, patchCall]);
+  }, [applyCall, cleanupPresentation, ensureToken, finishTerminal, patchCall]);
 
   const decline = useCallback(async () => {
     const current = callRef.current;
@@ -378,10 +618,15 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     if (current.status === "ended") return;
-    terminalCallIds.current.add(current.callId);
-    applyCall({ ...current, status: "ended", terminal: { status: "declined", message: terminalMessage("declined") } });
+    rememberTerminal(current.callId);
+    handledIncomingIds.current.add(current.callId);
+    applyCall({
+      ...current,
+      status: "ended",
+      terminal: { status: "declined", message: terminalMessage("declined") },
+    });
     outgoingRef.current = false;
-    await stopAllAudio();
+    void stopPresentationForCall(current, true);
     try {
       await apiRequest("/api/livekit/decline", {
         method: "POST",
@@ -389,7 +634,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       });
     } catch {}
     setTimeout(() => leaveCallRoute(), 1200);
-  }, [applyCall, finishTerminal, leaveCallRoute, stopAllAudio]);
+  }, [applyCall, finishTerminal, leaveCallRoute, rememberTerminal, stopPresentationForCall]);
 
   const end = useCallback(async () => {
     const current = callRef.current;
@@ -398,14 +643,15 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       ? Math.max(1, Math.floor((Date.now() - current.answeredAt) / 1000))
       : 0;
     const status: CallTerminalStatus = current.answeredAt ? "ended" : "cancelled";
-    terminalCallIds.current.add(current.callId);
+    rememberTerminal(current.callId);
+    handledIncomingIds.current.add(current.callId);
     applyCall({
       ...current,
       status: "ended",
       terminal: { status, message: terminalMessage(status) },
     });
     outgoingRef.current = false;
-    await stopAllAudio();
+    void stopPresentationForCall(current, true);
     try {
       await apiRequest("/api/livekit/end", {
         method: "POST",
@@ -418,32 +664,80 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       });
     } catch {}
     setTimeout(() => leaveCallRoute(), 1200);
-  }, [applyCall, leaveCallRoute, stopAllAudio]);
+  }, [applyCall, leaveCallRoute, rememberTerminal, stopPresentationForCall]);
 
-  // Native full-screen/notification actions and cold-start intents.
-  // Wait for auth before consuming the persisted intent: showIncoming() bails
-  // while the session is loading, and the native intent is one-shot.
+  const reconcileCurrent = useCallback(async () => {
+    const current = callRef.current;
+    if (!current || current.status === "ended" || current.callId.startsWith("pending-")) {
+      return;
+    }
+    const result = await checkStatus(current.callId, current.channelId);
+    await applyDecision(incomingPayloadFromCall(current), result, {
+      ring: false,
+      currentOnly: true,
+    });
+  }, [applyDecision, checkStatus]);
+
+  const reconcileAll = useCallback(async () => {
+    const auth = authRef.current;
+    if (auth.isLoading || !auth.isAuthenticated || !auth.uid) return;
+    await reconcileCurrent();
+
+    const intent = await peekInitialCallIntent();
+    if (intent?.action === "incoming" && intent.payload) {
+      await processIncoming(intent.payload, {
+        ring: callRef.current?.callId !== intent.payload.callId,
+      });
+    }
+  }, [processIncoming, reconcileCurrent]);
+
+  const handleNativeAction = useCallback(
+    async (action: "answer" | "decline" | "hangup", incoming: IncomingCallPayload | null) => {
+      if (!incoming?.callId) return;
+      let result: ProcessResult | null = null;
+      if (callRef.current?.callId !== incoming.callId) {
+        result = await processIncoming(incoming, { ring: false, ignoreHandled: true });
+        // A late action on a call the server says is already terminal/answered
+        // must not end a different, active session.
+        if (!result.accepted || result.kind !== "ring") return;
+      }
+      if (action === "answer") await answer();
+      else if (action === "decline") await decline();
+      else await end();
+    },
+    [answer, decline, end, processIncoming]
+  );
+
+  // Native events, persisted intents, and cold start are all hints. Only
+  // processIncoming() may admit them, and only after /api/livekit/status.
   useEffect(() => {
     if (isLoading || !isAuthenticated || !uid) return;
+
     const unsubscribe = subscribeNativeCallEvents({
-      onIncoming: (payload) => showIncoming(payload),
-      onAction: (action, payload) => {
-        if (payload && (!callRef.current || callRef.current.callId !== payload.callId)) {
-          showIncoming(payload, false);
-        }
-        if (action === "answer") void answer();
-        else if (action === "decline") void decline();
-        else void end();
+      onIncoming: (incoming) => {
+        void processIncoming(incoming, { ring: true });
+      },
+      onAction: (action, incoming) => {
+        void handleNativeAction(action, incoming);
       },
     });
-    consumeInitialCallIntent().then((intent) => {
-      if (!intent?.payload) return;
-      showIncoming(intent.payload, intent.action === "incoming");
-      if (intent.action === "answer") void answer();
-      else if (intent.action === "decline") void decline();
-    });
+
+    if (!initialIntentHandled.current) {
+      initialIntentHandled.current = true;
+      void (async () => {
+        const intent = await peekInitialCallIntent();
+        if (!intent?.payload) return;
+        if (intent.action === "incoming") {
+          await processIncoming(intent.payload, { ring: true });
+        } else {
+          await handleNativeAction(intent.action, intent.payload);
+          await clearPendingCallIntent(intent.payload);
+        }
+      })();
+    }
+
     return unsubscribe;
-  }, [answer, decline, end, showIncoming, isAuthenticated, isLoading, uid]);
+  }, [handleNativeAction, isAuthenticated, isLoading, processIncoming, uid]);
 
   // App-level Pusher subscription: independent of the chat route/channel.
   useEffect(() => {
@@ -451,14 +745,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     let pusher: any = null;
     let channel: any = null;
     const handlers: Array<[string, (data: any) => void]> = [];
+    let connectionHandler: ((state: { current?: string }) => void) | null = null;
+    let wasDisconnected = false;
 
-    const matches = (data: any, event: string): boolean => {
-      const eventId = data?.callId || data?.id || data?.callDetails?.callId;
-      const current = callRef.current;
-      if (event === "incoming-call") return !current || current.status === "ended";
-      if (!eventId) return false;
-      if (!current || current.status === "ended") return false;
-      return current.callId === eventId;
+    const reconcileEvent = (data: any) => {
+      if (!shouldApplyEvent(eventCallId(data), callRef.current)) return;
+      void reconcileCurrent();
     };
 
     try {
@@ -470,48 +762,33 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       };
 
       bind("incoming-call", (data: any) => {
-        const payload = toIncomingPayload(data);
-        if (payload) showIncoming(payload);
+        const incoming = toIncomingPayload(data);
+        if (incoming) void processIncoming(incoming, { ring: true });
       });
-      bind("call-answered", (data: any) => {
-        if (!matches(data, "call-answered")) return;
-        void stopRingback();
-        void stopNativeRinging();
-        const current = callRef.current!;
-        applyCall({
-          ...current,
-          status: "answered",
-          answeredAt: current.answeredAt || Date.now(),
-          transitioning: false,
-        });
-        void AudioSession.startAudioSession().catch(() => {});
-        void ensureToken(callRef.current!);
-      });
-      bind("call-declined", (data: any) => {
-        if (!matches(data, "call-declined")) return;
-        finishTerminal(data?.status === "busy" ? "busy" : "declined");
-      });
-      bind("call-ended", (data: any) => {
-        if (!matches(data, "call-ended")) return;
-        const status = data?.status;
-        finishTerminal(
-          status === "missed"
-            ? "missed"
-            : status === "cancelled"
-            ? "cancelled"
-            : "ended"
-        );
-      });
-      bind("call-missed", (data: any) => {
-        if (!matches(data, "call-missed")) return;
-        finishTerminal("missed");
-      });
+      bind("call-answered", reconcileEvent);
+      bind("call-declined", reconcileEvent);
+      bind("call-ended", reconcileEvent);
+      bind("call-missed", reconcileEvent);
       bind("message-updated", (data: any) => {
         const status = data?.callDetails?.status;
         if (!["declined", "missed", "cancelled", "ended"].includes(status)) return;
-        if (!matches({ callId: data?.callDetails?.callId || data?.id }, "message-updated")) return;
-        finishTerminal(status);
+        reconcileEvent({
+          callId: data?.callDetails?.callId || data?.id,
+          channelId: data?.callDetails?.channelId,
+        });
       });
+
+      connectionHandler = (state) => {
+        const current = state?.current;
+        if (current === "disconnected" || current === "unavailable" || current === "connecting") {
+          wasDisconnected = true;
+        }
+        if (current === "connected" && wasDisconnected) {
+          wasDisconnected = false;
+          void reconcileAll();
+        }
+      };
+      pusher.connection.bind("state_change", connectionHandler);
     } catch (error) {
       console.warn("[Call] Pusher bind failed:", error);
     }
@@ -522,9 +799,14 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           channel?.unbind(event, handler);
         } catch {}
       });
+      if (connectionHandler) {
+        try {
+          pusher?.connection?.unbind("state_change", connectionHandler);
+        } catch {}
+      }
       // Never unsubscribe globally — chat and other listeners share the client.
     };
-  }, [applyCall, ensureToken, finishTerminal, isAuthenticated, isLoading, showIncoming, uid]);
+  }, [isAuthenticated, isLoading, processIncoming, reconcileAll, reconcileCurrent, uid]);
 
   // Caller timeout is owned by the caller; on return to foreground a stale
   // ringing call is reconciled by the server status endpoint.
@@ -545,22 +827,23 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timer);
   }, [call, finishTerminal]);
 
-  // Recover an answered call after app resume/process restart: re-fetch a token
-  // and reconnect the single global room if the server still considers it live.
+  // Foreground, Pusher reconnect, and NetInfo recovery all re-check the single
+  // authoritative status endpoint. A genuinely ringing/answered call survives;
+  // a terminal or missing call is cleaned up locally and natively.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
       if (next !== "active") return;
-      const current = callRef.current;
-      if (!current || current.status !== "answered") return;
-      if (current.token) return;
-      const restored: ActiveCallState = {
-        ...current,
-        callId: current.callId.startsWith("pending-") ? "" : current.callId,
-      };
-      if (restored.callId) void ensureToken(restored);
+      void reconcileAll();
     });
     return () => subscription.remove();
-  }, [ensureToken]);
+  }, [reconcileAll]);
+
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      if (state.isConnected) void reconcileAll();
+    });
+    return unsubscribe;
+  }, [reconcileAll]);
 
   const value = useMemo<CallControllerValue>(
     () => ({

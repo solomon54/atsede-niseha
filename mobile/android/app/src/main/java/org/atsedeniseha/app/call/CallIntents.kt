@@ -5,8 +5,11 @@ import org.json.JSONObject
 object CallIntents {
     const val EXTRA_ACTION = "org.atsedeniseha.app.call.ACTION"
     const val EXTRA_CALL_DATA = "org.atsedeniseha.app.call.DATA"
+    const val EXTRA_CALL_ID = "org.atsedeniseha.app.call.CALL_ID"
+    const val EXTRA_INCOMING_HINT = "org.atsedeniseha.app.call.INCOMING_HINT"
 
     const val ACTION_BROADCAST = "org.atsedeniseha.app.call.CALL_ACTION"
+    const val ACTION_FINISH_INCOMING = "org.atsedeniseha.app.call.FINISH_INCOMING"
 
     const val ACTION_ANSWER = "answer"
     const val ACTION_DECLINE = "decline"

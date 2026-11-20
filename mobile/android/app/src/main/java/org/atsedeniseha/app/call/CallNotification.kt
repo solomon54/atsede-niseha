@@ -70,12 +70,14 @@ object CallNotification {
         val role = data.optString("callerRole", "STUDENT")
         val isGroup = data.optString("isGroup", "false") == "true"
         val label = roleLabel(role)
+        val callId = CallPayload.callId(payload) ?: ""
 
         val fullScreenIntent = PendingIntent.getActivity(
             context,
             1001,
             Intent(context, IncomingCallActivity::class.java)
                 .putExtra(CallIntents.EXTRA_CALL_DATA, payload)
+                .putExtra(CallIntents.EXTRA_CALL_ID, callId)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             pendingFlags()
         )
@@ -109,9 +111,14 @@ object CallNotification {
             .build()
     }
 
-    /** Start the ringing foreground service (FCM high-priority or JS request). */
+    /** Start the ringing foreground service (JS only, after status validation). */
     fun startRinging(context: Context, payload: String) {
         if (payload.isBlank()) return
+        val callId = CallPayload.callId(payload)
+        if (!CallPresentationState.matches(callId)) {
+            stopRinging(context, CallPresentationState.activeCallId)
+        }
+        CallPresentationState.setFrom(payload)
         createChannel(context)
         CallRingtoneController.start(context)
         val intent = Intent(context, CallRingtoneService::class.java)
@@ -120,13 +127,15 @@ object CallNotification {
         try {
             ContextCompat.startForegroundService(context, intent)
         } catch (_: Exception) {
-            // Background start may be restricted (e.g. priority downgraded).
-            // The call-style notification still lets the user answer/decline.
+            // Background start may be restricted. The call-style notification
+            // still lets the user answer/decline; JS remains authoritative.
             showNotificationOnly(context, payload)
         }
     }
 
     fun showNotificationOnly(context: Context, payload: String) {
+        if (payload.isBlank()) return
+        CallPresentationState.setFrom(payload)
         createChannel(context)
         try {
             context.getSystemService(NotificationManager::class.java)
@@ -135,7 +144,13 @@ object CallNotification {
         }
     }
 
-    fun stopRinging(context: Context) {
+    fun stopRinging(context: Context) = stopRinging(context, null)
+
+    /** Stops ringing only when the request targets the currently presented call. */
+    fun stopRinging(context: Context, payload: String?) {
+        val callId = payload?.let { CallPayload.callId(it) }
+        if (!CallPresentationState.matches(callId)) return
+
         CallRingtoneController.stop()
         try {
             context.stopService(Intent(context, CallRingtoneService::class.java))
@@ -146,5 +161,24 @@ object CallNotification {
                 ?.cancel(NOTIFICATION_ID)
         } catch (_: Exception) {
         }
+
+        val finish = Intent(CallIntents.ACTION_FINISH_INCOMING)
+            .putExtra(CallIntents.EXTRA_CALL_ID, callId ?: "")
+        try {
+            context.sendBroadcast(finish)
+        } catch (_: Exception) {
+        }
+        CallPresentationState.clearIfMatches(callId)
+    }
+
+    /**
+     * Complete, idempotent cleanup. A terminal result writes a tombstone so a
+     * pending full-screen intent or persisted replay cannot re-open the call.
+     */
+    fun cleanupCall(context: Context, payload: String, terminal: Boolean) {
+        if (payload.isBlank()) return
+        if (terminal) CallIntentsStore.markTerminal(context, payload)
+        CallIntentsStore.clearMatching(context, payload)
+        stopRinging(context, payload)
     }
 }

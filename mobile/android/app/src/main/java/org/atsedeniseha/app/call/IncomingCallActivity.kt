@@ -1,7 +1,10 @@
 package org.atsedeniseha.app.call
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
@@ -9,15 +12,25 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import org.json.JSONObject
 
 /** Full-screen, lock-screen-safe incoming call presentation. */
 class IncomingCallActivity : Activity() {
     private var payload: String = ""
+    private var finishReceiver: BroadcastReceiver? = null
+
+    private val currentCallId: String?
+        get() = CallPayload.callId(payload)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         payload = readPayload(intent)
+        if (isTerminalPayload()) {
+            CallIntentsStore.clearMatching(this, payload)
+            finish()
+            return
+        }
         val data = runCatching { JSONObject(payload) }.getOrDefault(JSONObject())
 
         val root = LinearLayout(this).apply {
@@ -76,12 +89,48 @@ class IncomingCallActivity : Activity() {
         setContentView(root)
     }
 
+    override fun onStart() {
+        super.onStart()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val target = intent.getStringExtra(CallIntents.EXTRA_CALL_ID).orEmpty()
+                if (target.isBlank() || target == currentCallId) finish()
+            }
+        }
+        ContextCompat.registerReceiver(
+            this,
+            receiver,
+            IntentFilter(CallIntents.ACTION_FINISH_INCOMING),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        finishReceiver = receiver
+    }
+
+    override fun onStop() {
+        finishReceiver?.let { receiver ->
+            try {
+                unregisterReceiver(receiver)
+            } catch (_: Exception) {
+            }
+        }
+        finishReceiver = null
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         payload = readPayload(intent)
+        if (isTerminalPayload()) {
+            CallIntentsStore.clearMatching(this, payload)
+            finish()
+            return
+        }
         recreate()
     }
+
+    private fun isTerminalPayload(): Boolean =
+        payload.isNotBlank() && CallIntentsStore.isTerminal(this, payload)
 
     private fun readPayload(intent: Intent): String =
         intent.getStringExtra(CallIntents.EXTRA_CALL_DATA) ?: ""
