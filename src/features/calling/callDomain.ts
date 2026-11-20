@@ -66,6 +66,21 @@ export function eventCallId(data: unknown): string | null {
   return typeof id === "string" && id.trim() ? id.trim() : null;
 }
 
+/**
+ * A Pusher event may only end the UI call when it carries both a matching call
+ * id and an authoritative terminal status. Non-terminal lifecycle updates —
+ * especially `message-updated` with `status: "answered"` — must be ignored.
+ */
+export function resolveCallTerminalEvent(
+  event: string,
+  data: unknown
+): { callId: string; status: CallTerminalStatus } | null {
+  const callId = eventCallId(data);
+  if (!callId) return null;
+  const status = terminalStatusFromEvent(event, data);
+  return status ? { callId, status } : null;
+}
+
 export function incomingIdentity(payload: IncomingCallPayload): CallIdentity {
   return {
     uid: payload.callerId,

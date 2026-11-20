@@ -5,6 +5,7 @@ import {
   callRouteFor,
   eventCallId,
   formatCallDuration,
+  resolveCallTerminalEvent,
   RING_TIMEOUT_MS,
   terminalMessage,
   terminalStatusFromEvent,
@@ -43,6 +44,40 @@ test("terminal event mapping ignores non-terminal call statuses", () => {
   assert.equal(terminalStatusFromEvent("call-ended", {}), "ended");
   assert.equal(terminalStatusFromEvent("incoming-call", { status: "ended" }), null);
   assert.equal(RING_TIMEOUT_MS, 45_000);
+});
+
+test("an answered message-updated event cannot end a live call", () => {
+  // Regression: the provider previously turned a null terminal status into
+  // "ended", so the first answer from the recipient ended both clients while
+  // the backend call remained ringing. Retries then received caller_busy 409s.
+  assert.equal(
+    resolveCallTerminalEvent("message-updated", {
+      id: "call-1",
+      status: "answered",
+      callDetails: { status: "answered" },
+    }),
+    null
+  );
+  assert.equal(
+    resolveCallTerminalEvent("message-updated", {
+      callId: "call-1",
+      callDetails: { status: "ringing" },
+    }),
+    null
+  );
+  assert.equal(resolveCallTerminalEvent("message-updated", { status: "ended" }), null);
+
+  assert.deepEqual(
+    resolveCallTerminalEvent("message-updated", {
+      id: "call-1",
+      callDetails: { status: "ended" },
+    }),
+    { callId: "call-1", status: "ended" }
+  );
+  assert.deepEqual(resolveCallTerminalEvent("call-ended", { id: "call-1", status: "missed" }), {
+    callId: "call-1",
+    status: "missed",
+  });
 });
 
 test("eventCallId reads the authoritative call id from all fanout shapes", () => {

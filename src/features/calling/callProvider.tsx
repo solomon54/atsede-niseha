@@ -25,9 +25,9 @@ import {
   callRouteFor,
   eventCallId,
   formatCallDuration,
+  resolveCallTerminalEvent,
   RING_TIMEOUT_MS,
   terminalMessage,
-  terminalStatusFromEvent,
   terminalStatusFromLifecycle,
   toActiveCall,
 } from "./callDomain";
@@ -717,7 +717,16 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       const current = callRef.current;
       if (!current || !eventCall || current.callId !== eventCall) return;
       if (current.phase === "terminal") return;
-      void finishTerminal(status || "ended");
+      // A non-terminal lifecycle update (e.g. message-updated with status
+      // "answered") must never be turned into a synthetic "ended" event.
+      if (!status) return;
+      void finishTerminal(status);
+    };
+
+    const handleTerminalEvent = (eventName: string) => (data: CallEventData) => {
+      const terminal = resolveCallTerminalEvent(eventName, data);
+      if (!terminal) return;
+      handleTerminal(terminal.callId, terminal.status);
     };
 
     const handleIncoming = (data: IncomingCallPayload, channelName: string) => {
@@ -791,16 +800,26 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       subscribed.add(channelName);
       const handlers: Array<[string, (data: CallEventData) => void]> = [
         ["incoming-call", (data) => handleIncoming(data as unknown as IncomingCallPayload, channelName)],
-        ["call-declined", (data) => handleTerminal(eventCallId(data), terminalStatusFromEvent("call-declined", data))],
-        ["call-missed", (data) => handleTerminal(eventCallId(data), terminalStatusFromEvent("call-missed", data))],
-        ["call-ended", (data) => handleTerminal(eventCallId(data), terminalStatusFromEvent("call-ended", data))],
+        ["call-declined", handleTerminalEvent("call-declined")],
+        ["call-missed", handleTerminalEvent("call-missed")],
+        ["call-ended", handleTerminalEvent("call-ended")],
         ["call-answered", (data) => {
           const current = callRef.current;
           if (!current || eventCallId(data) !== current.callId) return;
           stopAllAudio();
-          if (current.phase === "outgoing") patchCall({ answeredAt: current.answeredAt || Date.now() });
+          if (current.phase === "outgoing" || current.phase === "incoming") {
+            // The authoritative call is answered. Stop ringback and the ring
+            // timeout so a late LiveKit participant event cannot end it.
+            if (ringTimeoutRef.current) clearTimeout(ringTimeoutRef.current);
+            ringTimeoutRef.current = null;
+            applyCall({
+              ...current,
+              phase: "answered",
+              answeredAt: current.answeredAt || Date.now(),
+            });
+          }
         }],
-        ["message-updated", (data) => handleTerminal(eventCallId(data), terminalStatusFromEvent("message-updated", data))],
+        ["message-updated", handleTerminalEvent("message-updated")],
       ];
       handlers.forEach(([event, handler]) => channel.bind(event, handler));
       bound.set(channelName, handlers);
