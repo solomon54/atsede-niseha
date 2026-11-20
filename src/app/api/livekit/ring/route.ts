@@ -2,12 +2,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/core/auth/requireSession";
 import { adminDb } from "@/services/firebase/admin";
-import { pusherServer } from "@/services/pusher";
+import { pusherServer, triggerCallEvent } from "@/services/pusher";
 import {
+  getChannelParticipantSummaries,
   getChannelRecipientUids,
   getUserSummary,
   sendPushToUsers,
 } from "@/services/push";
+import { buildIncomingCallNotificationData } from "@/shared/domain/calling/notificationPayload";
 import {
   CallRecord,
   buildCallMessageData,
@@ -58,7 +60,7 @@ export async function POST(req: NextRequest) {
     // Idempotent: if this callId already exists, return its authoritative state.
     const existing = await getCallRecord(callId);
     if (existing) {
-      if (existing.callerId !== session.uid && existing.channelId !== channelId) {
+      if (existing.callerId !== session.uid || existing.channelId !== channelId) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
       const stale = isRingingStale(existing.status, existing.startedAt, now);
@@ -83,7 +85,10 @@ export async function POST(req: NextRequest) {
     const channelData = channelDoc.data() || {};
     const isGroup = (channelData.type || "DIRECT") === "COMMON_HOUSE";
 
-    const callerSummary = await getUserSummary(session.uid);
+    const [callerSummary, participants] = await Promise.all([
+      getUserSummary(session.uid),
+      getChannelParticipantSummaries(channelId, session.uid),
+    ]);
     const callerName = callerSummary.displayName;
     const callerPhotoUrl = callerSummary.photoUrl || "";
     const callerRole = callerSummary.role;
@@ -227,16 +232,16 @@ export async function POST(req: NextRequest) {
           urgent: true,
           tag: callId,
           imageUrl: callerPhotoUrl || undefined,
-          data: {
-            type: "incoming_call",
+          data: buildIncomingCallNotificationData({
             callId,
             channelId,
             callerId: session.uid,
             callerName,
-            callerPhotoUrl: callerPhotoUrl || "",
+            callerPhotoUrl,
             callerRole,
-            isGroup: isGroup ? "true" : "false",
-          },
+            isGroup,
+            startedAt: now,
+          }) as Record<string, string>,
         });
         pushSent = pushRes?.sent || 0;
         pushFailed = pushRes?.failed || 0;
@@ -310,6 +315,7 @@ export async function POST(req: NextRequest) {
         joinable: true,
         notified: notifiedRecipientIds.length,
         busy: busyRecipientIds.length,
+        participants,
         reachability,
       });
     } catch (setupErr) {

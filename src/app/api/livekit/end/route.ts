@@ -3,12 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { requireSession } from "@/core/auth/requireSession";
 import {
+  assertCallActorCanAct,
   getCallRecord,
+  isTerminalCallStatus,
   persistCallMessageUpdate,
   transitionCallToTerminal,
 } from "@/services/call-state";
 import { adminDb } from "@/services/firebase/admin";
-import { pusherServer } from "@/services/pusher";
+import { triggerCallEvent } from "@/services/pusher";
+import { getCallParticipantUids } from "@/shared/domain/calling/callLifecycle";
 
 export async function POST(req: NextRequest) {
   try {
@@ -38,19 +41,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "callId not found" }, { status: 404 });
     }
 
-    const memberSnap = await adminDb
-      .collection("ChannelMembers")
-      .where("channelId", "==", channelId)
-      .where("userId", "==", session.uid)
-      .where("isActive", "==", true)
-      .limit(1)
-      .get();
-    if (memberSnap.empty) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const existing = await getCallRecord(callId);
+    if (!existing || existing.channelId !== channelId) {
+      return NextResponse.json({ error: "Call not found" }, { status: 404 });
     }
 
+    if (isTerminalCallStatus(existing.status)) {
+      return NextResponse.json({
+        success: true,
+        callId,
+        status: existing.status,
+        terminal: true,
+      });
+    }
+
+    assertCallActorCanAct({
+      call: existing,
+      actorUid: session.uid,
+      action: existing.status === "ringing" ? "cancel" : "end",
+    });
+
     const now = Date.now();
-    const requested = body.status === "missed" ? "missed" : "ended";
+    const requested =
+      body.status === "missed" && existing.status === "ringing" ? "missed" : "ended";
     const result = await transitionCallToTerminal({
       callId,
       channelId,
@@ -75,31 +88,37 @@ export async function POST(req: NextRequest) {
       call: lifecycleCall,
       now,
     });
+    const participantUids = getCallParticipantUids(lifecycleCall);
 
-    try {
-      await pusherServer.trigger(
-        `private-chat-${channelId}`,
-        "message-updated",
-        messagePatch
-      );
-    } catch {}
+    await triggerCallEvent({
+      channelId,
+      participantUids,
+      event: "message-updated",
+      payload: messagePatch,
+    });
 
-    // Always emit terminal event for this callId so UIs/notifications can dismiss.
-    try {
-      await pusherServer.trigger(`private-chat-${channelId}`, "call-ended", {
+    const fanout = await triggerCallEvent({
+      channelId,
+      participantUids,
+      event: "call-ended",
+      payload: {
         channelId,
         callId,
         endedBy: session.uid,
         status: result.status,
-      });
-    } catch (e) {
-      console.warn("[POST /api/livekit/end] Pusher trigger failed:", e);
+      },
+    });
+    if (fanout.failed > 0) {
+      console.warn("[POST /api/livekit/end] partial call-ended fanout", fanout);
     }
 
     return NextResponse.json({ success: true, callId, status: result.status });
-  } catch (err) {
+  } catch (err: any) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (err?.status === 403) {
+      return NextResponse.json({ error: "Forbidden", reason: err.reason }, { status: 403 });
     }
     console.error("[POST /api/livekit/end]", err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

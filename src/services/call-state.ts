@@ -3,6 +3,13 @@ import "server-only";
 
 import { adminDb } from "@/services/firebase/admin";
 import {
+  canActorPerformCallAction,
+  getCallParticipantUids,
+  isTerminalCallStatus as isTerminalStatus,
+  resolveTerminalStatus,
+  type CallActorAction,
+} from "@/shared/domain/calling/callLifecycle";
+import {
   buildCallMessageData as buildSharedCallMessageData,
   buildCallMessageUpdate,
   type CallLifecycleStatus,
@@ -46,17 +53,25 @@ export interface CallRecord {
   failureReason?: string | null;
 }
 
-const TERMINAL: ReadonlySet<CallLifecycleStatus> = new Set([
-  "declined",
-  "missed",
-  "cancelled",
-  "ended",
-]);
-
 export function isTerminalCallStatus(
   status: unknown
 ): status is Exclude<CallLifecycleStatus, "ringing" | "answered"> {
-  return typeof status === "string" && TERMINAL.has(status as CallLifecycleStatus);
+  return isTerminalStatus(status);
+}
+
+/** Routes use this to enforce participant-level authorization before mutating state. */
+export function assertCallActorCanAct(args: {
+  call: CallRecord;
+  actorUid: string | null | undefined;
+  action: CallActorAction;
+}): void {
+  const decision = canActorPerformCallAction(args.call, args.actorUid, args.action);
+  if (!decision.allowed) {
+    const error: any = new Error("Forbidden");
+    error.status = 403;
+    error.reason = decision.reason;
+    throw error;
+  }
 }
 
 export function isActiveCallStatus(
@@ -358,7 +373,11 @@ export async function transitionCallToAnswered(args: {
 
   let participantClaims: { ok: boolean; failedUids: string[] } | undefined;
   if (result.transitioned && result.call) {
-    const claimTargets = [args.actorUid, result.call.callerId].filter(Boolean);
+    const claimTargets = [
+      ...new Set(
+        [args.actorUid, ...getCallParticipantUids(result.call)].filter(Boolean)
+      ),
+    ];
     const outcomes = await Promise.all(
       claimTargets.map(async (uid) => {
         try {
@@ -418,21 +437,17 @@ export async function transitionCallToTerminal(args: {
       return { ok: true, status: call.status, call, transitioned: false };
     }
 
-    let finalStatus: CallLifecycleStatus = args.to;
+    const finalStatus = resolveTerminalStatus(call.status, args.to) as CallLifecycleStatus;
     let durationSec = typeof call.durationSec === "number" ? call.durationSec : 0;
 
     if (call.status === "answered") {
-      finalStatus = "ended";
       if (call.answeredAt) {
         const elapsed = Math.floor((now - call.answeredAt) / 1000);
         durationSec = Math.max(1, typeof args.durationSec === "number" ? args.durationSec : elapsed);
       } else if (typeof args.durationSec === "number") {
         durationSec = Math.max(0, args.durationSec);
       }
-    } else if (call.status === "ringing") {
-      if (args.to === "declined") finalStatus = "declined";
-      else if (args.to === "missed") finalStatus = "missed";
-      else finalStatus = "cancelled";
+    } else {
       durationSec = 0;
     }
 
@@ -444,13 +459,8 @@ export async function transitionCallToTerminal(args: {
       updatedAt: now,
     };
 
-    const stored: CallRecord =
-      call.status === "answered"
-        ? { ...updated, status: "answered", endedAt: now }
-        : updated;
-
-    tx.set(cref, { ...stored, updatedAt: now }, { merge: true });
-    return { ok: true, status: stored.status, call: stored, transitioned: true };
+    tx.set(cref, { ...updated, updatedAt: now }, { merge: true });
+    return { ok: true, status: finalStatus, call: updated, transitioned: true };
   });
 
   let claimRelease: { released: number; failed: string[] } | undefined;

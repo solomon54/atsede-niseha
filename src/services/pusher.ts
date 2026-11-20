@@ -12,6 +12,33 @@ export const pusherServer = new PusherServer({
 
 let clientInstance: PusherClient | null = null;
 
+/**
+ * Call events must reach the app-level controller even when the chat route is
+ * not mounted, so every call event is also fanned out to private-user channels.
+ */
+export async function triggerCallEvent(args: {
+  channelId: string;
+  participantUids: string[];
+  event: string;
+  payload: Record<string, unknown>;
+}): Promise<{ delivered: number; failed: number }> {
+  const targets = [
+    `private-chat-${args.channelId}`,
+    ...[...new Set(args.participantUids.filter(Boolean))].map(
+      (uid) => `private-user-${uid}`
+    ),
+  ];
+
+  const results = await Promise.allSettled(
+    targets.map((channel) => pusherServer.trigger(channel, args.event, args.payload))
+  );
+
+  return {
+    delivered: results.filter((result) => result.status === "fulfilled").length,
+    failed: results.filter((result) => result.status === "rejected").length,
+  };
+}
+
 export const getPusherClient = () => {
   if (!clientInstance) {
     clientInstance = new PusherClient(process.env.NEXT_PUBLIC_PUSHER_KEY!, {

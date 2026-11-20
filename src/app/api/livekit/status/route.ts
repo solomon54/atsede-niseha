@@ -9,7 +9,11 @@ import {
   persistCallMessageUpdate,
 } from "@/services/call-state";
 import { adminDb } from "@/services/firebase/admin";
-import { pusherServer } from "@/services/pusher";
+import { triggerCallEvent } from "@/services/pusher";
+import {
+  getCallParticipantUids,
+  isCallParticipant,
+} from "@/shared/domain/calling/callLifecycle";
 
 export async function GET(req: NextRequest) {
   try {
@@ -62,10 +66,10 @@ export async function GET(req: NextRequest) {
         .where("isActive", "==", true)
         .limit(1)
         .get();
-      if (memberSnap.empty && call.callerId !== session.uid) {
+      if (memberSnap.empty || !isCallParticipant(call, session.uid)) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
-    } else if (call.callerId !== session.uid) {
+    } else if (!isCallParticipant(call, session.uid)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -91,13 +95,24 @@ export async function GET(req: NextRequest) {
           call,
           now,
         });
-        try {
-          await pusherServer.trigger(
-            `private-chat-${targetChannelId}`,
-            "message-updated",
-            patch
-          );
-        } catch {}
+        const participantUids = getCallParticipantUids(call);
+        await triggerCallEvent({
+          channelId: targetChannelId,
+          participantUids,
+          event: "message-updated",
+          payload: patch,
+        });
+        await triggerCallEvent({
+          channelId: targetChannelId,
+          participantUids,
+          event: "call-ended",
+          payload: {
+            channelId: targetChannelId,
+            callId,
+            status: call.status,
+            reason: "timeout",
+          },
+        });
       }
     }
 

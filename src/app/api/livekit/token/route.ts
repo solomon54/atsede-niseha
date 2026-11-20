@@ -3,6 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import * as jose from "jose";
 import { requireSession } from "@/core/auth/requireSession";
 import { adminDb } from "@/services/firebase/admin";
+import { getCallRecord } from "@/services/call-state";
+import {
+  getChannelParticipantSummaries,
+  getUserSummary,
+} from "@/services/push";
+import {
+  isCallParticipant,
+  isJoinableCallStatus,
+} from "@/shared/domain/calling/callLifecycle";
 
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "devkey";
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "devsecretnoseha";
@@ -24,8 +33,9 @@ export async function POST(req: NextRequest) {
     }
 
     const channelId = body.channelId.trim();
+    const callId = typeof body.callId === "string" ? body.callId.trim() : "";
 
-    // 1. Explicit Membership Check
+    // 1. Explicit membership check
     const memberSnap = await adminDb
       .collection("ChannelMembers")
       .where("channelId", "==", channelId)
@@ -41,7 +51,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Fetch Channel Document to enforce participant quotas
+    // 2. When a call is supplied, require participant-level ownership and an
+    // authoritative joinable state. Membership alone is not a call invitation.
+    if (callId) {
+      const call = await getCallRecord(callId);
+      if (!call || call.channelId !== channelId) {
+        return NextResponse.json({ error: "Call not found" }, { status: 404 });
+      }
+      if (!isCallParticipant(call, session.uid)) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+      if (!isJoinableCallStatus(call.status)) {
+        return NextResponse.json({ error: "Call has ended" }, { status: 409 });
+      }
+    }
+
+    // 3. Fetch channel document to enforce participant quotas
     const channelDoc = await adminDb.collection("Channels").doc(channelId).get();
     if (!channelDoc.exists) {
       return NextResponse.json(
@@ -51,27 +76,20 @@ export async function POST(req: NextRequest) {
     }
 
     const channelData = channelDoc.data() || {};
-    const channelType = channelData.type || "DIRECT"; // "DIRECT" or "COMMON_HOUSE"
-    
+    const channelType = channelData.type || "DIRECT";
+
     // Direct calls remain 1:1 by product rule; common-house calls have no app-imposed cap.
     const maxParticipants = channelType === "DIRECT" ? 2 : 100;
 
-    // 3. Resolve participant display name
-    const profileColl = session.role === "FATHER" ? "Fathers" : "Students";
-    const profileSnap = await adminDb
-      .collection(profileColl)
-      .doc(session.uid)
-      .get();
-    const profileData = profileSnap.data() || {};
-    const displayName =
-      profileData.christianName ||
-      profileData.fullName ||
-      profileData.secularName ||
-      (session.role === "FATHER" ? "የንስሐ አባት" : "የንስሐ ልጅ");
+    // 4. Resolve identities from authoritative profiles (including Governors).
+    const [self, participants] = await Promise.all([
+      getUserSummary(session.uid),
+      getChannelParticipantSummaries(channelId, session.uid),
+    ]);
+    const displayName = self.displayName;
 
-    // 4. Generate LiveKit-compatible JWT using jose
-    //    KEY FIX: header must be { alg: "HS256" } ONLY — no "typ" field.
-    //    LiveKit Cloud strictly validates and rejects tokens with typ:"JWT".
+    // 5. Generate LiveKit-compatible JWT using jose.
+    // Header must be { alg: "HS256" } ONLY — no "typ" field.
     const secret = new TextEncoder().encode(LIVEKIT_API_SECRET);
     const now = Math.floor(Date.now() / 1000);
 
@@ -87,15 +105,16 @@ export async function POST(req: NextRequest) {
       metadata: JSON.stringify({
         role: session.role,
         uid: session.uid,
+        callId: callId || null,
         maxParticipants,
       }),
     })
-      .setProtectedHeader({ alg: "HS256" })   // ← NO "typ" — this was the bug
+      .setProtectedHeader({ alg: "HS256" })
       .setIssuer(LIVEKIT_API_KEY)
       .setSubject(session.uid)
       .setIssuedAt(now)
       .setNotBefore(now)
-      .setExpirationTime(now + 2 * 60 * 60)   // 2h TTL
+      .setExpirationTime(now + 2 * 60 * 60)
       .sign(secret);
 
     return NextResponse.json({
@@ -103,8 +122,12 @@ export async function POST(req: NextRequest) {
       token,
       url: LIVEKIT_URL,
       roomName: channelId,
+      callId: callId || null,
       maxParticipants,
       participantName: displayName,
+      participantPhotoUrl: self.photoUrl || null,
+      participantRole: self.role,
+      participants,
     });
   } catch (err) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {

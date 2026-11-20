@@ -17,10 +17,13 @@ const DEAD_TOKEN_CODES = new Set([
   "messaging/invalid-argument",
 ]);
 
+type TokenCollection = "FcmTokens" | (typeof PROFILE_COLLECTIONS)[number];
+
 interface TokenTarget {
   token: string;
-  collection: (typeof PROFILE_COLLECTIONS)[number];
+  collection: TokenCollection;
   docId: string;
+  kind: "device" | "legacy";
 }
 
 export interface PushPayload {
@@ -57,6 +60,27 @@ async function resolveTokenTargets(uids: string[]): Promise<TokenTarget[]> {
   const targets = new Map<string, TokenTarget>();
   const uidChunks = chunk(uniqueUids, FIRESTORE_IN_LIMIT);
 
+  for (const uidChunk of uidChunks) {
+    const deviceSnap = await adminDb
+      .collection("FcmTokens")
+      .where("uid", "in", uidChunk)
+      .get();
+
+    deviceSnap.docs.forEach((doc) => {
+      const token = doc.id;
+      if (token && !targets.has(token)) {
+        targets.set(token, {
+          token,
+          collection: "FcmTokens",
+          docId: doc.id,
+          kind: "device",
+        });
+      }
+    });
+  }
+
+  // Legacy installs stored one token on the profile. Keep reading it so those
+  // devices keep receiving calls until they re-register into FcmTokens.
   for (const collection of PROFILE_COLLECTIONS) {
     for (const uidChunk of uidChunks) {
       const snap = await adminDb
@@ -74,6 +98,7 @@ async function resolveTokenTargets(uids: string[]): Promise<TokenTarget[]> {
             token,
             collection,
             docId: doc.id,
+            kind: "legacy",
           });
         }
       });
@@ -85,6 +110,10 @@ async function resolveTokenTargets(uids: string[]): Promise<TokenTarget[]> {
 
 async function pruneDeadToken(target: TokenTarget): Promise<void> {
   try {
+    if (target.kind === "device") {
+      await adminDb.collection(target.collection).doc(target.docId).delete();
+      return;
+    }
     await adminDb
       .collection(target.collection)
       .doc(target.docId)
@@ -124,6 +153,7 @@ export async function sendPushToUsers(
         },
         data: payload.data ?? {},
         android: {
+          ttl: payload.urgent ? 60_000 : undefined,
           priority: payload.urgent ? "high" : "normal",
           notification: {
             channelId,
@@ -221,6 +251,22 @@ export interface UserSummary {
   displayName: string;
   photoUrl?: string | null;
   role: "FATHER" | "STUDENT" | "GOVERNOR" | "CHILD";
+}
+
+export interface ChannelParticipantSummary extends UserSummary {
+  uid: string;
+}
+
+/** Authoritative identity/photo for every active member of a call channel. */
+export async function getChannelParticipantSummaries(
+  channelId: string,
+  excludeUid?: string
+): Promise<ChannelParticipantSummary[]> {
+  const uids = await getChannelRecipientUids(channelId, excludeUid || "");
+  const summaries = await Promise.all(
+    uids.map(async (uid) => ({ uid, ...(await getUserSummary(uid)) }))
+  );
+  return summaries;
 }
 
 export async function getUserSummary(uid: string): Promise<UserSummary> {
