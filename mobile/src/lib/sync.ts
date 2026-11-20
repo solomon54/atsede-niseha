@@ -14,6 +14,7 @@ import {
 } from "./messagingReliability";
 import { authStorage } from "./storage";
 import { getMobilePusher } from "./pusher";
+import { messageSyncNotifier } from "./messageSyncEvents";
 
 let activeSync: { context: SyncContext; promise: Promise<void> } | null = null;
 let activeOutboxDrain: { uid: string; promise: Promise<void> } | null = null;
@@ -72,7 +73,7 @@ export const mobileSyncService = {
 
       // 3. If an active channel is open, sync delta messages
       if (activeChannelId) {
-        await this.syncChannelMessages(activeChannelId);
+        await this.syncChannelMessages(activeChannelId, currentUserId);
       }
     } catch (e) {
       console.warn("[MobileSync] Sync cycle warning:", e);
@@ -422,7 +423,7 @@ export const mobileSyncService = {
    * - Supports tiebreaker pagination via afterId
    * - Commits cursor strictly after writes succeed
    */
-  async syncChannelMessages(channelId: string): Promise<any[]> {
+  async syncChannelMessages(channelId: string, currentUserId?: string): Promise<any[]> {
     try {
       const metaKey = `channel_${channelId}`;
       let cursor = await offlineCache.getSyncCursor(metaKey);
@@ -521,7 +522,12 @@ export const mobileSyncService = {
         );
       }
 
-      return await offlineCache.getMessages(channelId);
+      const messages = await offlineCache.getMessages(channelId);
+      // Background triggers (AppState, reconnect, NetInfo, outbox drain) do not
+      // go through a mounted view's queryFn. Notify subscribers so the UI and
+      // SQLite cannot diverge after a successful recovery sync.
+      messageSyncNotifier.notify(channelId, messages, currentUserId);
+      return messages;
     } catch (e) {
       console.warn(`[MobileSync] Message sync for ${channelId} failed:`, e);
       return await offlineCache.getMessages(channelId);

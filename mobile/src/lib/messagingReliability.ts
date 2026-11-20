@@ -71,6 +71,33 @@ export function sanitizeMessagePreview(
     : "";
 }
 
+interface IdentifiedMessage {
+  id: string;
+  clientMessageId?: string;
+}
+
+/**
+ * Delta sync returns authoritative server rows. Carry forward a local client
+ * id when the server id replaces an optimistic row so the UI does not draw the
+ * same message twice or lose retry identity.
+ */
+export function preserveClientMessageIds<T extends IdentifiedMessage>(
+  authoritative: T[],
+  previous: T[]
+): T[] {
+  const clientIdsById = new Map(
+    previous
+      .filter((message) => Boolean(message.clientMessageId))
+      .map((message) => [message.id, message.clientMessageId as string])
+  );
+
+  return authoritative.map((message) =>
+    message.clientMessageId
+      ? message
+      : { ...message, clientMessageId: clientIdsById.get(message.id) }
+  );
+}
+
 /**
  * Replace ciphertext in a visible preview with the decrypted preview when one
  * is available, otherwise with an empty string. Room metadata is preserved.

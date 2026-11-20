@@ -13,6 +13,8 @@ import { pbkdf2Async } from "@noble/hashes/pbkdf2.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { randomBytes as nobleRandomBytes } from "@noble/hashes/utils.js";
 
+export { LOCKED_MESSAGE_PLACEHOLDER } from "@shared/domain/messaging/encryptedDisplay";
+
 /**
  * Robust random bytes generator.
  * Uses Web Crypto (Hermes globalThis.crypto) or noble hashes CSPRNG,
@@ -254,6 +256,3 @@ export async function decryptMessage(
 
   return utf8Decode(plaintext);
 }
-
-/** Placeholder shown when a message cannot be decrypted on this device. */
-export const LOCKED_MESSAGE_PLACEHOLDER = "[የተቆለፈ መልእክት]";

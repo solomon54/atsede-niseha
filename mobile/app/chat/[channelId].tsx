@@ -1,5 +1,12 @@
 import NetInfo from "@react-native-community/netinfo";
 import {
+  encryptedContentFingerprint,
+  LOCKED_MESSAGE_PLACEHOLDER,
+  resolveEncryptedDisplayText,
+  shouldAttemptDecryption,
+  type DecryptedMessageEntry,
+} from "@shared/domain/messaging/encryptedDisplay";
+import {
   getMessageDeliveryFeedback,
   MESSAGE_SYNC_TERMS,
 } from "@shared/domain/messaging/syncFeedback";
@@ -7,6 +14,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -62,17 +70,18 @@ import { useAuth } from "../../src/lib/auth-context";
 import { offlineCache } from "../../src/lib/cache";
 import { useCacheFirst } from "../../src/lib/use-cache-first";
 import { getMobilePusher } from "../../src/lib/pusher";
+import { messageSyncNotifier } from "../../src/lib/messageSyncEvents";
 import {
   conversationCacheKey,
   conversationQueryKey,
   messageQueryKey,
+  preserveClientMessageIds,
 } from "../../src/lib/messagingReliability";
 import { mobileSyncService } from "../../src/lib/sync";
 import {
   decryptMessage,
   encryptMessage,
   EncryptionEnvelope,
-  LOCKED_MESSAGE_PLACEHOLDER,
 } from "../../src/lib/crypto";
 import { THEME } from "../../src/constants/theme";
 
@@ -120,6 +129,7 @@ export interface MessageItem {
   content: string;
   media?: MediaDescriptor | null;
   createdAt: number;
+  updatedAt?: number;
   editedAt?: number;
   deletedAt?: number;
   status?: "PENDING" | "SENT" | "FAILED";
@@ -134,7 +144,7 @@ export interface MessageItem {
     callerName: string;
     callerPhotoUrl?: string | null;
     callerRole?: string | null;
-    status: "answered" | "declined" | "missed" | "cancelled" | "ringing";
+    status: "answered" | "declined" | "missed" | "cancelled" | "ringing" | "ended";
     startedAt: number;
     answeredAt?: number | null;
     endedAt?: number | null;
@@ -150,6 +160,13 @@ interface MessageUpdateEvent {
   updatedAt?: number;
   editedAt?: number;
   content?: string;
+  type?: MessageItem["type"];
+  createdAt?: number;
+  senderId?: string;
+  senderName?: string;
+  senderRole?: MessageItem["senderRole"];
+  isEncrypted?: boolean;
+  media?: MessageItem["media"];
   encryption?: EncryptionEnvelope | null;
   callDetails?: MessageItem["callDetails"];
   deletedAt?: number;
@@ -447,9 +464,17 @@ export default function ChannelChatScreen() {
   const [stagedAttachment, setStagedAttachment] = useState<StagedAttachment | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<MessageItem[]>([]);
   const [isOnline, setIsOnline] = useState(true);
-  const [decryptedContent, setDecryptedContent] = useState<Record<string, string>>({});
+  const isOnlineRef = useRef(true);
+  const attemptedDecrypt = useRef<Set<string>>(new Set());
+  const [decryptedContent, setDecryptedContent] = useState<
+    Record<string, DecryptedMessageEntry>
+  >({});
   const forgetDecryptedMessage = useCallback((messageId: string) => {
-    attemptedDecrypt.current.delete(messageId);
+    // Keys are `${id}:${fingerprint}`; drop every attempt for this id so an
+    // edited envelope or a retried fetch can be resolved again.
+    for (const key of attemptedDecrypt.current) {
+      if (key.startsWith(`${messageId}:`)) attemptedDecrypt.current.delete(key);
+    }
     setDecryptedContent((prev) => {
       if (!(messageId in prev)) return prev;
       const next = { ...prev };
@@ -479,15 +504,68 @@ export default function ChannelChatScreen() {
   const [showNewMsgPill, setShowNewMsgPill] = useState(false);
   const isAtBottomRef = useRef(true);
   const flatListRef = useRef<FlatList>(null);
-  const attemptedDecrypt = useRef<Set<string>>(new Set());
   const initialScrollDone = useRef(false);
+
+  // One query function for both the mounted query and explicit recovery
+  // triggers. SQLite is the immediate source; persisted messages are the
+  // authoritative source whenever the network is available.
+  const loadMessages = useCallback(async (): Promise<MessageItem[]> => {
+    const cached = await offlineCache.getMessages<MessageItem>(channelId);
+    try {
+      const synced = await mobileSyncService.syncChannelMessages(
+        channelId,
+        uid || undefined
+      );
+      const authoritative =
+        synced && synced.length > 0 ? (synced as MessageItem[]) : cached;
+      return preserveClientMessageIds<MessageItem>(authoritative, cached);
+    } catch {
+      return cached;
+    }
+  }, [channelId, uid]);
+
+  const refreshMessages = useCallback(() => {
+    if (!channelId || !uid) return Promise.resolve<MessageItem[]>([]);
+    return queryClient.fetchQuery<MessageItem[]>({
+      queryKey: messagesKey,
+      queryFn: loadMessages,
+      staleTime: 0,
+    });
+  }, [channelId, uid, messagesKey, queryClient, loadMessages]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
-      setIsOnline(!!state.isConnected && state.isInternetReachable !== false);
+      const online = !!state.isConnected && state.isInternetReachable !== false;
+      const wasOnline = isOnlineRef.current;
+      isOnlineRef.current = online;
+      setIsOnline(online);
+      if (online && !wasOnline) refreshMessages().catch(() => {});
     });
     return () => unsubscribe();
-  }, []);
+  }, [refreshMessages]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextAppState) => {
+      if (nextAppState === "active") refreshMessages().catch(() => {});
+    });
+    return () => subscription.remove();
+  }, [refreshMessages]);
+
+  // Any successful delta sync (including root-level AppState/Pusher recovery)
+  // publishes the new SQLite rows here so a mounted screen cannot stay stale.
+  useEffect(
+    () =>
+      messageSyncNotifier.subscribe((syncedChannelId, messages, ownerUid) => {
+        if (syncedChannelId !== channelId || ownerUid !== uid) return;
+        queryClient.setQueryData<MessageItem[]>(messagesKey, (old = []) =>
+          preserveClientMessageIds<MessageItem>(
+            messages as MessageItem[],
+            old
+          )
+        );
+      }),
+    [channelId, messagesKey, queryClient, uid]
+  );
 
   // 1. Fetch channel messages (SQLite-first + background delta sync)
   const {
@@ -498,29 +576,11 @@ export default function ChannelChatScreen() {
     refetch,
   } = useQuery<MessageItem[]>({
     queryKey: messagesKey,
-    queryFn: async () => {
-      const cached = await offlineCache.getMessages<MessageItem>(channelId);
-      // Preserve client ids from the pre-sync cache so an optimistic row with
-      // the same id can be recognised as confirmed, not drawn twice.
-      const clientIdsById = new Map(
-        cached
-          .filter((m) => Boolean(m.clientMessageId))
-          .map((m) => [m.id, m.clientMessageId as string])
-      );
-      try {
-        const synced = await mobileSyncService.syncChannelMessages(channelId);
-        const rows = synced && synced.length > 0 ? synced : cached;
-        return rows.map((m) =>
-          m.clientMessageId ? m : { ...m, clientMessageId: clientIdsById.get(m.id) }
-        );
-      } catch {
-        return cached;
-      }
-    },
+    queryFn: loadMessages,
     enabled: Boolean(channelId && uid),
-    staleTime: 1000 * 60 * 15,
-    refetchOnWindowFocus: false,
-    refetchOnMount: false,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
 
   const cacheChecked = useCacheFirst<MessageItem[]>(
@@ -616,33 +676,57 @@ export default function ChannelChatScreen() {
     });
   }, [navigation, cleanHeaderTitle, channelId, router]);
 
-  // 3. Decrypt incoming ciphertext once per message id
+  // 3. Resolve every encrypted row to plaintext or an explicit locked state.
+  // The previous gate required `encryption?.keyId`, so encrypted rows with a
+  // missing/partial envelope were never attempted and rendered "…" forever.
   useEffect(() => {
     const messages = serverMessages || [];
-    const pending = messages.filter(
-      (m) =>
-        m.isEncrypted &&
-        m.encryption?.keyId &&
-        !attemptedDecrypt.current.has(m.id)
-    );
-
-    if (pending.length === 0) return;
-
-    pending.forEach((m) => attemptedDecrypt.current.add(m.id));
-
-    (async () => {
-      const updates: Record<string, string> = {};
-      for (const msg of pending) {
-        try {
-          const plain = await decryptMessage(msg.content, msg.encryption!);
-          updates[msg.id] = plain;
-        } catch {
-          updates[msg.id] = LOCKED_MESSAGE_PLACEHOLDER;
-        }
+    const queuedKeys: string[] = [];
+    const queued = messages.filter((message) => {
+      if (!shouldAttemptDecryption(message, decryptedContent[message.id])) {
+        return false;
       }
+      const key = `${message.id}:${encryptedContentFingerprint(message)}`;
+      if (attemptedDecrypt.current.has(key)) return false;
+      attemptedDecrypt.current.add(key);
+      queuedKeys.push(key);
+      return true;
+    });
+
+    if (queued.length === 0) return;
+
+    let cancelled = false;
+    (async () => {
+      const updates: Record<string, DecryptedMessageEntry> = {};
+      for (const message of queued) {
+        const fingerprint = encryptedContentFingerprint(message);
+        let text = LOCKED_MESSAGE_PLACEHOLDER;
+        if (
+          message.content &&
+          message.encryption?.keyId &&
+          message.encryption?.iv
+        ) {
+          try {
+            text = await decryptMessage(message.content, message.encryption);
+          } catch {
+            text = LOCKED_MESSAGE_PLACEHOLDER;
+          }
+        }
+        updates[message.id] = { text, fingerprint };
+      }
+      if (cancelled) return;
       setDecryptedContent((prev) => ({ ...prev, ...updates }));
     })();
-  }, [serverMessages]);
+
+    return () => {
+      cancelled = true;
+      // If this batch was superseded before it resolved, release its attempt
+      // keys so the next render can retry the still-unresolved payload.
+      for (const key of queuedKeys) {
+        attemptedDecrypt.current.delete(key);
+      }
+    };
+  }, [serverMessages, decryptedContent]);
 
   // 4. Mark channel read on mount / change & drain outbox
   useEffect(() => {
@@ -657,20 +741,23 @@ export default function ChannelChatScreen() {
     useCallback(() => {
       if (!channelId) return;
       setActiveChatChannel(channelId);
+      // Re-opening a room must always consult the persisted ledger, even when
+      // a cached React Query result exists.
+      refreshMessages().catch(() => {});
       queryClient.setQueryData<any[]>(conversationsKey, (old) =>
         old?.map((room) =>
           room.id === channelId ? { ...room, unreadCount: 0 } : room
         )
       );
       return () => setActiveChatChannel(null);
-    }, [channelId, conversationsKey, queryClient])
+    }, [channelId, conversationsKey, queryClient, refreshMessages])
   );
 
   // 5. Pusher Real-Time Channel Subscription
   useEffect(() => {
     if (!channelId || !uid) return;
 
-    mobileSyncService.syncChannelMessages(channelId).catch(() => {});
+    mobileSyncService.syncChannelMessages(channelId, uid).catch(() => {});
 
     let pusher: any;
     let ch: RoomChannel | undefined;
@@ -690,7 +777,15 @@ export default function ChannelChatScreen() {
 
       const editedAt = event.editedAt || event.updatedAt || Date.now();
       const patch: Partial<MessageItem> = { editedAt };
+      if (typeof event.updatedAt === "number") patch.updatedAt = event.updatedAt;
       if (typeof event.content === "string") patch.content = event.content;
+      if (event.type) patch.type = event.type;
+      if (typeof event.createdAt === "number") patch.createdAt = event.createdAt;
+      if (typeof event.senderId === "string") patch.senderId = event.senderId;
+      if (typeof event.senderName === "string") patch.senderName = event.senderName;
+      if (event.senderRole) patch.senderRole = event.senderRole;
+      if (typeof event.isEncrypted === "boolean") patch.isEncrypted = event.isEncrypted;
+      if (event.media !== undefined) patch.media = event.media;
       if (event.encryption) patch.encryption = event.encryption;
       if (event.callDetails) patch.callDetails = event.callDetails;
       if (event.deletedAt) {
@@ -705,14 +800,42 @@ export default function ChannelChatScreen() {
         forgetDecryptedMessage(messageId);
       }
 
-      await offlineCache.updateMessage(channelId, messageId, (m) => ({
-        ...m,
-        ...patch,
-      }));
+      let existed = false;
+      await offlineCache.updateMessage(channelId, messageId, (m) => {
+        existed = true;
+        return { ...m, ...patch };
+      });
+      if (!existed) {
+        // A call transition can arrive before the original CALL row has been
+        // synced. Persist a complete row instead of dropping the update.
+        const created: MessageItem = {
+          id: messageId,
+          channelId,
+          senderId: event.senderId || uid || "unknown",
+          content: event.content || "",
+          createdAt: event.createdAt || Date.now(),
+          ...patch,
+        };
+        await offlineCache.saveMessages(channelId, [created]);
+      }
+
       queryClient.setQueryData<MessageItem[]>(
         messagesKey,
-        (old = []) =>
-          old.map((m) => (m.id === messageId ? { ...m, ...patch } : m))
+        (old = []) => {
+          const next = old.map((m) =>
+            m.id === messageId ? { ...m, ...patch } : m
+          );
+          if (existed || next.some((m) => m.id === messageId)) return next;
+          const created: MessageItem = {
+            id: messageId,
+            channelId,
+            senderId: event.senderId || uid || "unknown",
+            content: event.content || "",
+            createdAt: event.createdAt || Date.now(),
+            ...patch,
+          };
+          return [...next, created].sort((a, b) => a.createdAt - b.createdAt);
+        }
       );
     };
 
@@ -723,17 +846,19 @@ export default function ChannelChatScreen() {
       bind("new-message", async (msg: any) => {
         if (!msg || !msg.id) return;
 
-        let content = msg.content;
-        if (msg.isEncrypted && msg.encryption) {
-          try {
-            content = await decryptMessage(msg.content, msg.encryption);
-            setDecryptedContent((prev) => ({ ...prev, [msg.id]: content }));
-          } catch {
-            setDecryptedContent((prev) => ({
-              ...prev,
-              [msg.id]: LOCKED_MESSAGE_PLACEHOLDER,
-            }));
+        if (msg.isEncrypted) {
+          let text = LOCKED_MESSAGE_PLACEHOLDER;
+          if (msg.content && msg.encryption?.keyId && msg.encryption?.iv) {
+            try {
+              text = await decryptMessage(msg.content, msg.encryption);
+            } catch {
+              text = LOCKED_MESSAGE_PLACEHOLDER;
+            }
           }
+          setDecryptedContent((prev) => ({
+            ...prev,
+            [msg.id]: { text, fingerprint: encryptedContentFingerprint(msg) },
+          }));
         }
 
         const normalized: MessageItem = { ...msg, status: "SENT" };
@@ -1160,14 +1285,8 @@ export default function ChannelChatScreen() {
     },
   });
 
-  const displayContent = (item: MessageItem) => {
-    if (!item.isEncrypted) return item.content;
-    const plain = decryptedContent[item.id];
-    if (plain !== undefined) return plain;
-    return item.status === "PENDING" || item.status === "FAILED"
-      ? item.content
-      : "…";
-  };
+  const displayContent = (item: MessageItem) =>
+    resolveEncryptedDisplayText(item, decryptedContent[item.id]);
 
   const getReplySnippet = (target: MessageItem | null): ReplyToDescriptor | null => {
     if (!target) return null;
@@ -1682,7 +1801,8 @@ export default function ChannelChatScreen() {
               const isMissed = cd?.status === "missed";
               const isDeclined = cd?.status === "declined";
               const isCancelled = cd?.status === "cancelled";
-              const isAnswered = cd?.status === "answered";
+              const isAnswered =
+                cd?.status === "answered" || cd?.status === "ended";
 
               const formatDuration = (sec?: number | null) => {
                 if (!sec) return "";

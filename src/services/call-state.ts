@@ -1,18 +1,19 @@
 // src/services/call-state.ts
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/services/firebase/admin";
+import {
+  buildCallMessageData as buildSharedCallMessageData,
+  buildCallMessageUpdate,
+  type CallLifecycleStatus,
+  isRingingStale,
+} from "@/shared/domain/messaging/callMessages";
 
-export const RINGING_WINDOW_MS = 45_000;
-
-export type CallLifecycleStatus =
-  | "ringing"
-  | "answered"
-  | "declined"
-  | "missed"
-  | "cancelled"
-  | "ended";
+export {
+  type CallLifecycleStatus,
+  isRingingStale,
+  RINGING_WINDOW_MS,
+} from "@/shared/domain/messaging/callMessages";
 
 export type ActiveCallStatus = "ringing" | "answered";
 export type CallParticipantRole = "caller" | "callee";
@@ -56,17 +57,6 @@ export function isTerminalCallStatus(
   status: unknown
 ): status is Exclude<CallLifecycleStatus, "ringing" | "answered"> {
   return typeof status === "string" && TERMINAL.has(status as CallLifecycleStatus);
-}
-
-export function isRingingStale(
-  status: unknown,
-  startedAt: unknown,
-  now = Date.now()
-): boolean {
-  if (status !== "ringing") return false;
-  const started = typeof startedAt === "number" ? startedAt : 0;
-  if (!started) return true;
-  return now - started > RINGING_WINDOW_MS;
 }
 
 export function isActiveCallStatus(
@@ -264,38 +254,42 @@ export async function reconcileCallAsFailed(args: {
 
   let callPersisted = false;
   let messagePersisted = false;
+  let reconciledCall: CallRecord = {
+    callId: args.callId,
+    channelId: args.channelId,
+    callerId: "",
+    callerName: "",
+    status,
+    startedAt: now,
+    isGroup: false,
+  };
 
   try {
     await adminDb.runTransaction(async (tx) => {
       const snap = await tx.get(cref);
-      const existing = snap.exists ? ({ ...(snap.data() as CallRecord), callId: snap.id } as CallRecord) : null;
-      // Never resurrect/keep an active joinable ringing state for a failed establishment.
+      const existing = snap.exists
+        ? ({ ...(snap.data() as CallRecord), callId: snap.id } as CallRecord)
+        : null;
+
+      // Never resurrect/keep an active joinable ringing state for a failed
+      // establishment. An already terminal record is authoritative.
       if (existing && isTerminalCallStatus(existing.status)) {
+        reconciledCall = existing;
+        callPersisted = true;
         return;
       }
-      const base: Partial<CallRecord> = existing || {
+
+      reconciledCall = {
+        ...(existing || reconciledCall),
         callId: args.callId,
         channelId: args.channelId,
-        callerId: "",
-        callerName: "",
         status,
-        startedAt: now,
-        isGroup: false,
+        endedAt: now,
+        durationSec: 0,
+        updatedAt: now,
+        failureReason: args.reason || null,
       };
-      tx.set(
-        cref,
-        {
-          ...base,
-          callId: args.callId,
-          channelId: args.channelId,
-          status,
-          endedAt: now,
-          durationSec: 0,
-          updatedAt: now,
-          failureReason: args.reason || null,
-        },
-        { merge: true }
-      );
+      tx.set(cref, reconciledCall, { merge: true });
     });
     callPersisted = true;
   } catch (e) {
@@ -303,24 +297,14 @@ export async function reconcileCallAsFailed(args: {
   }
 
   try {
-    await adminDb
-      .collection("Channels")
-      .doc(args.channelId)
-      .collection("Messages")
-      .doc(args.callId)
-      .set(
-        {
-          callDetails: {
-            callId: args.callId,
-            channelId: args.channelId,
-            status,
-            endedAt: now,
-            durationSec: 0,
-          },
-          editedAt: now,
-        },
-        { merge: true }
-      );
+    // Use the same complete artifact shape as a successful ring. A partial
+    // `{ callDetails, editedAt }` row is invisible to delta sync and cannot
+    // render as a CALL record.
+    await persistCallMessageUpdate({
+      channelId: args.channelId,
+      call: reconciledCall,
+      now,
+    });
     messagePersisted = true;
   } catch (e) {
     console.warn("[call-state] reconcileCallAsFailed: message persist failed", args.callId, e);
@@ -528,18 +512,27 @@ export async function upsertCallArtifacts(args: {
   ]);
 }
 
+/**
+ * Write a complete, cursor-visible CALL artifact for a lifecycle transition.
+ * Every answer/decline/end/timeout path uses this so partial legacy writes are
+ * not reintroduced.
+ */
+export async function persistCallMessageUpdate(args: {
+  channelId: string;
+  call: CallRecord;
+  now?: number;
+}): Promise<Record<string, unknown>> {
+  const now = args.now ?? Date.now();
+  const patch = buildCallMessageUpdate(args.call, now);
+  await adminDb
+    .collection("Channels")
+    .doc(args.channelId)
+    .collection("Messages")
+    .doc(args.call.callId)
+    .set(patch, { merge: true });
+  return patch;
+}
+
 export function buildCallMessageData(call: CallRecord) {
-  return {
-    id: call.callId,
-    channelId: call.channelId,
-    senderId: call.callerId,
-    senderName: call.callerName,
-    senderRole: call.callerRole || null,
-    type: "CALL" as const,
-    content: call.isGroup ? "የጋራ ቤት የቪዲዮ ጥሪ" : "የቪዲዮ ጥሪ",
-    version: "v1" as const,
-    isEncrypted: false,
-    createdAt: call.startedAt,
-    callDetails: call,
-  };
+  return buildSharedCallMessageData(call);
 }

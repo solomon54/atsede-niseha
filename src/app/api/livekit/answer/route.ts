@@ -1,9 +1,14 @@
 // src/app/api/livekit/answer/route.ts
 import { NextRequest, NextResponse } from "next/server";
+
 import { requireSession } from "@/core/auth/requireSession";
+import {
+  getCallRecord,
+  persistCallMessageUpdate,
+  transitionCallToAnswered,
+} from "@/services/call-state";
 import { adminDb } from "@/services/firebase/admin";
 import { pusherServer } from "@/services/pusher";
-import { getCallRecord, transitionCallToAnswered } from "@/services/call-state";
 
 export async function POST(req: NextRequest) {
   try {
@@ -53,31 +58,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Call not found" }, { status: 404 });
     }
 
-    // Persist message callDetails to reflect authoritative state
-    const msgRef = adminDb.collection("Channels").doc(channelId).collection("Messages").doc(callId);
-    const callDetails = {
-      callId: call.callId,
-      channelId: call.channelId,
-      callerId: call.callerId,
-      callerName: call.callerName,
-      callerPhotoUrl: call.callerPhotoUrl || null,
-      callerRole: call.callerRole || null,
+    // Persist a complete, cursor-visible CALL artifact. A partial callDetails
+    // write would never be found by clients that already synced past the
+    // call's original start time.
+    const lifecycleCall = {
+      ...call,
       status: result.status,
-      startedAt: call.startedAt,
       answeredAt: call.answeredAt || (result.status === "answered" ? now : null),
-      endedAt: call.endedAt || null,
-      durationSec: typeof call.durationSec === "number" ? call.durationSec : 0,
-      isGroup: !!call.isGroup,
+      updatedAt: now,
     };
-    await msgRef.set({ callDetails, editedAt: now }, { merge: true });
+    const messagePatch = await persistCallMessageUpdate({
+      channelId,
+      call: lifecycleCall,
+      now,
+    });
 
     try {
-      await pusherServer.trigger(`private-chat-${channelId}`, "message-updated", {
-        id: callId,
-        channelId,
-        callDetails,
-        editedAt: now,
-      });
+      await pusherServer.trigger(
+        `private-chat-${channelId}`,
+        "message-updated",
+        messagePatch
+      );
     } catch {}
 
     if (result.transitioned || result.status === "answered") {

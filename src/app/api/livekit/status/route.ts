@@ -1,8 +1,15 @@
 // src/app/api/livekit/status/route.ts
 import { NextRequest, NextResponse } from "next/server";
+
 import { requireSession } from "@/core/auth/requireSession";
+import {
+  getCallRecord,
+  isRingingStale,
+  markRingingTimedOut,
+  persistCallMessageUpdate,
+} from "@/services/call-state";
 import { adminDb } from "@/services/firebase/admin";
-import { getCallRecord, isRingingStale } from "@/services/call-state";
+import { pusherServer } from "@/services/pusher";
 
 export async function GET(req: NextRequest) {
   try {
@@ -62,8 +69,39 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const stale = isRingingStale(call.status, call.startedAt);
-    const effectiveStatus = stale ? "missed" : call.status;
+    const rawStatus = call.status;
+    const stale = isRingingStale(rawStatus, call.startedAt);
+
+    // A stale ringing record is reconciled on read. Without this persisted
+    // transition a missed call remains "ringing" in the chat ledger forever
+    // whenever the timeout event was missed. Only the chat message artifact is
+    // updated here; no incoming-call notification behavior is changed.
+    if (stale) {
+      const now = Date.now();
+      const targetChannelId = call.channelId || authChannelId;
+      const timedOut = await markRingingTimedOut({
+        callId,
+        channelId: targetChannelId,
+        now,
+      });
+      if (timedOut.call) {
+        call = timedOut.call;
+        const patch = await persistCallMessageUpdate({
+          channelId: targetChannelId,
+          call,
+          now,
+        });
+        try {
+          await pusherServer.trigger(
+            `private-chat-${targetChannelId}`,
+            "message-updated",
+            patch
+          );
+        } catch {}
+      }
+    }
+
+    const effectiveStatus = call.status;
     const joinable = effectiveStatus === "ringing" || effectiveStatus === "answered";
 
     return NextResponse.json(
@@ -71,7 +109,7 @@ export async function GET(req: NextRequest) {
         callId: call.callId,
         channelId: call.channelId,
         status: effectiveStatus,
-        rawStatus: call.status,
+        rawStatus,
         stale,
         joinable,
         callerId: call.callerId,
