@@ -3,10 +3,12 @@
 "use client";
 
 import { MessageSquare, Phone, PhoneOff, ShieldCheck, Users, Video } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useCall } from "@/features/calling/callProvider";
+import type { CallIdentity } from "@/features/calling/types";
 import { getPusherClient } from "@/services/pusher";
+import { normalizeCallRole } from "@/shared/domain/calling/participantIdentity";
 
 import { loadKey } from "../crypto/keyManager";
 import {
@@ -34,7 +36,6 @@ const MessagingClient: FC<MessagingClientProps> = ({
   conversations: initialConversations,
   currentUserId,
 }) => {
-  const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
   const [conversations, setConversations] =
     useState<ConversationSummary[]>(initialConversations);
@@ -51,11 +52,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
     "convos"
   );
 
-  // Incoming Call State
-  const [incomingCall, setIncomingCall] = useState<{
-    channelId: string;
-    callerName: string;
-  } | null>(null);
+  const { startCall } = useCall();
 
   // Foreground in-app message banner (web): never expose ciphertext.
   // Show decrypted text only when safely available; otherwise show exactly አዲስ መልዕክት.
@@ -167,48 +164,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
     [conversations]
   );
 
-  // Real-time Incoming Call Listener via Pusher
-  useEffect(() => {
-    if (!conversationChannelIds) return;
-
-    try {
-      const pusher = getPusherClient();
-      const channelIds = conversationChannelIds.split("|");
-
-      const cleanups = channelIds.map((channelId) => {
-        const channel = pusher.subscribe(`private-chat-${channelId}`);
-
-        const handleIncomingCall = (data: {
-          channelId: string;
-          callerName: string;
-          callerUid: string;
-        }) => {
-          if (data.callerUid !== currentUserId) {
-            setIncomingCall({
-              channelId: data.channelId,
-              callerName: data.callerName || "ተጠቃሚ",
-            });
-          }
-        };
-
-        const handleDeclined = () => setIncomingCall(null);
-
-        channel.bind("incoming-call", handleIncomingCall);
-        channel.bind("call-declined", handleDeclined);
-
-        return () => {
-          channel.unbind("incoming-call", handleIncomingCall);
-          channel.unbind("call-declined", handleDeclined);
-        };
-      });
-
-      return () => {
-        cleanups.forEach((cleanup) => cleanup());
-      };
-    } catch (e) {
-      console.warn("Pusher subscription error:", e);
-    }
-  }, [conversationChannelIds, currentUserId]);
+  // Incoming-call events are handled once by the app-level CallProvider.
 
   // Keep conversation snippets and unread badges correct for rooms that are
   // not currently open. The open room is already marked read by MessageStream,
@@ -429,6 +385,37 @@ const MessagingClient: FC<MessagingClientProps> = ({
     [conversations, activeChannelId]
   );
 
+  // Reuse the conversation's authoritative peer for any call started from this
+  // room. The call provider still reconciles against /status and /token so the
+  // signed-in user can never be presented as the other participant.
+  const activeCallPeer = useMemo<CallIdentity | undefined>(() => {
+    if (!activeConversation || activeConversation.channel.type === "COMMON_HOUSE") {
+      return undefined;
+    }
+    const other = (activeConversation.otherParticipant ||
+      activeConversation.members?.find((m) => m.userId !== currentUserId)) as
+      | {
+          uid?: string;
+          userId?: string;
+          fullName?: string;
+          displayName?: string;
+          photoUrl?: string;
+          role?: string;
+        }
+      | undefined;
+    if (!other) return undefined;
+    return {
+      uid: other.uid || other.userId || "",
+      name:
+        other.fullName ||
+        other.displayName ||
+        activeConversation.fullName ||
+        "የንስሐ አባል",
+      photoUrl: other.photoUrl || activeConversation.photoUrl || null,
+      role: normalizeCallRole(other.role),
+    };
+  }, [activeConversation, currentUserId]);
+
   // ─────────────────────────────────────────────
   // CHANNEL LABEL HELPER
   // ─────────────────────────────────────────────
@@ -577,7 +564,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
             <div className="flex items-center gap-2.5 shrink-0">
               {activeConversation && (
                 <button
-                  onClick={() => router.push(`/call/${activeConversation.id}`)}
+                  onClick={() => void startCall(activeConversation.id, activeCallPeer)}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-800 border border-amber-500/30 rounded-full text-xs font-bold transition-all hover:scale-105 active:scale-95 shadow-sm"
                   title={
                     activeConversation.channel.type === "COMMON_HOUSE"
@@ -665,6 +652,7 @@ const MessagingClient: FC<MessagingClientProps> = ({
                   encryptionKeyId={session.familyId}
                   currentUserRole={session.role as ChannelRole}
                   currentUserName={session.fullName}
+                  callPeer={activeCallPeer}
                 />
                 <div className="flex-none bg-white border-t p-2 sm:p-3 pb-[env(safe-area-inset-bottom)]">
                   <div className="max-w-4xl mx-auto w-full px-2 sm:px-4">

@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useCall } from "@/features/calling/callProvider";
+import type { CallIdentity } from "@/features/calling/types";
 import {
   type MessageDeliveryFeedback,
   type MessageDeliveryState,
@@ -104,6 +106,8 @@ interface MessageBubbleProps {
   isDiacon?: boolean;
   currentUserRole?: ChannelRole;
   currentUserName?: string;
+  /** Authoritative conversation peer used when this call row starts a new call. */
+  callPeer?: CallIdentity;
   delivery?: MessageDeliveryFeedback;
   onDelete?: (messageId: string) => void;
   onCancel?: (messageId: string) => void;
@@ -130,11 +134,14 @@ const MessageBubble: FC<MessageBubbleProps> = ({
   isDiacon = false,
   currentUserRole,
   currentUserName,
+  callPeer,
   delivery,
   onDelete,
   onCancel,
   onResend,
 }) => {
+  const { startCall } = useCall();
+
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -465,7 +472,7 @@ const MessageBubble: FC<MessageBubbleProps> = ({
             type="button"
             onClick={() => {
               if (message.channelId) {
-                window.location.href = `/call/${message.channelId}`;
+                void startCall(message.channelId, callPeer);
               }
             }}
             className="px-3 py-1 bg-amber-600 hover:bg-amber-500 rounded-full text-xs font-bold text-white shadow transition-transform active:scale-95 shrink-0 flex items-center gap-1"

@@ -6,10 +6,11 @@ import "@/styles/themes.css";
 import type { Metadata } from "next";
 import { Inter, Noto_Sans_Ethiopic } from "next/font/google";
 
+import { CallProvider } from "@/features/calling/callProvider";
+import { CallRuntime } from "@/features/calling/components/CallRuntime";
 import { SanctuaryNavigation } from "@/shared/components/layout/SanctuaryNavigation";
 import { ImmersiveTransition } from "@/shared/components/ui/immersive-transition";
 import { SanctuaryBackground } from "@/shared/components/ui/sanctuary-background";
-import { GlobalIncomingCallOverlay } from "@/shared/components/calling/GlobalIncomingCallOverlay";
 
 import { LegacySupport } from "./legacy-support";
 import { SWRegister } from "./sw-register";
@@ -65,21 +66,24 @@ export default function RootLayout({
         {/* Service Worker registration */}
         <SWRegister />
 
-        {/* Background visuals */}
-        <SanctuaryBackground />
+        {/* Call state is app-level: one controller, one LiveKit room, one
+            set of global call surfaces across every page. */}
+        <CallProvider>
+          {/* Background visuals */}
+          <SanctuaryBackground />
 
-        {/* Main content wrapper */}
-        <ImmersiveTransition>
-          <main className="md:pl-20 lg:pl-64 pb-16 md:pb-0 min-h-screen">
-            {children}
-          </main>
-        </ImmersiveTransition>
+          {/* Main content wrapper */}
+          <ImmersiveTransition>
+            <main className="md:pl-20 lg:pl-64 pb-16 md:pb-0 min-h-screen">
+              {children}
+            </main>
+          </ImmersiveTransition>
 
-        {/* Navigation only appears after login */}
-        <SanctuaryNavigation />
+          {/* Navigation only appears after login */}
+          <SanctuaryNavigation />
 
-        {/* Global Incoming Call Ringing Overlay */}
-        <GlobalIncomingCallOverlay />
+          <CallRuntime />
+        </CallProvider>
       </body>
     </html>
   );

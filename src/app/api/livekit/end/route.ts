@@ -62,8 +62,15 @@ export async function POST(req: NextRequest) {
     });
 
     const now = Date.now();
+    // Small compatible contract fix: callers may cancel while ringing, and the
+    // shared lifecycle already defines `cancelled`. Other clients that only send
+    // "ended" keep their existing behavior.
     const requested =
-      body.status === "missed" && existing.status === "ringing" ? "missed" : "ended";
+      existing.status === "ringing" && body.status === "missed"
+        ? "missed"
+        : existing.status === "ringing" && body.status === "cancelled"
+        ? "cancelled"
+        : "ended";
     const result = await transitionCallToTerminal({
       callId,
       channelId,
@@ -113,12 +120,16 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ success: true, callId, status: result.status });
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (err instanceof Error && err.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (err?.status === 403) {
-      return NextResponse.json({ error: "Forbidden", reason: err.reason }, { status: 403 });
+    const error = err as { status?: unknown; reason?: unknown } | null;
+    if (error?.status === 403) {
+      return NextResponse.json(
+        { error: "Forbidden", reason: typeof error.reason === "string" ? error.reason : undefined },
+        { status: 403 }
+      );
     }
     console.error("[POST /api/livekit/end]", err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

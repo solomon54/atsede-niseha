@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 
+import type { CallIdentity } from "@/features/calling/types";
 import { getMessageDeliveryFeedback } from "@/shared/domain/messaging/syncFeedback";
 import { useIsMounted } from "@/shared/hooks/useIsMounted";
 import { formatEthiopianDateLabel } from "@/shared/utils/calendar/ethiopianCalendar";
@@ -42,6 +43,7 @@ interface MessageStreamProps {
   encryptionKeyId?: string;
   currentUserRole?: ChannelRole;
   currentUserName?: string;
+  callPeer?: CallIdentity;
 }
 
 function formatDateChip(timestamp: number): string {
@@ -76,7 +78,7 @@ const isSameDay = (ts1: number, ts2: number): boolean => {
 };
 
 const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
-  ({ channelId, currentUserId, encryptionKeyId, currentUserRole, currentUserName }, ref) => {
+  ({ channelId, currentUserId, encryptionKeyId, currentUserRole, currentUserName, callPeer }, ref) => {
     const isMounted = useIsMounted();
     const scrollRef = useRef<HTMLDivElement>(null);
     const initialScrollDone = useRef(false);
@@ -396,6 +398,7 @@ const MessageStream = forwardRef<MessageStreamHandle, MessageStreamProps>(
                     isDiacon={msg.isDiacon}
                     currentUserRole={currentUserRole}
                     currentUserName={grouped ? undefined : currentUserName}
+                    callPeer={callPeer}
                     delivery={delivery}
                     onDelete={handleDelete}
                     onCancel={handleCancel}
