@@ -1,7 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
   <uses-permission android:name="android.permission.CAMERA"/>
+  <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL"/>
   <uses-permission android:name="android.permission.INTERNET"/>
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
@@ -29,6 +31,23 @@
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
+
+    <!-- Incoming call components. The library service is replaced by our
+         subclass so call pushes can ring natively while others use Expo. -->
+    <service android:name="expo.modules.notifications.service.ExpoFirebaseMessagingService" tools:node="remove"/>
+    <service android:name=".call.CallFirebaseMessagingService" android:exported="false">
+      <intent-filter android:priority="-1">
+        <action android:name="com.google.firebase.MESSAGING_EVENT"/>
+      </intent-filter>
+    </service>
+    <service android:name=".call.CallRingtoneService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>
+    <receiver android:name=".call.CallActionReceiver" android:exported="false">
+      <intent-filter>
+        <action android:name="org.atsedeniseha.app.call.CALL_ACTION"/>
+      </intent-filter>
+    </receiver>
+    <activity android:name=".call.IncomingCallActivity" android:exported="false" android:theme="@style/CallTheme" android:launchMode="singleTop" android:showWhenLocked="true" android:turnScreenOn="true" android:showForAllUsers="true"/>
+
     <activity android:name=".MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait" android:showWhenLocked="true" android:turnScreenOn="true" android:showForAllUsers="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>

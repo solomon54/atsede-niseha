@@ -149,6 +149,9 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // Incoming-call FCM handling (Explicit dependency: expo-notifications only
+    // exposes firebase-messaging at runtime).
+    implementation("com.google.firebase:firebase-messaging:24.0.1")
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";

@@ -31,6 +31,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { registerGlobals } from "@livekit/react-native";
 import { getActiveChatChannel, setActiveChatChannel } from "../src/lib/active-chat";
 import { AuthProvider, useAuth } from "../src/lib/auth-context";
+import { CallProvider, useCallController } from "../src/lib/calling/callController";
+import { IncomingCallPayload } from "../src/lib/calling/types";
 import { notificationService } from "../src/lib/notifications";
 import { mobileSyncService } from "../src/lib/sync";
 import { THEME } from "../src/constants/theme";
@@ -56,7 +58,7 @@ const queryClient = new QueryClient({
  * token is read from SecureStore asynchronously, so registering in RootLayout
  * would always fire an unauthenticated request.
  */
-function NotificationBridge() {
+function PushTokenBridge() {
   const { isAuthenticated, isLoading } = useAuth();
 
   useEffect(() => {
@@ -69,6 +71,69 @@ function NotificationBridge() {
       cleanupTokenRefresh();
     };
   }, [isAuthenticated, isLoading]);
+
+  return null;
+}
+
+/**
+ * Notification responses are queued until the session is hydrated. This keeps
+ * a cold-start call tap from being replaced by the auth route.
+ */
+function CallNotificationBridge() {
+  const router = useRouter();
+  const { isAuthenticated, isLoading } = useAuth();
+  const { showIncoming, answer, decline } = useCallController();
+  const ready = !isLoading && isAuthenticated;
+  const readyRef = useRef(ready);
+  const pendingRoute = useRef<string | null>(null);
+  const pendingPayload = useRef<IncomingCallPayload | null>(null);
+  const pendingAction = useRef<{ action: "answer" | "decline"; payload: IncomingCallPayload } | null>(null);
+
+  useEffect(() => {
+    readyRef.current = ready;
+  }, [ready]);
+
+  useEffect(() => {
+    const cleanup = notificationService.setupListeners({
+      onNavigate: (route) => {
+        if (readyRef.current) router.push(route as any);
+        else pendingRoute.current = route;
+      },
+      onCallPayload: (payload) => {
+        if (readyRef.current) showIncoming(payload);
+        else pendingPayload.current = payload;
+      },
+      onCallAction: (action, payload) => {
+        if (readyRef.current) {
+          showIncoming(payload);
+          if (action === "answer") void answer();
+          else void decline();
+        } else {
+          pendingAction.current = { action, payload };
+        }
+      },
+    });
+    return cleanup;
+  }, [answer, decline, router, showIncoming]);
+
+  useEffect(() => {
+    if (!ready) return;
+    if (pendingPayload.current) {
+      showIncoming(pendingPayload.current);
+      pendingPayload.current = null;
+    }
+    if (pendingAction.current) {
+      const { action, payload } = pendingAction.current;
+      showIncoming(payload);
+      if (action === "answer") void answer();
+      else void decline();
+      pendingAction.current = null;
+    }
+    if (pendingRoute.current) {
+      router.push(pendingRoute.current as any);
+      pendingRoute.current = null;
+    }
+  }, [answer, decline, ready, router, showIncoming]);
 
   return null;
 }
@@ -124,8 +189,6 @@ function SyncBridge() {
 }
 
 export default function RootLayout() {
-  const router = useRouter();
-
   useEffect(() => {
     // 1. Enable FLAG_SECURE on Android to protect pastoral counseling screens
     async function enableScreenPrivacy() {
@@ -136,48 +199,40 @@ export default function RootLayout() {
       }
     }
     enableScreenPrivacy();
-
-    // 2. Deep-link navigation when a notification is tapped.
-    const cleanupListeners = notificationService.setupListeners(
-      (targetRoute) => {
-        router.push(targetRoute as any);
-      }
-    );
-
-    return () => {
-      cleanupListeners();
-    };
-  }, [router]);
+  }, []);
 
   return (
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <NotificationBridge />
-          <MessagingCacheBoundary />
-          <SyncBridge />
-          <StatusBar style="dark" backgroundColor={THEME.colors.navigationBg} />
-          <Stack
-            screenOptions={{
-              headerStyle: { backgroundColor: THEME.colors.navigationBg },
-              headerTintColor: THEME.colors.sacredCrimson,
-              headerTitleStyle: {
-                fontWeight: "800",
-                color: THEME.colors.sacredCrimson,
-              },
-              contentStyle: { backgroundColor: THEME.colors.sanctuaryBg },
-            }}
-          >
-            <Stack.Screen name="index" options={{ headerShown: false }} />
-            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="children/[id]" options={{ headerShown: false }} />
-            <Stack.Screen name="children/register" options={{ headerShown: false }} />
-            <Stack.Screen name="governor/authorize" options={{ headerShown: false }} />
-            <Stack.Screen name="governor/fathers" options={{ headerShown: false }} />
-            <Stack.Screen name="governor/students" options={{ headerShown: false }} />
-            <Stack.Screen name="settings" options={{ headerShown: false }} />
-          </Stack>
+          <PushTokenBridge />
+          <CallProvider>
+            <CallNotificationBridge />
+            <MessagingCacheBoundary />
+            <SyncBridge />
+            <StatusBar style="dark" backgroundColor={THEME.colors.navigationBg} />
+            <Stack
+              screenOptions={{
+                headerStyle: { backgroundColor: THEME.colors.navigationBg },
+                headerTintColor: THEME.colors.sacredCrimson,
+                headerTitleStyle: {
+                  fontWeight: "800",
+                  color: THEME.colors.sacredCrimson,
+                },
+                contentStyle: { backgroundColor: THEME.colors.sanctuaryBg },
+              }}
+            >
+              <Stack.Screen name="index" options={{ headerShown: false }} />
+              <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+              <Stack.Screen name="children/[id]" options={{ headerShown: false }} />
+              <Stack.Screen name="children/register" options={{ headerShown: false }} />
+              <Stack.Screen name="governor/authorize" options={{ headerShown: false }} />
+              <Stack.Screen name="governor/fathers" options={{ headerShown: false }} />
+              <Stack.Screen name="governor/students" options={{ headerShown: false }} />
+              <Stack.Screen name="settings" options={{ headerShown: false }} />
+            </Stack>
+          </CallProvider>
         </AuthProvider>
       </QueryClientProvider>
     </SafeAreaProvider>

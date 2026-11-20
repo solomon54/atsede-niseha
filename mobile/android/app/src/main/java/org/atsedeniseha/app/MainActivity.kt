@@ -1,5 +1,6 @@
 package org.atsedeniseha.app
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 
@@ -10,6 +11,8 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 
 import expo.modules.ReactActivityDelegateWrapper
 
+import org.atsedeniseha.app.call.CallActivityBridge
+
 class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
@@ -17,6 +20,13 @@ class MainActivity : ReactActivity() {
     // This is required for expo-splash-screen.
     setTheme(R.style.AppTheme);
     super.onCreate(null)
+    CallActivityBridge.forward(this, intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    CallActivityBridge.forward(this, intent)
   }
 
   /**

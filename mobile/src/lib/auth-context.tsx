@@ -10,6 +10,7 @@ import { useRouter } from "expo-router";
 import { apiRequest } from "./api";
 import { authEvents } from "./auth-events";
 import { offlineCache } from "./cache";
+import { notificationService } from "./notifications";
 import { resetMobilePusher } from "./pusher";
 import { authStorage } from "./storage";
 import { mobileSyncService } from "./sync";
@@ -368,10 +369,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     try {
-      // Stop pushes to this device before the token is invalidated.
-      await apiRequest("/api/notifications/fcm", {
-        method: "DELETE",
-      }).catch(() => {});
+      // Unregister this device only; another device stays registered.
+      await notificationService.unregisterForPushNotifications().catch(() => {});
 
       await apiRequest("/api/auth/logout", {
         method: "POST",

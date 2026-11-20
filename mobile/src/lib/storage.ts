@@ -7,6 +7,7 @@ const USER_UID_KEY = "atsede_user_uid";
 // to identify the current sender because Firestore stores Firebase uids.
 const FIREBASE_UID_KEY = "atsede_firebase_uid";
 const FAMILY_ID_KEY = "atsede_family_id";
+const FCM_TOKEN_KEY = "atsede_fcm_token";
 
 export const authStorage = {
   async saveToken(token: string): Promise<void> {
@@ -60,6 +61,19 @@ export const authStorage = {
     return { role, eotcUid, uid, familyId };
   },
 
+  /** Device-scoped FCM token; kept so logout can unregister only this device. */
+  async saveFcmToken(token: string): Promise<void> {
+    await SecureStore.setItemAsync(FCM_TOKEN_KEY, token);
+  },
+
+  async getFcmToken(): Promise<string | null> {
+    return await SecureStore.getItemAsync(FCM_TOKEN_KEY);
+  },
+
+  async clearFcmToken(): Promise<void> {
+    await SecureStore.deleteItemAsync(FCM_TOKEN_KEY);
+  },
+
   async clear(): Promise<void> {
     await Promise.all([
       SecureStore.deleteItemAsync(TOKEN_KEY),
@@ -67,6 +81,7 @@ export const authStorage = {
       SecureStore.deleteItemAsync(USER_UID_KEY),
       SecureStore.deleteItemAsync(FIREBASE_UID_KEY),
       SecureStore.deleteItemAsync(FAMILY_ID_KEY),
+      SecureStore.deleteItemAsync(FCM_TOKEN_KEY),
     ]);
   },
 };
