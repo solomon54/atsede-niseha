@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { AppState, Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import { usePathname, useRouter } from "expo-router";
 import { AudioSession, LiveKitRoom } from "@livekit/react-native";
@@ -143,6 +143,9 @@ function MiniCallIndicator({
   }, [call.status, call.answeredAt]);
 
   const isAnswered = call.status === "answered";
+  const peerName = call.peer?.name || (call.isGroup ? "የቤተሰብ ምክክር" : "የንስሐ አባል");
+  const peerPhoto = call.peer?.photoUrl;
+  const initial = peerName.trim().charAt(0) || "✞";
 
   return (
     <View style={styles.mini}>
@@ -152,13 +155,22 @@ function MiniCallIndicator({
         activeOpacity={0.85}
         accessibilityLabel="Return to active call"
       >
-        <View style={[styles.miniDot, !isAnswered && styles.miniDotRinging]} />
+        <View style={styles.miniAvatarWrap}>
+          {peerPhoto ? (
+            <Image source={{ uri: peerPhoto }} style={styles.miniAvatar} />
+          ) : (
+            <View style={styles.miniAvatarFallback}>
+              <Text style={styles.miniAvatarInitial}>{initial}</Text>
+            </View>
+          )}
+          <View style={[styles.miniDot, !isAnswered && styles.miniDotRinging]} />
+        </View>
         <View style={styles.miniText}>
           <Text style={styles.miniTitle} numberOfLines={1}>
-            {call.peer.name}
+            {peerName}
           </Text>
-          <Text style={styles.miniSub}>
-            {callRoleLabel(call.peer.role)} · {label}
+          <Text style={styles.miniSub} numberOfLines={1}>
+            {callRoleLabel(call.peer?.role)} · {label}
           </Text>
         </View>
         <View style={styles.miniOpenBadge}>
@@ -942,10 +954,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   );
 
   const showActiveRoom = call?.status === "answered" && !!call.token;
-  const showFullScreenView = showActiveRoom && !isMinimized;
+  const showFullScreenView = showActiveRoom && !isMinimized && pathname.startsWith("/call/");
   const showMini =
-    (call?.status === "answered" && (isMinimized || !pathname.startsWith("/call/"))) ||
-    (call?.status === "ringing" && !pathname.startsWith("/call/"));
+    !!call &&
+    call.status !== "ended" &&
+    (isMinimized || !pathname.startsWith("/call/"));
 
   return (
     <CallControllerContext.Provider value={value}>
@@ -1017,12 +1030,42 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
   },
+  miniAvatarWrap: {
+    position: "relative",
+    marginRight: 10,
+  },
+  miniAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1.5,
+    borderColor: "#D97706",
+  },
+  miniAvatarFallback: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#1E293B",
+    borderWidth: 1.5,
+    borderColor: "#D97706",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  miniAvatarInitial: {
+    color: "#F8FAFC",
+    fontSize: 16,
+    fontWeight: "800",
+  },
   miniDot: {
+    position: "absolute",
+    bottom: -1,
+    right: -1,
     width: 10,
     height: 10,
     borderRadius: 5,
     backgroundColor: "#22C55E",
-    marginRight: 10,
+    borderWidth: 1.5,
+    borderColor: "#111C33",
   },
   miniDotRinging: {
     backgroundColor: "#F59E0B",

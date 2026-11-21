@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Image,
   SafeAreaView,
   StatusBar,
@@ -51,6 +52,26 @@ export default function ChannelCallScreen() {
   } = useCallController();
   const startedRef = useRef(false);
   const [validationFailed, setValidationFailed] = useState(false);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.14,
+          duration: 650,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 650,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [pulseAnim]);
 
   const channelId = value(params.channelId);
   const routeCallId = value(params.callId);
@@ -185,6 +206,9 @@ export default function ChannelCallScreen() {
       role: value(params.role) || "STUDENT",
       photoUrl: value(params.photo) || null,
     };
+    const displayName = peer.name || (active?.isGroup ? "የቤተሰብ ምክክር" : "የንስሐ አባል");
+    const initial = displayName.trim().charAt(0) || "✞";
+
     return (
       <SafeAreaView style={styles.ringing}>
         <StatusBar barStyle="light-content" />
@@ -199,10 +223,10 @@ export default function ChannelCallScreen() {
             <Image source={{ uri: peer.photoUrl }} style={styles.avatar} />
           ) : (
             <View style={[styles.avatar, styles.avatarFallback]}>
-              <Text style={styles.initial}>{peer.name.charAt(0) || "✞"}</Text>
+              <Text style={styles.initial}>{initial}</Text>
             </View>
           )}
-          <Text style={styles.peerName}>{peer.name}</Text>
+          <Text style={styles.peerName}>{displayName}</Text>
           <Text style={styles.peerRole}>{callRoleLabel(peer.role)}</Text>
           <Text style={styles.ringingStatus}>ጥሪ በመደወል ላይ...</Text>
         </View>
@@ -214,14 +238,16 @@ export default function ChannelCallScreen() {
             <PhoneOff color="#FFFFFF" size={30} />
             <Text style={styles.actionText}>አትቀበል</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.action, styles.answer]}
-            onPress={() => void answer()}
-            disabled={active?.transitioning}
-          >
-            <Phone color="#FFFFFF" size={30} />
-            <Text style={styles.actionText}>ተቀበል</Text>
-          </TouchableOpacity>
+          <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+            <TouchableOpacity
+              style={[styles.action, styles.answer]}
+              onPress={() => void answer()}
+              disabled={active?.transitioning}
+            >
+              <Phone color="#FFFFFF" size={30} />
+              <Text style={styles.actionText}>ተቀበል</Text>
+            </TouchableOpacity>
+          </Animated.View>
         </View>
       </SafeAreaView>
     );

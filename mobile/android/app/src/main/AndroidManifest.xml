@@ -37,8 +37,8 @@
         <action android:name="com.google.firebase.MESSAGING_EVENT"/>
       </intent-filter>
     </service>
-    <service android:name=".call.CallRingtoneService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>
-    <activity android:name=".call.IncomingCallActivity" android:exported="false" android:theme="@style/CallTheme" android:launchMode="singleTop" android:showWhenLocked="true" android:turnScreenOn="true" android:showForAllUsers="true"/>
+    <service android:name=".call.CallRingtoneService" android:exported="false" android:foregroundServiceType="phoneCall|mediaPlayback"/>
+    <activity android:name=".call.IncomingCallActivity" android:exported="true" android:theme="@style/CallTheme" android:launchMode="singleTop" android:showWhenLocked="true" android:turnScreenOn="true" android:showForAllUsers="true" tools:targetApi="27"/>
     <activity android:name=".MainActivity" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:theme="@style/Theme.App.SplashScreen" android:exported="true" android:screenOrientation="portrait" android:showWhenLocked="true" android:turnScreenOn="true" android:showForAllUsers="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>

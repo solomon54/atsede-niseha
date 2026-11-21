@@ -35,7 +35,14 @@ class CallRingtoneService : Service() {
                             this,
                             CallIntents.NOTIFICATION_ID,
                             notification,
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                        )
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        ServiceCompat.startForeground(
+                            this,
+                            CallIntents.NOTIFICATION_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
                         )
                     } else {
                         startForeground(CallIntents.NOTIFICATION_ID, notification)

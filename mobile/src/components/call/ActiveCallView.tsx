@@ -44,20 +44,31 @@ function durationLabel(startedAt?: number | null): string {
   return `${mins}:${secs}`;
 }
 
-function PeerPhoto({ peer, name, size }: { peer?: CallPeer; name: string; size: number }) {
-  if (peer?.photoUrl) {
+function PeerPhoto({
+  peer,
+  name,
+  size,
+}: {
+  peer?: CallPeer | null;
+  name?: string | null;
+  size: number;
+}) {
+  const photoUrl = peer?.photoUrl;
+  if (photoUrl) {
     return (
       <Image
-        source={{ uri: peer.photoUrl }}
+        source={{ uri: photoUrl }}
         style={[styles.photo, { width: size, height: size, borderRadius: size / 2 }]}
         resizeMode="cover"
       />
     );
   }
+  const cleanName = (name || peer?.name || "").trim();
+  const initial = cleanName ? cleanName.charAt(0) : "✞";
   return (
     <View style={[styles.initialCircle, { width: size, height: size, borderRadius: size / 2 }]}>
       <Text style={[styles.initialText, { fontSize: size * 0.36 }]}>
-        {name.charAt(0) || "✞"}
+        {initial}
       </Text>
     </View>
   );
@@ -151,8 +162,10 @@ export default function ActiveCallView({
             <Text style={styles.badge}>
               {call.isGroup ? "✞ የጋራ ቤት ምክክር" : "✞ የቪዲዮ ምክክር"}
             </Text>
-            <Text style={styles.peerName}>{call.peer.name}</Text>
-            <Text style={styles.peerRole}>{callRoleLabel(call.peer.role)}</Text>
+            <Text style={styles.peerName}>
+              {call.peer?.name || (call.isGroup ? "የቤተሰብ ምክክር" : "የንስሐ አባል")}
+            </Text>
+            <Text style={styles.peerRole}>{callRoleLabel(call.peer?.role)}</Text>
           </View>
         </View>
         <View style={styles.headerRight}>
@@ -176,22 +189,24 @@ export default function ActiveCallView({
             ) : (
               <View style={styles.cameraOffTile}>
                 <PeerPhoto peer={stage.peer} name={stage.name} size={112} />
-                <Text style={styles.tileName}>{stage.name}</Text>
+                <Text style={styles.tileName}>{stage.name || "ተሳታፊ"}</Text>
                 <Text style={styles.tileRole}>{callRoleLabel(stage.peer?.role)}</Text>
                 <Text style={styles.cameraOff}>ካሜራ ጠፍቷል</Text>
               </View>
             )}
             <View style={styles.nameBadge}>
               <Text style={styles.nameBadgeText} numberOfLines={1}>
-                {stage.name}
+                {stage.name || "ተሳታፊ"}
               </Text>
             </View>
           </View>
         ) : (
           <View style={styles.waiting}>
-            <PeerPhoto peer={call.peer} name={call.peer.name} size={104} />
-            <Text style={styles.waitingTitle}>{call.peer.name}</Text>
-            <Text style={styles.waitingSub}>{callRoleLabel(call.peer.role)}</Text>
+            <PeerPhoto peer={call.peer} name={call.peer?.name} size={104} />
+            <Text style={styles.waitingTitle}>
+              {call.peer?.name || (call.isGroup ? "የቤተሰብ ምክክር" : "የንስሐ አባል")}
+            </Text>
+            <Text style={styles.waitingSub}>{callRoleLabel(call.peer?.role)}</Text>
             <Text style={styles.cameraOff}>ተሳታፊዎችን በመጠበቅ ላይ…</Text>
           </View>
         )}

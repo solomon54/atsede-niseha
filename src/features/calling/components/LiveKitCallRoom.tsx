@@ -82,10 +82,10 @@ export default function LiveKitCallRoom({ channelId }: { channelId: string }) {
         <div className="flex flex-col items-center gap-5 text-center">
           <div className="h-28 w-28 overflow-hidden rounded-full border-4 border-amber-500/60 bg-slate-800 shadow-2xl">
             {call.peer.photoUrl ? (
-              <img src={call.peer.photoUrl} alt={call.peer.name} className="h-full w-full object-cover" />
+              <img src={call.peer.photoUrl} alt={call.peer.name || ""} className="h-full w-full object-cover" />
             ) : (
               <div className="flex h-full w-full items-center justify-center font-serif text-3xl font-black text-amber-400">
-                {call.peer.name.charAt(0) || "✞"}
+                {(call.peer?.name || "").trim().charAt(0) || "✞"}
               </div>
             )}
           </div>
@@ -171,9 +171,9 @@ export default function LiveKitCallRoom({ channelId }: { channelId: string }) {
           <div className="flex flex-1 flex-col items-center justify-center rounded-3xl border border-slate-800/80 bg-slate-900/40 p-6 text-center backdrop-blur-sm">
             <div className="mb-4 flex h-24 w-24 items-center justify-center overflow-hidden rounded-full border-2 border-amber-500/30 bg-amber-500/10 text-amber-400">
               {call.peer.photoUrl ? (
-                <img src={call.peer.photoUrl} alt={call.peer.name} className="h-full w-full object-cover" />
+                <img src={call.peer.photoUrl} alt={call.peer.name || ""} className="h-full w-full object-cover" />
               ) : (
-                <span className="font-serif text-3xl">{call.peer.name.charAt(0) || "✞"}</span>
+                <span className="font-serif text-3xl">{(call.peer?.name || "").trim().charAt(0) || "✞"}</span>
               )}
             </div>
             <h2 className="mb-1 text-lg font-bold text-slate-100">{call.peer.name}</h2>

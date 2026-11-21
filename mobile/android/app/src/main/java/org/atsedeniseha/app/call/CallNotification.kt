@@ -34,6 +34,13 @@ object CallNotification {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
 
+        // Clean up legacy channels that might have lower importance or stale notification policy
+        try {
+            manager.deleteNotificationChannel("atsede-native-call")
+            manager.deleteNotificationChannel("atsede-native-call-v2")
+            manager.deleteNotificationChannel("atsede-native-call-v3")
+        } catch (_: Exception) {}
+
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Incoming calls",
@@ -47,6 +54,7 @@ object CallNotification {
                 Uri.parse("android.resource://${context.packageName}/${R.raw.call_ring}"),
                 Notification.AUDIO_ATTRIBUTES_DEFAULT
             )
+            setBypassDnd(true)
         }
         manager.createNotificationChannel(channel)
     }
@@ -78,7 +86,11 @@ object CallNotification {
             Intent(context, IncomingCallActivity::class.java)
                 .putExtra(CallIntents.EXTRA_CALL_DATA, payload)
                 .putExtra(CallIntents.EXTRA_CALL_ID, callId)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                ),
             pendingFlags()
         )
 
@@ -95,7 +107,6 @@ object CallNotification {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setSound(Uri.parse("android.resource://${context.packageName}/${R.raw.call_ring}"))
             .setVibrate(longArrayOf(0, 500, 250, 500, 250, 500))
-            .setOnlyAlertOnce(true)
             .setContentIntent(fullScreenIntent)
             .setFullScreenIntent(fullScreenIntent, true)
             .addAction(
@@ -142,7 +153,12 @@ object CallNotification {
                 val callActivityIntent = Intent(context, IncomingCallActivity::class.java).apply {
                     putExtra(CallIntents.EXTRA_CALL_DATA, payload)
                     putExtra(CallIntents.EXTRA_CALL_ID, callId ?: "")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    )
                 }
                 context.startActivity(callActivityIntent)
             } catch (_: Exception) {}

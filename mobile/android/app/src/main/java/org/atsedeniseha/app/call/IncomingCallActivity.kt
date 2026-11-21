@@ -33,6 +33,10 @@ class IncomingCallActivity : Activity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            keyguardManager?.requestDismissKeyguard(this, null)
+        }
         @Suppress("DEPRECATION")
         window.addFlags(
             WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or

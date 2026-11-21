@@ -21,7 +21,7 @@ object CallIntents {
     const val EVENT_DECLINE = "CallDecline"
     const val EVENT_HANGUP = "CallHangup"
 
-    const val NOTIFICATION_CHANNEL_ID = "atsede-native-call"
+    const val NOTIFICATION_CHANNEL_ID = "atsede-native-call-v4"
     const val NOTIFICATION_ID = 9101
 }
 
