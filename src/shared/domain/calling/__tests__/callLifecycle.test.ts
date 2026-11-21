@@ -61,4 +61,5 @@ test("answered participants may end; ringing recipients may only decline", () =>
   assert.equal(canActorPerformCallAction(answered, "alice", "end").allowed, true);
   assert.equal(canActorPerformCallAction(answered, "outsider", "end").allowed, false);
   assert.equal(canActorPerformCallAction(ringing, "alice", "end").allowed, false);
+  assert.equal(canActorPerformCallAction(ringing, "alice", "decline").allowed, true);
 });

@@ -22,6 +22,8 @@ export {
   RINGING_WINDOW_MS,
 } from "@/shared/domain/messaging/callMessages";
 
+export const MAX_ACTIVE_CALL_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 export type ActiveCallStatus = "ringing" | "answered";
 export type CallParticipantRole = "caller" | "callee";
 
@@ -134,14 +136,19 @@ export async function claimUserForCall(args: {
     if (current) {
       const markerLocallyActive = isActiveCallStatus(current.status, current.startedAt, now);
 
-      // If marker appears active locally, OR marker says answered (never stale by time) / could be inconsistent,
+      // If marker appears active locally, OR marker says answered (check max duration staleness) / could be inconsistent,
       // consult authoritative call record before blocking forever or before allowing takeover.
       if (markerLocallyActive || current.status === "answered" || (current.status === "ringing" && isRingingStale(current.status, current.startedAt, now))) {
         const callSnap = await tx.get(callRef(current.activeCallId));
         if (callSnap.exists) {
           const call = { ...(callSnap.data() as CallRecord), callId: callSnap.id };
           const callStaleRinging = isRingingStale(call.status, call.startedAt, now);
-          const callActive = call.status === "answered" || (call.status === "ringing" && !callStaleRinging);
+          const callStaleAnswered =
+            call.status === "answered" &&
+            now - (call.answeredAt || call.startedAt || 0) > MAX_ACTIVE_CALL_DURATION_MS;
+          const callActive =
+            (call.status === "answered" && !callStaleAnswered) ||
+            (call.status === "ringing" && !callStaleRinging);
 
           if (callActive) {
             // Authoritative call still active: block competing claim for different callId.
@@ -160,10 +167,17 @@ export async function claimUserForCall(args: {
                 { merge: false }
               );
             }
+            console.info("[call-state] claim rejected: user active in call", {
+              uid: args.uid,
+              requestedCallId: args.callId,
+              activeCallId: current.activeCallId,
+              callStatus: call.status,
+              callAgeMs: now - (call.startedAt || 0),
+            });
             return { ok: false as const, reason: "busy" as const, current };
           }
 
-          if (isTerminalCallStatus(call.status) || callStaleRinging) {
+          if (isTerminalCallStatus(call.status) || callStaleRinging || callStaleAnswered) {
             // Terminal/stale authoritative call: safe callId-scoped self-healing.
             // Delete only this old marker (same callId) before taking over with new call.
             tx.delete(ref);
@@ -180,7 +194,15 @@ export async function claimUserForCall(args: {
           }
         } else {
           // Missing authoritative call record: if marker is locally active (esp. answered), be conservative.
-          if (markerLocallyActive) {
+          const markerStaleAnswered =
+            current.status === "answered" &&
+            now - (current.updatedAt || current.startedAt || 0) > MAX_ACTIVE_CALL_DURATION_MS;
+          if (markerLocallyActive && !markerStaleAnswered) {
+            console.info("[call-state] claim rejected: missing call record but marker active", {
+              uid: args.uid,
+              requestedCallId: args.callId,
+              activeCallId: current.activeCallId,
+            });
             return { ok: false as const, reason: "busy" as const, current };
           }
           // Stale/non-active marker with missing call record can be cleared for self-healing.
@@ -437,6 +459,16 @@ export async function transitionCallToTerminal(args: {
       return { ok: true, status: call.status, call, transitioned: false };
     }
 
+    if (call.status === "answered" && args.to !== "ended") {
+      // An answered call is active; it cannot be timed out as missed, cancelled, or declined.
+      console.info("[call-state] transitionCallToTerminal rejected: call already answered", {
+        callId: args.callId,
+        channelId: args.channelId,
+        requestedStatus: args.to,
+      });
+      return { ok: true, status: call.status, call, transitioned: false };
+    }
+
     const finalStatus = resolveTerminalStatus(call.status, args.to) as CallLifecycleStatus;
     let durationSec = typeof call.durationSec === "number" ? call.durationSec : 0;
 
@@ -464,7 +496,7 @@ export async function transitionCallToTerminal(args: {
   });
 
   let claimRelease: { released: number; failed: string[] } | undefined;
-  if (result.transitioned && result.call) {
+  if (result.call && (result.transitioned || isTerminalCallStatus(result.status))) {
     const participants = [
       result.call.callerId,
       ...(result.call.notifiedRecipientIds || []),

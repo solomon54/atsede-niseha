@@ -88,7 +88,14 @@ export async function GET(req: NextRequest) {
         channelId: targetChannelId,
         now,
       });
-      if (timedOut.call) {
+      console.info("[LiveKit Status] stale ringing evaluation", {
+        callId,
+        channelId: targetChannelId,
+        actorUid: session.uid,
+        transitioned: timedOut.transitioned,
+        effectiveStatus: timedOut.call?.status || call.status,
+      });
+      if (timedOut.transitioned && timedOut.call) {
         call = timedOut.call;
         const patch = await persistCallMessageUpdate({
           channelId: targetChannelId,
@@ -113,6 +120,8 @@ export async function GET(req: NextRequest) {
             reason: "timeout",
           },
         });
+      } else if (timedOut.call) {
+        call = timedOut.call;
       }
     }
 

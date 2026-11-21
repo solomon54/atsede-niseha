@@ -11,6 +11,7 @@ import { AppState, StyleSheet, Text, TouchableOpacity, View } from "react-native
 import NetInfo from "@react-native-community/netinfo";
 import { usePathname, useRouter } from "expo-router";
 import { AudioSession, LiveKitRoom } from "@livekit/react-native";
+import { PhoneOff } from "lucide-react-native";
 
 import ActiveCallView from "../../components/call/ActiveCallView";
 import { useAuth } from "../auth-context";
@@ -51,6 +52,9 @@ import {
 
 interface CallControllerValue {
   call: ActiveCallState | null;
+  isMinimized: boolean;
+  minimizeCall: () => void;
+  maximizeCall: () => void;
   showIncoming: (payload: IncomingCallPayload) => Promise<boolean>;
   startOutgoing: (channelId: string, participants?: CallPeer[]) => Promise<boolean>;
   answer: () => Promise<void>;
@@ -113,12 +117,18 @@ function eventCallId(data: any): string {
 function MiniCallIndicator({
   call,
   onPress,
+  onEndCall,
 }: {
   call: ActiveCallState;
   onPress: () => void;
+  onEndCall?: () => void;
 }) {
   const [label, setLabel] = useState("00:00");
   useEffect(() => {
+    if (call.status !== "answered" || !call.answeredAt) {
+      setLabel("እየጠራ ነው...");
+      return;
+    }
     const tick = () => {
       const total = Math.max(0, Math.floor((Date.now() - (call.answeredAt || Date.now())) / 1000));
       setLabel(
@@ -130,21 +140,41 @@ function MiniCallIndicator({
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [call.answeredAt]);
+  }, [call.status, call.answeredAt]);
+
+  const isAnswered = call.status === "answered";
 
   return (
-    <TouchableOpacity style={styles.mini} onPress={onPress} activeOpacity={0.9}>
-      <View style={styles.miniDot} />
-      <View style={styles.miniText}>
-        <Text style={styles.miniTitle} numberOfLines={1}>
-          {call.peer.name}
-        </Text>
-        <Text style={styles.miniSub}>
-          {callRoleLabel(call.peer.role)} · {label} · ጥሪው እየቀጠለ ነው
-        </Text>
-      </View>
-      <Text style={styles.miniOpen}>ክፈት</Text>
-    </TouchableOpacity>
+    <View style={styles.mini}>
+      <TouchableOpacity
+        style={styles.miniClickable}
+        onPress={onPress}
+        activeOpacity={0.85}
+        accessibilityLabel="Return to active call"
+      >
+        <View style={[styles.miniDot, !isAnswered && styles.miniDotRinging]} />
+        <View style={styles.miniText}>
+          <Text style={styles.miniTitle} numberOfLines={1}>
+            {call.peer.name}
+          </Text>
+          <Text style={styles.miniSub}>
+            {callRoleLabel(call.peer.role)} · {label}
+          </Text>
+        </View>
+        <View style={styles.miniOpenBadge}>
+          <Text style={styles.miniOpen}>ተመለስ</Text>
+        </View>
+      </TouchableOpacity>
+      {onEndCall && (
+        <TouchableOpacity
+          style={styles.miniEndBtn}
+          onPress={onEndCall}
+          accessibilityLabel="End call"
+        >
+          <PhoneOff color="#FFFFFF" size={16} />
+        </TouchableOpacity>
+      )}
+    </View>
   );
 }
 
@@ -154,6 +184,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading, uid } = useAuth();
 
   const [call, setCall] = useState<ActiveCallState | null>(null);
+  const [isMinimized, setIsMinimized] = useState(false);
   const callRef = useRef<ActiveCallState | null>(null);
   const pathnameRef = useRef(pathname);
   const authRef = useRef({ isAuthenticated, isLoading, uid });
@@ -172,6 +203,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const applyCall = useCallback((next: ActiveCallState | null) => {
     callRef.current = next;
     setCall(next);
+    if (!next || next.status === "ended") {
+      setIsMinimized(false);
+    }
   }, []);
 
   const patchCall = useCallback(
@@ -244,6 +278,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   const openCall = useCallback(() => {
+    setIsMinimized(false);
     const current = callRef.current;
     if (!current || current.status === "ended") return;
     if (pathnameRef.current.startsWith("/call/")) return;
@@ -253,6 +288,15 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     lastNav.current = { key, at: now };
     router.push(buildCallRoute(current) as any);
   }, [router]);
+
+  const minimizeCall = useCallback(() => {
+    setIsMinimized(true);
+  }, []);
+
+  const maximizeCall = useCallback(() => {
+    setIsMinimized(false);
+    openCall();
+  }, [openCall]);
 
   const finishTerminal = useCallback(
     (status: CallTerminalStatus, message?: string) => {
@@ -269,6 +313,29 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         terminal: { status, message: message || terminalMessage(status) },
         transitioning: false,
       });
+
+      // Best-effort terminal notification to backend so participant claims are cleanly released.
+      if (!current.callId.startsWith("pending-")) {
+        const durationSec = current.answeredAt
+          ? Math.max(1, Math.floor((Date.now() - current.answeredAt) / 1000))
+          : 0;
+        const requested =
+          current.status === "answered"
+            ? "ended"
+            : status === "declined"
+            ? "declined"
+            : "cancelled";
+        apiRequest("/api/livekit/end", {
+          method: "POST",
+          body: JSON.stringify({
+            channelId: current.channelId,
+            callId: current.callId,
+            durationSec,
+            status: requested,
+          }),
+        }).catch(() => {});
+      }
+
       terminalTimer.current = setTimeout(() => leaveCallRoute(), 2200);
     },
     [applyCall, leaveCallRoute, rememberTerminal, stopPresentationForCall]
@@ -659,7 +726,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           channelId: current.channelId,
           callId: current.callId,
           durationSec,
-          status: current.answeredAt ? "answered" : "cancelled",
+          status: current.answeredAt ? "ended" : "cancelled",
         }),
       });
     } catch {}
@@ -848,6 +915,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<CallControllerValue>(
     () => ({
       call,
+      isMinimized,
+      minimizeCall,
+      maximizeCall,
       showIncoming,
       startOutgoing,
       answer,
@@ -856,16 +926,31 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       finishTerminal,
       openCall,
     }),
-    [call, showIncoming, startOutgoing, answer, decline, end, finishTerminal, openCall]
+    [
+      call,
+      isMinimized,
+      minimizeCall,
+      maximizeCall,
+      showIncoming,
+      startOutgoing,
+      answer,
+      decline,
+      end,
+      finishTerminal,
+      openCall,
+    ]
   );
 
-  const showOverlay = call?.status === "answered" && !!call.token;
-  const showMini = call?.status === "answered" && !pathname.startsWith("/call/");
+  const showActiveRoom = call?.status === "answered" && !!call.token;
+  const showFullScreenView = showActiveRoom && !isMinimized;
+  const showMini =
+    (call?.status === "answered" && (isMinimized || !pathname.startsWith("/call/"))) ||
+    (call?.status === "ringing" && !pathname.startsWith("/call/"));
 
   return (
     <CallControllerContext.Provider value={value}>
       {children}
-      {showOverlay && call.token ? (
+      {showActiveRoom && call?.token ? (
         <LiveKitRoom
           serverUrl={call.token.url}
           token={call.token.token}
@@ -877,13 +962,23 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
             if (current?.status === "answered") void end();
           }}
         >
-          <View style={styles.roomOverlay}>
-            <ActiveCallView call={call} onEndCall={() => void end()} />
-          </View>
+          {showFullScreenView && (
+            <View style={styles.roomOverlay}>
+              <ActiveCallView
+                call={call}
+                onEndCall={() => void end()}
+                onMinimize={minimizeCall}
+              />
+            </View>
+          )}
         </LiveKitRoom>
       ) : null}
       {showMini && call ? (
-        <MiniCallIndicator call={call} onPress={openCall} />
+        <MiniCallIndicator
+          call={call}
+          onPress={maximizeCall}
+          onEndCall={() => void end()}
+        />
       ) : null}
     </CallControllerContext.Provider>
   );
@@ -901,24 +996,55 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 12,
     right: 12,
-    bottom: 18,
-    zIndex: 30,
+    bottom: 24,
+    zIndex: 9999,
+    elevation: 12,
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderRadius: 16,
     backgroundColor: "#111C33",
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: "#D97706",
     shadowColor: "#000",
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.5,
     shadowRadius: 10,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 4 },
   },
-  miniDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#22C55E", marginRight: 10 },
+  miniClickable: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  miniDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#22C55E",
+    marginRight: 10,
+  },
+  miniDotRinging: {
+    backgroundColor: "#F59E0B",
+  },
   miniText: { flex: 1 },
   miniTitle: { color: "#F8FAFC", fontSize: 14, fontWeight: "800" },
   miniSub: { color: "#94A3B8", fontSize: 11, marginTop: 2 },
+  miniOpenBadge: {
+    backgroundColor: "rgba(217, 119, 6, 0.15)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginRight: 6,
+  },
   miniOpen: { color: "#D97706", fontSize: 12, fontWeight: "800" },
+  miniEndBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 6,
+  },
 });

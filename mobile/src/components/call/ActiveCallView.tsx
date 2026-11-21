@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  BackHandler,
   Image,
   ScrollView,
   StyleSheet,
@@ -15,6 +16,7 @@ import {
 } from "@livekit/react-native";
 import { Track } from "livekit-client";
 import {
+  ChevronDown,
   Mic,
   MicOff,
   PhoneOff,
@@ -31,6 +33,7 @@ import { ActiveCallState, CallPeer, callRoleLabel } from "../../lib/calling/type
 interface ActiveCallViewProps {
   call: ActiveCallState;
   onEndCall: () => void;
+  onMinimize?: () => void;
 }
 
 function durationLabel(startedAt?: number | null): string {
@@ -60,13 +63,26 @@ function PeerPhoto({ peer, name, size }: { peer?: CallPeer; name: string; size: 
   );
 }
 
-export default function ActiveCallView({ call, onEndCall }: ActiveCallViewProps) {
+export default function ActiveCallView({
+  call,
+  onEndCall,
+  onMinimize,
+}: ActiveCallViewProps) {
   const { isMicrophoneEnabled, isCameraEnabled, localParticipant } =
     useLocalParticipant();
   const remoteParticipants = useRemoteParticipants();
   const cameraRefs = useTracks([Track.Source.Camera]);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [elapsed, setElapsed] = useState(() => durationLabel(call.answeredAt));
+
+  useEffect(() => {
+    if (!onMinimize) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      onMinimize();
+      return true;
+    });
+    return () => sub.remove();
+  }, [onMinimize]);
 
   useEffect(() => {
     const tick = () => setElapsed(durationLabel(call.answeredAt));
@@ -120,12 +136,24 @@ export default function ActiveCallView({ call, onEndCall }: ActiveCallViewProps)
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <View>
-          <Text style={styles.badge}>
-            {call.isGroup ? "✞ የጋራ ቤት ምክክር" : "✞ የቪዲዮ ምክክር"}
-          </Text>
-          <Text style={styles.peerName}>{call.peer.name}</Text>
-          <Text style={styles.peerRole}>{callRoleLabel(call.peer.role)}</Text>
+        <View style={styles.headerLeft}>
+          {onMinimize ? (
+            <TouchableOpacity
+              onPress={onMinimize}
+              style={styles.minimizeBtn}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              accessibilityLabel="Minimize call"
+            >
+              <ChevronDown color="#F8FAFC" size={24} />
+            </TouchableOpacity>
+          ) : null}
+          <View>
+            <Text style={styles.badge}>
+              {call.isGroup ? "✞ የጋራ ቤት ምክክር" : "✞ የቪዲዮ ምክክር"}
+            </Text>
+            <Text style={styles.peerName}>{call.peer.name}</Text>
+            <Text style={styles.peerRole}>{callRoleLabel(call.peer.role)}</Text>
+          </View>
         </View>
         <View style={styles.headerRight}>
           <Text style={styles.duration}>{elapsed}</Text>
@@ -256,7 +284,16 @@ export default function ActiveCallView({ call, onEndCall }: ActiveCallViewProps)
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0B1120", paddingHorizontal: 16, paddingTop: 12 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  minimizeBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#1E293B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   badge: { color: "#D97706", fontSize: 12, fontWeight: "800" },
   peerName: { color: "#F8FAFC", fontSize: 20, fontWeight: "700", marginTop: 4 },
   peerRole: { color: "#94A3B8", fontSize: 12, marginTop: 2 },

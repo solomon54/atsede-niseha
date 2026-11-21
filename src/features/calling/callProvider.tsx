@@ -120,12 +120,14 @@ export function useCall(): CallContextValue {
 
 async function postJson<T = JsonRecord>(
   url: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  options?: { keepalive?: boolean }
 ): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    keepalive: options?.keepalive,
   });
   const data = (await res.json().catch(() => ({}))) as JsonRecord;
   if (!res.ok) {
@@ -201,14 +203,14 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     typeof pathname === "string" &&
     pathname.startsWith(`/call/${call.channelId}`);
 
-  const duration = formatCallDuration(call?.answeredAt || call?.startedAt || null, now);
+  const duration = formatCallDuration(call?.answeredAt || null, now);
 
   useEffect(() => {
-    if (!call?.answeredAt && !call?.startedAt) return;
+    if (!call?.answeredAt) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [call?.answeredAt, call?.startedAt]);
+  }, [call?.answeredAt]);
 
   /* ------------------------------------------------------------------ */
   /* Audio                                                               */
@@ -226,6 +228,43 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         audio.currentTime = 0;
       } catch {}
       ringtoneRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleUnload = () => {
+      const current = callRef.current;
+      if (!current || current.phase === "terminal" || current.callId.startsWith("pending-")) return;
+      const durationSec = current.answeredAt
+        ? Math.max(1, Math.floor((Date.now() - current.answeredAt) / 1000))
+        : 0;
+      const requested = current.phase === "answered" ? "ended" : "cancelled";
+      try {
+        const payload = JSON.stringify({
+          channelId: current.channelId,
+          callId: current.callId,
+          durationSec,
+          status: requested,
+        });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon("/api/livekit/end", new Blob([payload], { type: "application/json" }));
+        } else {
+          void fetch("/api/livekit/end", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: payload,
+            keepalive: true,
+          }).catch(() => {});
+        }
+      } catch {}
+    };
+
+    window.addEventListener("pagehide", handleUnload);
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      window.removeEventListener("pagehide", handleUnload);
+      window.removeEventListener("beforeunload", handleUnload);
     };
   }, []);
 
@@ -340,6 +379,30 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         phase: "terminal",
         terminal: { status, message: message || terminalMessage(status) },
       });
+
+      // Best-effort terminal notification to backend so participant claims and
+      // call state are cleanly released if not already done.
+      if (!current.callId.startsWith("pending-")) {
+        const durationSec = current.answeredAt
+          ? Math.max(1, Math.floor((Date.now() - current.answeredAt) / 1000))
+          : 0;
+        const requested =
+          current.phase === "answered"
+            ? "ended"
+            : status === "declined"
+            ? "declined"
+            : "cancelled";
+        void postJson(
+          "/api/livekit/end",
+          {
+            channelId: current.channelId,
+            callId: current.callId,
+            durationSec,
+            status: requested,
+          },
+          { keepalive: true }
+        ).catch(() => {});
+      }
 
       const finishedCallId = current.callId;
       const wasOnCallRoute = pathnameRef.current?.startsWith(`/call/${current.channelId}`);

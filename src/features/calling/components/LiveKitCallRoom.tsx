@@ -2,6 +2,7 @@
 "use client";
 
 import {
+  ChevronDown,
   Mic,
   MicOff,
   Phone,
@@ -12,7 +13,7 @@ import {
   Video as VideoIcon,
   VideoOff,
 } from "lucide-react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import React, { useEffect, useRef } from "react";
 
 import { callRoleLabel } from "@/shared/domain/calling/participantIdentity";
@@ -21,6 +22,7 @@ import { useCall } from "../callProvider";
 import type { CallParticipantView } from "../types";
 
 export default function LiveKitCallRoom({ channelId }: { channelId: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const requestedCallId = (searchParams.get("callId") || "").trim();
   const {
@@ -132,13 +134,29 @@ export default function LiveKitCallRoom({ channelId }: { channelId: string }) {
     <div className="relative flex h-[100dvh] w-full select-none flex-col overflow-hidden bg-slate-950 font-sans">
       <header className="absolute inset-x-0 top-0 z-30 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent px-4 py-4 sm:px-6">
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== "undefined" && window.history.length > 1) {
+                router.back();
+              } else {
+                router.push("/counseling");
+              }
+            }}
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-700 bg-slate-800/80 text-slate-300 transition-colors hover:bg-slate-700 hover:text-white"
+            aria-label="Minimize call"
+            title="ቀንስ / ወደ መተግበሪያው ተመለስ"
+          >
+            <ChevronDown className="h-5 w-5" />
+          </button>
           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-500">
             <Shield className="h-5 w-5" />
           </div>
           <div>
             <h1 className="text-sm font-extrabold text-slate-100">✞ የቪዲዮ ምክክር (Sanctuary Call)</h1>
             <span className="text-[11px] font-medium text-slate-400">
-              {call.peer.name} · {callRoleLabel(call.peer.role)} · {statusLabel}
+              {call.peer.name} · {callRoleLabel(call.peer.role)} ·{" "}
+              {call.phase === "answered" ? `${duration} · ${statusLabel}` : statusLabel}
             </span>
           </div>
         </div>
@@ -163,7 +181,9 @@ export default function LiveKitCallRoom({ channelId }: { channelId: string }) {
             <p className="mt-3 text-xs text-slate-400">
               {call.phase === "outgoing" ? "ተቀባዩ እስኪመልስ ድረስ ይጠብቁ" : "ተሳታፊዎች እስኪገቡ ድረስ ይጠብቁ"}
             </p>
-            <span className="mt-2 font-mono text-xs text-amber-400">{duration}</span>
+            {call.phase === "answered" && (
+              <span className="mt-2 font-mono text-xs text-amber-400">{duration}</span>
+            )}
           </div>
         ) : (
           <div className="relative flex flex-1 items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">

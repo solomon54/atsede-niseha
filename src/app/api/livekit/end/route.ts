@@ -55,20 +55,22 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const isCaller = session.uid === existing.callerId;
     assertCallActorCanAct({
       call: existing,
       actorUid: session.uid,
-      action: existing.status === "ringing" ? "cancel" : "end",
+      action: existing.status === "ringing" ? (isCaller ? "cancel" : "decline") : "end",
     });
 
     const now = Date.now();
-    // Small compatible contract fix: callers may cancel while ringing, and the
-    // shared lifecycle already defines `cancelled`. Other clients that only send
-    // "ended" keep their existing behavior.
+    // Callers may cancel while ringing; recipients who end while ringing decline.
+    // Answered calls transition to ended.
     const requested =
       existing.status === "ringing" && body.status === "missed"
         ? "missed"
-        : existing.status === "ringing" && body.status === "cancelled"
+        : existing.status === "ringing" && !isCaller
+        ? "declined"
+        : existing.status === "ringing" && (body.status === "cancelled" || isCaller)
         ? "cancelled"
         : "ended";
     const result = await transitionCallToTerminal({
@@ -78,6 +80,14 @@ export async function POST(req: NextRequest) {
       to: requested,
       durationSec: typeof body.durationSec === "number" ? body.durationSec : undefined,
       now,
+    });
+    console.info("[LiveKit End] call termination processed", {
+      callId,
+      channelId,
+      actorUid: session.uid,
+      requested,
+      status: result.status,
+      transitioned: result.transitioned,
     });
     const call = result.call || (await getCallRecord(callId));
     if (!call || call.channelId !== channelId) {

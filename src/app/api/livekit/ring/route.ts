@@ -104,6 +104,13 @@ export async function POST(req: NextRequest) {
       now,
     });
     if (!callerClaim.ok) {
+      console.info("[LiveKit Ring] caller busy conflict", {
+        callId,
+        channelId,
+        callerUid: session.uid,
+        activeCallId: callerClaim.current?.activeCallId || null,
+        activeStatus: callerClaim.current?.status || null,
+      });
       return NextResponse.json(
         {
           success: false,
@@ -146,6 +153,14 @@ export async function POST(req: NextRequest) {
       if (notifiedRecipientIds.length === 0) {
         await releaseUserCallStateIfMatch({ uid: session.uid, callId, now }).catch(() => {});
         const outcome = recipients.length === 0 ? "no_recipients" : "all_busy";
+        console.info("[LiveKit Ring] ring rejected: no eligible recipients", {
+          callId,
+          channelId,
+          callerUid: session.uid,
+          outcome,
+          totalRecipients: recipients.length,
+          busyCount: busyRecipientIds.length,
+        });
         return NextResponse.json(
           {
             success: false,

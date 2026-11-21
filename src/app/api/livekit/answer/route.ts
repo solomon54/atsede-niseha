@@ -64,6 +64,13 @@ export async function POST(req: NextRequest) {
 
     const now = Date.now();
     const result = await transitionCallToAnswered({ callId, channelId, actorUid: session.uid, now });
+    console.info("[LiveKit Answer] transitionCallToAnswered result", {
+      callId,
+      channelId,
+      actorUid: session.uid,
+      transitioned: result.transitioned,
+      status: result.status,
+    });
     const call = result.call || (await getCallRecord(callId));
 
     if (!call || call.channelId !== channelId) {

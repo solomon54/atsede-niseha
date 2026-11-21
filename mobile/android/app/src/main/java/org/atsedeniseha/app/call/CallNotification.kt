@@ -131,6 +131,22 @@ object CallNotification {
             // still lets the user answer/decline; JS remains authoritative.
             showNotificationOnly(context, payload)
         }
+
+        // Proactively pop incoming call activity if screen is off or keyguard is locked
+        val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val isScreenOff = powerManager?.isInteractive == false
+        val isLocked = keyguardManager?.isKeyguardLocked == true
+        if (isScreenOff || isLocked) {
+            try {
+                val callActivityIntent = Intent(context, IncomingCallActivity::class.java).apply {
+                    putExtra(CallIntents.EXTRA_CALL_DATA, payload)
+                    putExtra(CallIntents.EXTRA_CALL_ID, callId ?: "")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                context.startActivity(callActivityIntent)
+            } catch (_: Exception) {}
+        }
     }
 
     fun showNotificationOnly(context: Context, payload: String) {
